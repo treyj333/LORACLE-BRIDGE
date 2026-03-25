@@ -1,7 +1,7 @@
 <div align="center">
 <img src="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/admin/public/project_nomad_logo.png" width="200" height="200"/>
 
-# Project N.O.M.A.D. + Meshtastic
+# AI Mesh Bridge
 ### Offline AI Over Mesh Radio
 
 **Chat with a local LLM over LoRa — no internet required**
@@ -15,7 +15,7 @@
 
 ## What Is This?
 
-This project turns a **Meshtastic LoRa radio** into an AI-powered chatbot. Anyone on your mesh network can send a text message to your radio, and it automatically responds with answers from a local LLM (large language model) running on your computer via **Ollama**.
+This project turns a **Meshtastic LoRa radio** into an AI-powered chatbot. Anyone on your mesh network can send a text message to your radio, and it automatically responds with answers from a local LLM running on your computer via **Ollama**.
 
 **No internet. No cloud. No API keys.** Everything runs locally on your machine.
 
@@ -23,13 +23,13 @@ This project turns a **Meshtastic LoRa radio** into an AI-powered chatbot. Anyon
 Someone on the mesh types a question
   → Their radio sends it over LoRa
   → Your radio receives it via USB
-  → This bridge forwards it to Ollama (AI running on your Mac)
+  → This bridge forwards it to Ollama (AI running on your computer)
   → AI generates a response
-  → Bridge sends the response back over the mesh
+  → Bridge sends plain-text response back over the mesh
   → They get an answer
 ```
 
-You can also load documents (PDFs, text files, survival manuals, field guides) into a **knowledge base**, so the AI can answer questions grounded in your own reference material.
+You can also load documents (PDFs, text files, survival manuals, field guides) into a **knowledge base** so the AI can answer questions grounded in your own reference material. The knowledge base is **enabled by default** — just drop files into the `CONTEXT FILES/` folder.
 
 ---
 
@@ -54,7 +54,7 @@ You don't need to install any of this yourself. The launch script handles everyt
 | **Homebrew** | macOS package manager used to install everything else | Auto-installed if missing |
 | **Python 3.9+** | Runs the bridge code | Auto-installed via Homebrew if missing |
 | **Ollama** | Runs AI models locally on your machine — no cloud needed | Auto-installed via Homebrew (macOS) or install script (Linux) |
-| **llama3.2** | The default AI model (small, fast, runs on most hardware) | Auto-pulled by Ollama on first run |
+| **gemma3:4b** | The default AI model (3.3GB, follows instructions well, practical answers) | Auto-pulled by Ollama on first run |
 
 ---
 
@@ -63,8 +63,8 @@ You don't need to install any of this yourself. The launch script handles everyt
 ### Step 1: Clone This Repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/project-meshtastic-llm.git
-cd project-meshtastic-llm
+git clone https://github.com/treyj333/ai-mesh-bridge.git
+cd ai-mesh-bridge
 ```
 
 ### Step 2: Plug In Your Radio
@@ -83,10 +83,12 @@ Connect your Meshtastic radio to your computer with a USB-C cable. That's it —
 2. Install Python (if you don't have it or it's too old)
 3. Install Ollama (if you don't have it)
 4. Start the Ollama service
-5. Download the `llama3.2` AI model (if no models are installed)
-6. Create a Python virtual environment and install dependencies
-7. Auto-detect your radio on USB
-8. Start listening for messages and responding with AI
+5. Download the `gemma3:4b` AI model (if no models are installed)
+6. Pull the `nomic-embed-text` embedding model for the knowledge base
+7. Auto-ingest any documents in `CONTEXT FILES/`
+8. Create a Python virtual environment and install dependencies
+9. Auto-detect your radio on USB
+10. Start listening for messages and responding with AI
 
 You'll see output like this:
 
@@ -104,6 +106,7 @@ OK Python environment ready
 ==========================================
   Bridge starting...
   Connection: USB Serial (auto-detect)
+  RAG: enabled
   Dashboard: http://localhost:8000
   Press Ctrl+C to stop
 ==========================================
@@ -115,7 +118,37 @@ Press **Ctrl+C** to stop.
 
 ---
 
-## Connection Methods Explained
+## Web Dashboard & Control Panel
+
+The bridge includes a full-featured web control panel that starts automatically. Open it in your browser:
+
+```
+http://localhost:8000
+```
+
+### 5 Tabs
+
+| Tab | What It Does |
+|-----|-------------|
+| **Dashboard** | Live status cards (connection, model, messages, nodes, avg response time, RAG), recent message feed, and a **chat panel** to test the LLM directly from your browser |
+| **Messages** | Full message log with direction filters (In/Out/All), text search, and auto-scroll |
+| **Controls** | Switch AI models, edit the system prompt, adjust response length and chunk delay, toggle compression and RAG, clear conversation history |
+| **Debug** | Live color-coded log viewer (filterable by level), firmware/library versions, performance metrics, thread and queue internals |
+| **Guide** | Built-in quick start, connection method explanations, mesh command reference, and troubleshooting tips |
+
+### Chat Panel
+
+The Dashboard tab includes a **chat panel** at the bottom where you can type messages and get AI responses directly — no radio needed. This is useful for testing the LLM, tuning the system prompt, and verifying the knowledge base works before deploying over the mesh.
+
+The dashboard updates every 2 seconds. To change the port:
+
+```bash
+./mesh-llm.sh --dashboard-port 9000
+```
+
+---
+
+## Connection Methods
 
 The bridge needs to talk to your Meshtastic radio. There are three ways to do this:
 
@@ -169,61 +202,40 @@ The bridge needs to talk to your Meshtastic radio. There are three ways to do th
 
 ---
 
-## Web Dashboard
-
-The bridge includes a built-in web dashboard that starts automatically. Open it in your browser:
-
-```
-http://localhost:8000
-```
-
-**What it shows:**
-- Connection status (green = connected, red = disconnected)
-- Which AI model is loaded
-- Bridge uptime
-- Total messages sent/received
-- List of known mesh nodes
-- Recent message history (last 100 messages) with timestamps, node IDs, and response times
-
-The dashboard updates every 2 seconds. To change the port:
-
-```bash
-./mesh-llm.sh --dashboard-port 9000
-```
-
----
-
 ## Knowledge Base (RAG)
 
-RAG (Retrieval-Augmented Generation) lets you load your own documents so the AI can answer questions using your reference material. Think field manuals, survival guides, technical docs, or any PDF/text file.
+RAG (Retrieval-Augmented Generation) lets the AI answer questions using your own reference material. Think field manuals, survival guides, technical docs, or any PDF/text file.
+
+**RAG is enabled by default.** Use `--no-rag` to disable it.
 
 ### How It Works
 
 1. You drop files into the `CONTEXT FILES/` folder
-2. The bridge breaks them into small chunks and creates searchable embeddings
+2. On first run, the bridge breaks them into small chunks and creates searchable embeddings
 3. When someone asks a question on the mesh, the bridge searches your documents for relevant info
 4. That context is injected into the AI prompt so the answer is grounded in your actual documents
+5. Files are only processed once — subsequent launches skip already-ingested files
 
 ### Setting It Up
 
 **Step 1:** Put your files in the `CONTEXT FILES/` folder in the project root:
 
 ```
-project-meshtastic-llm/
+ai-mesh-bridge/
   CONTEXT FILES/
     ranger-handbook.pdf
     survival-guide.txt
     medical-reference.pdf
 ```
 
-**Step 2:** Run with `--rag` enabled:
+**Step 2:** Just run the bridge — RAG is on by default:
 
 ```bash
-./mesh-llm.sh --rag
+./mesh-llm.sh
 ```
 
-On first run with `--rag`, the script will:
-1. Pull the embedding model (`nomic-embed-text`) — this converts text into searchable vectors
+The script will automatically:
+1. Pull the embedding model (`nomic-embed-text`) if needed
 2. Auto-ingest all files from `CONTEXT FILES/` (skips files already ingested)
 3. Start the bridge with knowledge base search enabled
 
@@ -236,14 +248,6 @@ On first run with `--rag`, the script will:
 ./mesh-llm.sh --docs-stats              # Show knowledge base statistics
 ./mesh-llm.sh --ingest path/to/file.pdf # Manually ingest a single file
 ```
-
-### How Search Works Under the Hood
-
-- Documents are split into ~5,100 character chunks with 450 character overlap
-- Each chunk is embedded into a 768-dimensional vector using `nomic-embed-text`
-- Queries are embedded the same way, then compared using cosine similarity
-- Top 5 most relevant chunks are injected into the AI prompt (if they score above 0.3 similarity)
-- Total injected context is capped at 2,000 characters to fit within LoRa bandwidth constraints
 
 ---
 
@@ -275,18 +279,18 @@ Connection (default: USB serial, auto-detected):
   --ble [address]         Connect via Bluetooth LE (scan if no address given)
 
 Model:
-  --model <name>          Ollama model to use (default: llama3.2)
+  --model <name>          Ollama model to use (default: gemma3:4b)
   --ollama-url <url>      Ollama API URL (default: http://localhost:11434)
   --list-models           List available Ollama models and exit
 
-Response Tuning:
-  --max-length <int>      Max response characters (default: 500)
+Response:
+  --max-length <int>      Max response characters (default: 200)
   --system-prompt <text>  Custom system prompt for the AI
   --no-compression        Disable zlib compression on chunks
-  --chunk-delay <secs>    Delay between LoRa chunks (default: 2.0 seconds)
+  --chunk-delay <secs>    Delay between message parts (default: 3.0 seconds)
 
-Knowledge Base:
-  --rag                   Enable document-grounded responses
+Knowledge Base (on by default):
+  --no-rag                Disable RAG knowledge base
   --rag-dir <path>        RAG storage directory (default: ~/.mesh-llm/rag)
   --ingest <file|dir>     Ingest a file or directory into the knowledge base
   --docs                  List ingested documents
@@ -300,7 +304,7 @@ Other:
 ### Examples
 
 ```bash
-# Basic — plug in radio, run with defaults
+# Basic — plug in radio, run with defaults (RAG on, gemma3:4b)
 ./mesh-llm.sh
 
 # Use a different AI model
@@ -309,8 +313,8 @@ Other:
 # Connect to radio over TCP (WiFi AP mode)
 ./mesh-llm.sh --tcp
 
-# Enable knowledge base with custom model and longer responses
-./mesh-llm.sh --rag --model llama3.2 --max-length 800
+# Disable knowledge base
+./mesh-llm.sh --no-rag
 
 # Custom system prompt for a specific use case
 ./mesh-llm.sh --system-prompt "You are a wilderness survival expert. Be concise."
@@ -321,22 +325,20 @@ Other:
 
 ---
 
-## How the Message Protocol Works
+## How Messages Are Sent
 
-LoRa has a **228-byte message limit**. AI responses are usually much longer than that, so the bridge splits them into chunks:
+LoRa has a **233-byte message limit**. The bridge sends responses as plain text using `sendText()` so they're readable on any Meshtastic device or app.
 
-| Field | Size | Purpose |
-|-------|------|---------|
-| Message ID | 2 bytes | Unique ID to group chunks together |
-| Sequence | 1 byte | Chunk number (0, 1, 2...) |
-| Total | 1 byte | Total chunks in this message |
-| Flags | 1 byte | Compression enabled, final chunk, error flag |
-| Reserved | 3 bytes | Future use |
-| **Payload** | **220 bytes** | The actual text content |
+**Short responses** (under 233 bytes) are sent as a single message.
 
-**Compression:** Enabled by default. The bridge tries zlib compression — if it reduces the number of chunks, it uses the compressed version. Otherwise it sends uncompressed.
+**Long responses** are automatically split into numbered parts:
+```
+[1/3] First part of the response...
+[2/3] Continuation of the response...
+[3/3] Final part of the response.
+```
 
-**Chunk delay:** 2 seconds between chunks by default. This gives the LoRa network time to transmit each one without collisions. Adjust with `--chunk-delay`.
+Each part is sent **3 seconds apart** (configurable with `--chunk-delay`) to give the LoRa network time to transmit without collisions.
 
 ---
 
@@ -347,12 +349,12 @@ LoRa has a **228-byte message limit**. AI responses are usually much longer than
 │                     YOUR COMPUTER                        │
 │                                                          │
 │  ┌─────────────────┐     ┌──────────────────────────┐   │
-│  │   Ollama         │     │   Meshtastic LLM Bridge  │   │
+│  │   Ollama         │     │   AI Mesh Bridge         │   │
 │  │   (local AI)     │◄───►│   standalone_bridge.py   │   │
 │  │                  │     │                          │   │
-│  │  llama3.2 model  │     │  ┌── Dashboard (:8000)   │   │
+│  │  gemma3:4b       │     │  ┌── Dashboard (:8000)   │   │
 │  └─────────────────┘     │  ├── RAG Engine           │   │
-│                           │  └── Chunk Protocol       │   │
+│                           │  └── Chat Panel           │   │
 │                           └────────────┬─────────────┘   │
 │                                        │ USB / TCP / BLE │
 └────────────────────────────────────────┼─────────────────┘
@@ -375,7 +377,7 @@ LoRa has a **228-byte message limit**. AI responses are usually much longer than
 ## Project Structure
 
 ```
-project-meshtastic-llm/
+ai-mesh-bridge/
 │
 ├── mesh-llm.sh                  # THE ONE COMMAND — run this to start everything
 │
@@ -384,8 +386,8 @@ project-meshtastic-llm/
 ├── meshtastic-bridge/           # Python source code
 │   ├── standalone_bridge.py     # Main bridge — radio connection, message routing, LLM calls
 │   ├── ollama_client.py         # Talks to Ollama's REST API for AI responses
-│   ├── protocol.py              # LoRa chunking protocol (228-byte limit handling)
-│   ├── dashboard.py             # Web dashboard (Flask, auto-starts on port 8000)
+│   ├── protocol.py              # LoRa chunking protocol
+│   ├── dashboard.py             # 5-tab web control panel (Flask, inline HTML/CSS/JS)
 │   ├── manage_docs.py           # Document management CLI (ingest, list, stats)
 │   ├── config.py                # Default configuration values
 │   ├── requirements.txt         # Python dependencies
@@ -412,24 +414,29 @@ project-meshtastic-llm/
 - The script auto-starts Ollama, but if it fails: run `ollama serve` in a separate terminal
 - Check if it's running: `curl http://localhost:11434/api/tags`
 
+### "Model not found" errors
+- The bridge auto-resolves model names (e.g., `gemma3` matches `gemma3:4b`)
+- If issues persist: `ollama pull gemma3:4b` to install the default model
+
 ### "BLE mode requires Python 3.11+"
 - The script auto-installs Python 3.12 for BLE mode
 - If it still fails, try: `brew install python@3.12` then re-run
 
-### "Could not build wheels for pyobjc"
-- This happens with older Python versions. The script now auto-upgrades Python when BLE is requested
-- If persists: `rm -rf venv && ./mesh-llm.sh --ble` to rebuild from scratch
+### Protobuf parsing errors
+- These are suppressed automatically but may indicate a firmware/library version mismatch
+- Check the Debug tab in the dashboard for firmware vs library version info
+- The bridge continues to work despite these warnings
 
 ### Dashboard not loading
 - Default: `http://localhost:8000`
 - If port is in use: `./mesh-llm.sh --dashboard-port 9000`
 
 ### Responses are too slow
-- Try a smaller model: `./mesh-llm.sh --model llama3.2:1b`
-- Reduce max length: `./mesh-llm.sh --max-length 300`
+- The default `gemma3:4b` is a good balance of quality and speed
+- For faster but lower quality: `./mesh-llm.sh --model llama3.2:1b`
 
-### Chunks arriving out of order
-- Increase chunk delay: `./mesh-llm.sh --chunk-delay 4.0`
+### Messages arriving out of order
+- Increase chunk delay: `./mesh-llm.sh --chunk-delay 5.0`
 - This gives the LoRa network more time between transmissions
 
 ---

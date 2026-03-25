@@ -47,7 +47,7 @@ for arg in "$@"; do
       echo "  --ble [address]         Connect via Bluetooth LE (scan if no address given)"
       echo ""
       echo "Options:"
-      echo "  --model <name>          Ollama model (default: llama3.2)"
+      echo "  --model <name>          Ollama model (default: gemma3:4b)"
       echo "  --ollama-url <url>      Ollama URL (default: http://localhost:11434)"
       echo "  --max-length <int>      Max response chars (default: 200)"
       echo "  --system-prompt <text>  Custom system prompt"
