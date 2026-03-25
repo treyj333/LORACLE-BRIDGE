@@ -1,4 +1,4 @@
-"""Standalone Meshtastic LLM Bridge.
+"""Standalone LORACLE.
 
 Connects directly to a Meshtastic radio and Ollama — no N.O.M.A.D. stack required.
 Receives text messages over the mesh, processes them through a local LLM,
@@ -73,7 +73,7 @@ def auto_detect_serial_port() -> Optional[str]:
 
 
 class StandaloneBridge:
-    """Standalone Meshtastic-to-Ollama LLM bridge."""
+    """LORACLE — LoRa + Oracle mesh AI bridge."""
 
     def __init__(
         self,
@@ -143,7 +143,7 @@ class StandaloneBridge:
 
     def start(self):
         """Start the bridge."""
-        logger.info("Starting Standalone Meshtastic LLM Bridge")
+        logger.info("Starting Standalone LORACLE")
 
         # Start web dashboard
         start_dashboard(self.dashboard_port)
@@ -545,7 +545,7 @@ class StandaloneBridge:
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Standalone Meshtastic LLM Bridge — chat with a local AI over mesh radio"
+        description="Standalone LORACLE — chat with a local AI over mesh radio"
     )
 
     conn = parser.add_mutually_exclusive_group()

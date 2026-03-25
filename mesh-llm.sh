@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# mesh-llm.sh — One-command Meshtastic LLM Bridge
+# mesh-llm.sh — One-command LORACLE
 #
 # Connects a Meshtastic radio to a local Ollama LLM.
 # No Docker, no database, no N.O.M.A.D. stack required.
@@ -37,7 +37,7 @@ for arg in "$@"; do
     --no-rag) RAG_ENABLED=false ;;
     --ble) BLE_MODE=true ;;
     --help|-h)
-      echo "Meshtastic LLM Bridge — Chat with a local AI over mesh radio"
+      echo "LORACLE — Chat with a local AI over mesh radio"
       echo ""
       echo "Usage: ./mesh-llm.sh [OPTIONS]"
       echo ""
@@ -106,7 +106,7 @@ trap cleanup EXIT INT TERM
 
 echo ""
 echo "=========================================="
-echo "  Meshtastic LLM Bridge"
+echo "  LORACLE"
 echo "=========================================="
 echo ""
 

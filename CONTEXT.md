@@ -4,7 +4,7 @@ This file tracks the history of changes, decisions, and current state of the pro
 
 ---
 
-## [2026-03-24 16:50] — Meshtastic LLM Bridge Integration
+## [2026-03-24 16:50] — LORACLE Integration
 
 - What changed:
   - Added full Meshtastic mesh network integration to Project N.O.M.A.D.

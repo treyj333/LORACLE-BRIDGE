@@ -1,7 +1,7 @@
 <div align="center">
 <img src="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/admin/public/project_nomad_logo.png" width="200" height="200"/>
 
-# AI Mesh Bridge
+# LORACLE
 ### Offline AI Over Mesh Radio
 
 **Chat with a local LLM over LoRa — no internet required**
@@ -63,8 +63,8 @@ You don't need to install any of this yourself. The launch script handles everyt
 ### Step 1: Clone This Repo
 
 ```bash
-git clone https://github.com/treyj333/ai-mesh-bridge.git
-cd ai-mesh-bridge
+git clone https://github.com/treyj333/loracle.git
+cd loracle
 ```
 
 ### Step 2: Plug In Your Radio
@@ -94,7 +94,7 @@ You'll see output like this:
 
 ```
 ==========================================
-  Meshtastic LLM Bridge
+  LORACLE
 ==========================================
 
 OK Python 3.12.13
@@ -221,7 +221,7 @@ RAG (Retrieval-Augmented Generation) lets the AI answer questions using your own
 **Step 1:** Put your files in the `CONTEXT FILES/` folder in the project root:
 
 ```
-ai-mesh-bridge/
+loracle/
   CONTEXT FILES/
     ranger-handbook.pdf
     survival-guide.txt
@@ -349,7 +349,7 @@ Each part is sent **3 seconds apart** (configurable with `--chunk-delay`) to giv
 │                     YOUR COMPUTER                        │
 │                                                          │
 │  ┌─────────────────┐     ┌──────────────────────────┐   │
-│  │   Ollama         │     │   AI Mesh Bridge         │   │
+│  │   Ollama         │     │   LORACLE         │   │
 │  │   (local AI)     │◄───►│   standalone_bridge.py   │   │
 │  │                  │     │                          │   │
 │  │  gemma3:4b       │     │  ┌── Dashboard (:8000)   │   │
@@ -377,7 +377,7 @@ Each part is sent **3 seconds apart** (configurable with `--chunk-delay`) to giv
 ## Project Structure
 
 ```
-ai-mesh-bridge/
+loracle/
 │
 ├── mesh-llm.sh                  # THE ONE COMMAND — run this to start everything
 │
