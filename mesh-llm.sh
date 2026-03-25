@@ -3,7 +3,7 @@
 # mesh-llm.sh — One-command LORACLE
 #
 # Connects a Meshtastic radio to a local Ollama LLM.
-# No Docker, no database, no N.O.M.A.D. stack required.
+# Connects a Meshtastic radio to a local Ollama LLM.
 # Automatically installs all prerequisites on first run.
 #
 # Usage:
@@ -47,7 +47,7 @@ for arg in "$@"; do
       echo "  --ble [address]         Connect via Bluetooth LE (scan if no address given)"
       echo ""
       echo "Options:"
-      echo "  --model <name>          Ollama model (default: gemma3:4b)"
+      echo "  --model <name>          Ollama model (default: auto-select based on RAM)"
       echo "  --ollama-url <url>      Ollama URL (default: http://localhost:11434)"
       echo "  --max-length <int>      Max response chars (default: 200)"
       echo "  --system-prompt <text>  Custom system prompt"
@@ -276,10 +276,32 @@ if [ "$LIST_MODELS" = true ]; then
 fi
 
 if [ "$MODEL_COUNT" = "0" ]; then
-  echo "No models installed. Pulling a small default model..."
+  echo "No models installed. Detecting best model for your system..."
+  TOTAL_RAM_GB=$("$PYTHON" -c "
+import os, platform, subprocess
+try:
+    if platform.system() == 'Darwin':
+        raw = subprocess.check_output(['sysctl', '-n', 'hw.memsize']).strip()
+        print(int(raw) // (1024**3))
+    else:
+        pages = os.sysconf('SC_PHYS_PAGES')
+        page_size = os.sysconf('SC_PAGE_SIZE')
+        print((pages * page_size) // (1024**3))
+except:
+    print(8)
+" 2>/dev/null || echo "8")
+
+  if [ "$TOTAL_RAM_GB" -ge 16 ]; then
+    PULL_MODEL="qwen2.5:14b"
+  elif [ "$TOTAL_RAM_GB" -ge 8 ]; then
+    PULL_MODEL="qwen2.5:7b"
+  else
+    PULL_MODEL="gemma3:4b"
+  fi
+  echo "System has ${TOTAL_RAM_GB}GB RAM — pulling $PULL_MODEL..."
   echo "(This may take a few minutes on first run)"
-  ollama pull gemma3:4b
-  echo "OK Model downloaded"
+  ollama pull "$PULL_MODEL"
+  echo "OK Model downloaded: $PULL_MODEL"
 else
   echo "OK $MODEL_COUNT model(s) available"
 fi

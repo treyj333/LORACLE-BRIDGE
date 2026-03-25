@@ -1,3 +1,0 @@
-import { KVStoreKey } from "../types/kv_store.js";
-
-export const SETTINGS_KEYS: KVStoreKey[] = ['chat.suggestionsEnabled', 'chat.lastModel', 'ui.hasVisitedEasySetup', 'ui.theme', 'system.earlyAccess', 'ai.assistantCustomName', 'meshtastic.enabled', 'meshtastic.connectionType', 'meshtastic.serialPort', 'meshtastic.tcpHost', 'meshtastic.tcpPort', 'meshtastic.defaultModel', 'meshtastic.ragEnabled', 'meshtastic.maxResponseLength', 'meshtastic.compressionEnabled', 'meshtastic.interChunkDelay'];

@@ -1,93 +1,49 @@
 # Project Context
 
-This file tracks the history of changes, decisions, and current state of the project.
+This file tracks the history of changes, decisions, and current state of LORACLE.
 
 ---
 
-## [2026-03-24 16:50] — LORACLE Integration
+## [2026-03-25] — Independence Cleanup
 
 - What changed:
-  - Added full Meshtastic mesh network integration to Project N.O.M.A.D.
-  - **Backend (AdonisJS):**
-    - Database migrations for `mesh_nodes` and `mesh_messages` tables
-    - Lucid models: `MeshNode`, `MeshMessage`
-    - `MeshtasticService` — core business logic (incoming message processing, node management, config via KV store, outgoing message polling)
-    - `MeshLLMJob` — BullMQ job for async LLM processing with RAG support and timeout handling
-    - `MeshtasticController` — full REST API (10 endpoints under `/api/meshtastic`)
-    - Vine validators for incoming messages, node updates, and config changes
-    - Routes added to `routes.ts`, settings controller method added
-    - Constants updated: `service_names.ts`, `broadcast.ts`, `kv_store.ts`, `meshtastic.ts` (new)
-    - Types added: `types/meshtastic.ts`
-  - **Python Sidecar (`meshtastic-bridge/`):**
-    - `bridge.py` — main entry point, connects to Meshtastic radio (serial/TCP), message loop
-    - `protocol.py` — 8-byte header chunking protocol for LoRa's 228-byte limit, zlib compression
-    - `nomad_client.py` — HTTP client for N.O.M.A.D. API with offline queue
-    - `config.py` — configuration from env vars + API polling
-    - `health.py` — Flask health check server
-    - `Dockerfile` — Python 3.11 slim with meshtastic, requests, flask
-    - `tests/test_protocol.py` — 14 unit tests (all passing)
-  - **Frontend (React):**
-    - Settings page at `/settings/meshtastic` with connection config, LLM settings, node management, activity feed
-    - API methods added to `api.ts` for all meshtastic endpoints
-    - Navigation link added to `SettingsLayout.tsx`
-  - **README.md** updated with Meshtastic Bridge documentation
+  - Removed all references to the original project that LORACLE was forked from
+  - Deleted unused files and directories that were not part of the standalone bridge
+  - Updated LICENSE, README, CONTRIBUTING.md to reflect LORACLE as an independent project
+  - Cleaned up comments and docstrings across all source files
 
 - Why:
-  - Extends N.O.M.A.D.'s offline AI capabilities beyond WiFi range using LoRa mesh networking
-  - In disaster/survival scenarios, people miles away can query the LLM via cheap Meshtastic radios
-
-- Impact on project goals:
-  - Adds a major new capability (mesh radio AI access) while maintaining the offline-first architecture
-  - Follows existing patterns (Docker sidecar, BullMQ jobs, KV store config, Transmit broadcasts)
-
-- Files modified:
-  - `admin/constants/service_names.ts` — added MESHTASTIC
-  - `admin/constants/broadcast.ts` — added mesh broadcast channels
-  - `admin/types/kv_store.ts` — added meshtastic config keys
-  - `admin/constants/kv_store.ts` — added meshtastic settings keys
-  - `admin/start/routes.ts` — added meshtastic routes + settings route
-  - `admin/app/controllers/settings_controller.ts` — added meshtastic() method
-  - `admin/inertia/layouts/SettingsLayout.tsx` — added Meshtastic nav link
-  - `admin/inertia/lib/api.ts` — added meshtastic API methods
-  - `README.md` — added Meshtastic Bridge section
-
-- Files created:
-  - `admin/database/migrations/1772000000001_create_mesh_nodes_table.ts`
-  - `admin/database/migrations/1772000000002_create_mesh_messages_table.ts`
-  - `admin/app/models/mesh_node.ts`
-  - `admin/app/models/mesh_message.ts`
-  - `admin/app/services/meshtastic_service.ts`
-  - `admin/app/controllers/meshtastic_controller.ts`
-  - `admin/app/validators/meshtastic.ts`
-  - `admin/app/jobs/mesh_llm_job.ts`
-  - `admin/types/meshtastic.ts`
-  - `admin/constants/meshtastic.ts`
-  - `admin/inertia/pages/settings/meshtastic.tsx`
-  - `meshtastic-bridge/` (entire directory: bridge.py, protocol.py, nomad_client.py, config.py, health.py, Dockerfile, requirements.txt, tests/)
-  - `CONTEXT.md`
+  - LORACLE's standalone bridge has zero code dependencies on the original project
+  - Making a clean break ensures LORACLE is a fully independent open-source project
 
 ---
 
-## [2026-03-24 17:30] — One-Command Launch & Queue Worker Bug Fix
+## [2026-03-24] — LORACLE Rebrand
 
 - What changed:
-  - **Bug Fix:** Registered `MeshLLMJob` in the queue worker command (`admin/commands/queue/work.ts`). Without this, mesh LLM requests would queue up in Redis but never get processed. Added handler, queue mapping, and concurrency setting (1 — one at a time to avoid overwhelming the LLM).
-  - **Docker Compose:** Added `meshtastic-bridge` service to `install/management_compose.yaml` with a `meshtastic` profile so it only starts when explicitly requested (`--profile meshtastic`). Device passthrough for USB radio is commented out for users to enable when ready.
-  - **Dev Launcher (`dev.sh`):** Single script to start everything for development — spins up MySQL and Redis in Docker if not running, installs npm deps, runs migrations, starts the queue worker, optionally starts the Python bridge (`--with-mesh`), then runs the AdonisJS dev server in foreground. Ctrl+C cleans up all processes.
-  - **Production Launcher (`start.sh`):** Wraps `docker compose` with the correct compose file. Supports `--with-mesh`, `--stop`, and `--logs` flags. Warns if `replaceme` values haven't been configured.
+  - Rebranded the project to LORACLE (LoRa + Oracle)
+  - Updated all user-facing strings, banners, and documentation
 
-- Why:
-  - Running N.O.M.A.D. + Meshtastic required starting multiple processes manually (MySQL, Redis, queue worker, dev server, Python bridge). A single `./dev.sh` or `./start.sh` command makes it much easier.
-  - The MeshLLMJob registration was a critical bug — without it, no mesh messages would ever get LLM responses.
+---
 
-- Impact on project goals:
-  - Dramatically lowers the barrier to testing and running the full Meshtastic integration
-  - Fixes a show-stopping bug that would prevent mesh LLM processing entirely
+## [2026-03-24] — Standalone Meshtastic LLM Bridge
 
-- Files modified:
-  - `admin/commands/queue/work.ts` — imported and registered MeshLLMJob (handler, queue, concurrency)
-  - `install/management_compose.yaml` — added meshtastic-bridge service with Docker profile
+- What changed:
+  - Built standalone bridge (`standalone_bridge.py`) that talks directly to Ollama
+  - One-command launcher (`mesh-llm.sh`) with auto-detection and dependency installation
+  - RAG knowledge base with PDF/ZIM/text ingestion and semantic search
+  - 5-tab web dashboard with live status, message log, controls, debug, and guide
+  - Message chunking protocol for LoRa's 233-byte limit
+  - BLE, TCP, and USB serial connection support
+  - Auto-model selection based on system RAM
+  - Per-node conversation history with auto-cleanup
 
-- Files created:
-  - `dev.sh` — one-command dev launcher
-  - `start.sh` — one-command production launcher
+- Files:
+  - `mesh-llm.sh` — one-command launcher
+  - `meshtastic-bridge/standalone_bridge.py` — main bridge
+  - `meshtastic-bridge/ollama_client.py` — Ollama API client
+  - `meshtastic-bridge/protocol.py` — LoRa chunking protocol
+  - `meshtastic-bridge/dashboard.py` — Flask web dashboard
+  - `meshtastic-bridge/manage_docs.py` — document management CLI
+  - `meshtastic-bridge/rag/` — RAG engine, chunker, extractors
+  - `meshtastic-bridge/tests/` — unit tests

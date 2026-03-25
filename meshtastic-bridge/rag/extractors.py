@@ -187,7 +187,7 @@ def _strip_html(html):
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # Remove non-content elements (matching N.O.M.A.D. patterns)
+        # Remove non-content elements
         for tag in soup.find_all(
             [
                 "script", "style", "nav", "header", "footer",
@@ -216,11 +216,17 @@ def _strip_html(html):
 
 
 def _clean_text(text):
-    """Clean extracted text — remove control chars, excess whitespace."""
+    """Clean extracted text — remove control chars, excess whitespace, dot leaders."""
     if not text:
         return ""
     # Remove null bytes and control characters (keep newlines and tabs)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Collapse dot/dash leaders from TOC pages (e.g. "Chapter 1 ........... 3")
+    # These tokenize as one token per character and blow up embedding context windows
+    text = re.sub(r"\.{4,}", "...", text)
+    text = re.sub(r"-{4,}", "---", text)
+    text = re.sub(r"_{4,}", "___", text)
+    text = re.sub(r"\*{4,}", "***", text)
     # Collapse multiple blank lines to two newlines
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Collapse multiple spaces (but not newlines)

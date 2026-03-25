@@ -1,13 +1,9 @@
 <div align="center">
-<img src="https://raw.githubusercontent.com/Crosstalk-Solutions/project-nomad/refs/heads/main/admin/public/project_nomad_logo.png" width="200" height="200"/>
 
 # LORACLE
 ### Offline AI Over Mesh Radio
 
 **Chat with a local LLM over LoRa — no internet required**
-
-[![Website](https://img.shields.io/badge/Website-projectnomad.us-blue)](https://www.projectnomad.us)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2)](https://discord.com/invite/crosstalksolutions)
 
 </div>
 
@@ -443,4 +439,4 @@ loracle/
 
 ## License
 
-Project N.O.M.A.D. is licensed under the [Apache License 2.0](LICENSE).
+LORACLE is licensed under the [Apache License 2.0](LICENSE).

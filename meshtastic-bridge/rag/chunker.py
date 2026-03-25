@@ -48,6 +48,15 @@ def chunk_text(text, target_size=5100, overlap=450):
     current = ""
 
     for segment in segments:
+        # Hard-split any segment that still exceeds target_size
+        if len(segment) > target_size:
+            # Flush what we have so far
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_hard_split(segment, target_size))
+            continue
+
         candidate = (current + "\n\n" + segment).strip() if current else segment
 
         if len(candidate) <= target_size:
@@ -62,14 +71,40 @@ def chunk_text(text, target_size=5100, overlap=450):
                 else:
                     current = segment
             else:
-                # Single segment exceeds target — include it anyway
-                chunks.append(segment)
+                # Single segment exceeds target — hard-split at word boundaries
+                chunks.extend(_hard_split(segment, target_size))
                 current = ""
 
     if current:
         chunks.append(current)
 
     return chunks
+
+
+def _hard_split(text, max_size):
+    """Split text into pieces of at most max_size chars at word boundaries.
+
+    Falls back to character slicing if a single word exceeds max_size
+    (e.g. binary junk or base64-encoded data from bad PDF extraction).
+    """
+    pieces = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_size:
+            pieces.append(remaining)
+            break
+
+        # Find the last space within the budget
+        split_at = remaining.rfind(" ", 0, max_size)
+        if split_at <= 0:
+            # No space found — force split at max_size (binary/junk data)
+            split_at = max_size
+
+        pieces.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+
+    return [p for p in pieces if p]
 
 
 def _split_sentences(text):

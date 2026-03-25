@@ -21,7 +21,7 @@ from .extractors import extract_file
 
 logger = logging.getLogger(__name__)
 
-# Constants aligned with N.O.M.A.D.'s RAG implementation
+# RAG constants
 EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIM = 768
 TARGET_CHARS_PER_CHUNK = 5100  # ~1700 tokens
@@ -31,6 +31,7 @@ SEARCH_QUERY_PREFIX = "search_query: "
 SCORE_THRESHOLD = 0.3
 TOP_K = 5
 EMBEDDING_BATCH_SIZE = 8
+MAX_EMBED_CHARS = 20000  # Safety cap per chunk (~6600 tokens, under nomic-embed-text's 8K limit)
 MAX_CONTEXT_CHARS = 2000  # Limit total injected context for LoRa brevity
 
 RAG_SYSTEM_ADDENDUM = (
@@ -406,24 +407,69 @@ class RAGEngine:
     def _embed_batched(self, texts):
         """Embed texts in batches to avoid overwhelming Ollama.
 
+        Validates chunk sizes and recovers from per-batch failures so one
+        bad chunk doesn't kill an entire document ingestion.
+
         Args:
             texts: List of strings to embed.
 
         Returns:
-            List of embedding vectors.
+            List of embedding vectors (zero-vector for any chunk that failed).
         """
-        all_embeddings = []
-        total = len(texts)
+        # Validate and sanitize chunks before embedding
+        sanitized = []
+        for idx, t in enumerate(texts):
+            if not t or not t.strip():
+                logger.warning(f"Chunk {idx}: empty/whitespace-only, will use zero vector")
+                sanitized.append(None)
+            elif len(t) > MAX_EMBED_CHARS:
+                logger.warning(
+                    f"Chunk {idx}: {len(t)} chars exceeds {MAX_EMBED_CHARS} limit, truncating"
+                )
+                sanitized.append(t[:MAX_EMBED_CHARS])
+            else:
+                sanitized.append(t)
 
-        for i in range(0, total, EMBEDDING_BATCH_SIZE):
-            batch = texts[i : i + EMBEDDING_BATCH_SIZE]
+        all_embeddings = [None] * len(sanitized)
+        zero_vec = [0.0] * EMBEDDING_DIM
+
+        # Assign zero vectors for skipped chunks
+        for idx, t in enumerate(sanitized):
+            if t is None:
+                all_embeddings[idx] = zero_vec
+
+        # Build list of (original_index, text) for chunks that need embedding
+        to_embed = [(idx, t) for idx, t in enumerate(sanitized) if t is not None]
+        total = len(to_embed)
+
+        for batch_start in range(0, total, EMBEDDING_BATCH_SIZE):
+            batch_items = to_embed[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
+            batch_texts = [t for _, t in batch_items]
+            batch_indices = [idx for idx, _ in batch_items]
+            batch_num = batch_start // EMBEDDING_BATCH_SIZE + 1
+            total_batches = (total + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
+
             logger.info(
-                f"Embedding batch {i // EMBEDDING_BATCH_SIZE + 1}/"
-                f"{(total + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE} "
-                f"({len(batch)} chunks)"
+                f"Embedding batch {batch_num}/{total_batches} ({len(batch_texts)} chunks)"
             )
-            embeddings = self._embed(batch)
-            all_embeddings.extend(embeddings)
+
+            try:
+                embeddings = self._embed(batch_texts)
+                for idx, emb in zip(batch_indices, embeddings):
+                    all_embeddings[idx] = emb
+            except Exception as e:
+                logger.warning(f"Batch {batch_num} failed: {e}. Trying chunks individually...")
+                # Fall back to one-at-a-time so one bad chunk doesn't kill the batch
+                for idx, text in zip(batch_indices, batch_texts):
+                    try:
+                        emb = self._embed([text])
+                        all_embeddings[idx] = emb[0]
+                    except Exception as inner_e:
+                        logger.error(
+                            f"Chunk {idx} failed ({len(text)} chars): {inner_e}. "
+                            "Using zero vector."
+                        )
+                        all_embeddings[idx] = zero_vec
 
         return all_embeddings
 

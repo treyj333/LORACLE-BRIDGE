@@ -1,12 +1,14 @@
-"""Direct Ollama API client for standalone Meshtastic LLM bridge.
+"""Ollama API client for LORACLE.
 
-Replaces nomad_client.py when running without the full N.O.M.A.D. stack.
 Calls Ollama's REST API directly and maintains per-node conversation history.
 """
 
 import logging
+import os
+import platform
+import subprocess
 from collections import defaultdict, deque
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -20,6 +22,179 @@ DEFAULT_SYSTEM_PROMPT = (
     "Be direct and give practical, actionable advice. "
     "Only state facts you are confident about. If unsure, say so."
 )
+
+# ─── Model profiles ──────────────────────────────────────────────────────────
+# Ordered by preference (best first). Auto-select picks the first one
+# that fits in available RAM and is installed.
+
+MODEL_PROFILES = [
+    {
+        "name": "phi4:14b",
+        "min_ram_gb": 16,
+        "tier": "large",
+        "description": "Microsoft Phi-4 — strong reasoning, connects dots across RAG chunks",
+        "system_prompt": (
+            "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Never use bullet points, lists, asterisks, markdown, or code blocks. "
+            "When context documents are provided, reason carefully across them to synthesize an answer. "
+            "Cite which context you drew from when relevant. "
+            "Be direct and give practical, actionable advice. Only state facts you are confident about."
+        ),
+    },
+    {
+        "name": "qwen2.5:14b",
+        "min_ram_gb": 16,
+        "tier": "large",
+        "description": "Qwen 2.5 14B — excellent instruction-following, table/structured data reading",
+        "system_prompt": (
+            "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Never use bullet points, lists, asterisks, markdown, or code blocks. "
+            "You excel at reading structured data and tables from context documents. "
+            "When provided with context, extract precise facts and figures. "
+            "Be direct and give practical, actionable advice. Only state facts you are confident about."
+        ),
+    },
+    {
+        "name": "qwen2.5:7b",
+        "min_ram_gb": 8,
+        "tier": "medium",
+        "description": "Qwen 2.5 7B — strong instruction-following, good balance of speed and quality",
+        "system_prompt": (
+            "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Never use bullet points, lists, asterisks, markdown, or code blocks. "
+            "When context documents are provided, use them to give accurate answers. "
+            "Be direct and give practical, actionable advice. Only state facts you are confident about."
+        ),
+    },
+    {
+        "name": "gemma3:4b",
+        "min_ram_gb": 4,
+        "tier": "small",
+        "description": "Google Gemma 3 4B — lightweight fallback, runs on low-RAM devices",
+        "system_prompt": None,  # Uses DEFAULT_SYSTEM_PROMPT
+    },
+]
+
+
+def get_system_ram_gb() -> int:
+    """Detect total system RAM in GB. Returns 8 if detection fails."""
+    try:
+        if platform.system() == "Darwin":
+            raw = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip()
+            return int(raw) // (1024 ** 3)
+        else:
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            return (pages * page_size) // (1024 ** 3)
+    except Exception:
+        return 8
+
+
+def get_profile_for_model(model_name: str) -> Optional[Dict]:
+    """Find the profile matching a model name.
+
+    Checks exact match first, then base name match (e.g. 'qwen2.5:7b' matches
+    profile 'qwen2.5:7b' but NOT 'qwen2.5:14b').
+    """
+    # Exact match first
+    for profile in MODEL_PROFILES:
+        if model_name == profile["name"]:
+            return profile
+    # Base name match: strip tag variants like ':latest'
+    base = model_name.split(":")[0] if ":" in model_name else model_name
+    for profile in MODEL_PROFILES:
+        profile_base = profile["name"].split(":")[0]
+        profile_tag = profile["name"].split(":")[1] if ":" in profile["name"] else ""
+        model_tag = model_name.split(":")[1] if ":" in model_name else ""
+        if base == profile_base and (model_tag == profile_tag or model_tag == "latest"):
+            return profile
+    return None
+
+
+def auto_select_model(
+    ollama_url: str = "http://localhost:11434",
+    user_model: Optional[str] = None,
+) -> Tuple[str, Optional[str], bool]:
+    """Auto-select the best model based on available RAM and installed models.
+
+    Args:
+        ollama_url: Ollama API base URL.
+        user_model: Explicit model from --model flag (None = auto-select).
+
+    Returns:
+        (model_name, system_prompt_or_None, needs_pull)
+    """
+    ram_gb = get_system_ram_gb()
+    logger.info(f"System RAM: {ram_gb}GB")
+
+    # If user explicitly chose a model, respect it but still try to find a matching prompt
+    if user_model:
+        profile = get_profile_for_model(user_model)
+        prompt = profile["system_prompt"] if profile else None
+        logger.info(f"Using user-specified model: {user_model}")
+        return (user_model, prompt, False)
+
+    # Query installed models
+    installed = []
+    try:
+        session = requests.Session()
+        resp = session.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
+        resp.raise_for_status()
+        installed = [m["name"] for m in resp.json().get("models", [])]
+    except Exception as e:
+        logger.warning(f"Could not query Ollama models: {e}")
+
+    # Find the best profile that fits this RAM (whether installed or not)
+    best_for_ram = None
+    for profile in MODEL_PROFILES:
+        if profile["min_ram_gb"] <= ram_gb:
+            best_for_ram = profile
+            break
+
+    # Walk profiles top-to-bottom: pick best that fits RAM and is installed
+    best_installed = None
+    best_installed_profile = None
+    for profile in MODEL_PROFILES:
+        if profile["min_ram_gb"] > ram_gb:
+            continue
+        name = profile["name"]
+        # Check if installed (exact match or 'name:latest' variant)
+        matched = [m for m in installed if m == name or m == f"{name}:latest"]
+        if matched:
+            best_installed = matched[0]
+            best_installed_profile = profile
+            break
+
+    # If we found an installed model but a better one could fit, recommend pulling it
+    if best_installed and best_for_ram and best_for_ram != best_installed_profile:
+        logger.info(
+            f"Installed: {best_installed} ({best_installed_profile['tier']}), "
+            f"but {best_for_ram['name']} ({best_for_ram['tier']}) would be better "
+            f"for {ram_gb}GB RAM. Pulling upgrade..."
+        )
+        return (best_for_ram["name"], best_for_ram["system_prompt"], True)
+
+    if best_installed:
+        logger.info(
+            f"Auto-selected {best_installed} ({best_installed_profile['tier']}, "
+            f"{ram_gb}GB RAM available)"
+        )
+        return (best_installed, best_installed_profile["system_prompt"], False)
+
+    # Nothing installed that matches — pick the best that fits and flag for pull
+    if best_for_ram:
+        logger.info(
+            f"No suitable model installed. Recommending {best_for_ram['name']} "
+            f"({best_for_ram['tier']}, needs {best_for_ram['min_ram_gb']}GB+ RAM)"
+        )
+        return (best_for_ram["name"], best_for_ram["system_prompt"], True)
+
+    # Absolute fallback
+    fallback = MODEL_PROFILES[-1]
+    return (fallback["name"], fallback["system_prompt"], True)
 
 
 class OllamaClient:
@@ -139,13 +314,22 @@ class OllamaClient:
             return []
 
     def set_model(self, model: str) -> bool:
-        """Switch to a different model. Returns True if model exists."""
+        """Switch to a different model. Returns True if model exists.
+
+        Also updates the system prompt if the model has a matching profile.
+        """
         available = self.list_models()
         # Match with or without tag suffix
         matches = [m for m in available if m == model or m.startswith(f"{model}:")]
         if matches:
             self.model = matches[0]
-            logger.info(f"Model switched to: {self.model}")
+            # Update system prompt if there's a profile for this model
+            profile = get_profile_for_model(self.model)
+            if profile and profile["system_prompt"]:
+                self.system_prompt = profile["system_prompt"]
+                logger.info(f"Model switched to: {self.model} (with tuned prompt)")
+            else:
+                logger.info(f"Model switched to: {self.model}")
             return True
         logger.warning(f"Model '{model}' not found. Available: {available}")
         return False
