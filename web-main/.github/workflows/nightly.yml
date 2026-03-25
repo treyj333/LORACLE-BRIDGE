@@ -1,0 +1,120 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # 05:00 UTC daily
+  workflow_dispatch: {} # allow manual runs too
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  nightly-build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: "**/pnpm-lock.yaml"
+
+      - name: Install dependencies (root)
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm run test
+
+      - name: Build web package
+        working-directory: packages/web
+        run: pnpm run build
+
+      - name: Package output
+        working-directory: packages/web
+        run: pnpm run package
+
+      - name: Upload compressed build (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build-nightly
+          path: packages/web/dist/build.tar
+          if-no-files-found: error
+
+      - name: Compute tags and labels
+        id: meta
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE="$(date -u +%Y%m%d)"
+          ISO_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SHORTSHA="$(git rev-parse --short=12 HEAD)"
+
+          # Try to use latest release tag if it exists; fallback to package version; else date
+          LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -z "$LATEST_TAG" ] && [ -f packages/web/package.json ]; then
+            LATEST_TAG="v$(jq -r .version packages/web/package.json)"
+          fi
+
+          if [ -n "${LATEST_TAG:-}" ] && [ "$LATEST_TAG" != "vnull" ]; then
+            IMMUTABLE="nightly-${LATEST_TAG}-${SHORTSHA}"
+          else
+            IMMUTABLE="nightly-${DATE}-${SHORTSHA}"
+          fi
+
+          # Outputs
+          echo "moving_tag=nightly"            >> "$GITHUB_OUTPUT"
+          echo "immutable_tag=${IMMUTABLE}"    >> "$GITHUB_OUTPUT"
+          echo "all_tags=nightly ${IMMUTABLE}" >> "$GITHUB_OUTPUT"
+          echo "created=${ISO_CREATED}"            >> "$GITHUB_OUTPUT"
+          echo "Resolved tags: nightly and ${IMMUTABLE}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build Container Image (multi-arch)
+        id: build-container
+        uses: redhat-actions/buildah-build@v2
+        with:
+          containerfiles: |
+            ./packages/web/infra/Containerfile
+          image: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            ${{ steps.meta.outputs.moving_tag }}
+            ${{ steps.meta.outputs.immutable_tag }}
+          oci: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+
+      - name: Push To GHCR
+        id: push-to-registry
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-container.outputs.image }}
+          # Push the same tags used at build time:
+          tags: ${{ steps.meta.outputs.all_tags }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print image URLs
+        run: |
+          echo "Moving tag:   ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.moving_tag }}"
+          echo "Immutable tag: ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.immutable_tag }}"

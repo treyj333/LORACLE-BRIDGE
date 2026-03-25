@@ -1,0 +1,20 @@
+node_modules
+dist
+stats.html
+.vercel
+.vite
+dev-dist
+__screenshots__*
+*.diff
+npm/
+.idea
+**/LICENSE
+.DS_Store
+
+packages/protobufs/packages/ts/dist
+.pnpm-store/
+
+# Local dev certs
+*.pem
+*.crt
+*.key

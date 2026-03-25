@@ -1,6 +1,8 @@
 """HTTP client for communicating with the N.O.M.A.D. API."""
 
 import logging
+from typing import List
+
 import requests
 from collections import deque
 
@@ -41,7 +43,7 @@ class NomadClient:
             self._offline_queue.append(payload)
             return None
 
-    def get_outgoing(self, node_id: str) -> list[dict]:
+    def get_outgoing(self, node_id: str) -> List[dict]:
         """Poll for outgoing messages ready to send to a mesh node."""
         try:
             resp = self.session.get(

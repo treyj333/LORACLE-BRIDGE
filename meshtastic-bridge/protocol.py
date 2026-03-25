@@ -16,6 +16,7 @@ FLAGS:
 import struct
 import zlib
 import threading
+from typing import Dict, List
 
 MAX_LORA_PAYLOAD = 228
 HEADER_SIZE = 8
@@ -56,7 +57,7 @@ def unpack_header(data: bytes) -> dict:
     }
 
 
-def chunk_message(text: str, compression_enabled: bool = True, is_error: bool = False) -> list[bytes]:
+def chunk_message(text: str, compression_enabled: bool = True, is_error: bool = False) -> List[bytes]:
     """Split a text message into LoRa-sized chunks with protocol headers.
 
     Returns a list of byte strings, each ready to send over Meshtastic.
@@ -102,7 +103,7 @@ def chunk_message(text: str, compression_enabled: bool = True, is_error: bool = 
     return chunks
 
 
-def reassemble_message(chunks: list[bytes]) -> str:
+def reassemble_message(chunks: List[bytes]) -> str:
     """Reassemble a message from received chunks.
 
     Chunks should be sorted by sequence number.

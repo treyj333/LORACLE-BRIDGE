@@ -8,6 +8,7 @@ import { RunBenchmarkJob } from '#jobs/run_benchmark_job'
 import { EmbedFileJob } from '#jobs/embed_file_job'
 import { CheckUpdateJob } from '#jobs/check_update_job'
 import { CheckServiceUpdatesJob } from '#jobs/check_service_updates_job'
+import { MeshLLMJob } from '#jobs/mesh_llm_job'
 
 export default class QueueWork extends BaseCommand {
   static commandName = 'queue:work'
@@ -115,6 +116,7 @@ export default class QueueWork extends BaseCommand {
     handlers.set(EmbedFileJob.key, new EmbedFileJob())
     handlers.set(CheckUpdateJob.key, new CheckUpdateJob())
     handlers.set(CheckServiceUpdatesJob.key, new CheckServiceUpdatesJob())
+    handlers.set(MeshLLMJob.key, new MeshLLMJob())
 
     queues.set(RunDownloadJob.key, RunDownloadJob.queue)
     queues.set(DownloadModelJob.key, DownloadModelJob.queue)
@@ -122,6 +124,7 @@ export default class QueueWork extends BaseCommand {
     queues.set(EmbedFileJob.key, EmbedFileJob.queue)
     queues.set(CheckUpdateJob.key, CheckUpdateJob.queue)
     queues.set(CheckServiceUpdatesJob.key, CheckServiceUpdatesJob.queue)
+    queues.set(MeshLLMJob.key, MeshLLMJob.queue)
 
     return [handlers, queues]
   }
@@ -137,6 +140,7 @@ export default class QueueWork extends BaseCommand {
       [RunBenchmarkJob.queue]: 1, // Run benchmarks one at a time for accurate results
       [EmbedFileJob.queue]: 2, // Lower concurrency for embedding jobs, can be resource intensive
       [CheckUpdateJob.queue]: 1, // No need to run more than one update check at a time
+      [MeshLLMJob.queue]: 1, // Process one mesh request at a time to avoid overwhelming the LLM
       default: 3,
     }
 

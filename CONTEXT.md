@@ -65,3 +65,29 @@ This file tracks the history of changes, decisions, and current state of the pro
   - `admin/inertia/pages/settings/meshtastic.tsx`
   - `meshtastic-bridge/` (entire directory: bridge.py, protocol.py, nomad_client.py, config.py, health.py, Dockerfile, requirements.txt, tests/)
   - `CONTEXT.md`
+
+---
+
+## [2026-03-24 17:30] — One-Command Launch & Queue Worker Bug Fix
+
+- What changed:
+  - **Bug Fix:** Registered `MeshLLMJob` in the queue worker command (`admin/commands/queue/work.ts`). Without this, mesh LLM requests would queue up in Redis but never get processed. Added handler, queue mapping, and concurrency setting (1 — one at a time to avoid overwhelming the LLM).
+  - **Docker Compose:** Added `meshtastic-bridge` service to `install/management_compose.yaml` with a `meshtastic` profile so it only starts when explicitly requested (`--profile meshtastic`). Device passthrough for USB radio is commented out for users to enable when ready.
+  - **Dev Launcher (`dev.sh`):** Single script to start everything for development — spins up MySQL and Redis in Docker if not running, installs npm deps, runs migrations, starts the queue worker, optionally starts the Python bridge (`--with-mesh`), then runs the AdonisJS dev server in foreground. Ctrl+C cleans up all processes.
+  - **Production Launcher (`start.sh`):** Wraps `docker compose` with the correct compose file. Supports `--with-mesh`, `--stop`, and `--logs` flags. Warns if `replaceme` values haven't been configured.
+
+- Why:
+  - Running N.O.M.A.D. + Meshtastic required starting multiple processes manually (MySQL, Redis, queue worker, dev server, Python bridge). A single `./dev.sh` or `./start.sh` command makes it much easier.
+  - The MeshLLMJob registration was a critical bug — without it, no mesh messages would ever get LLM responses.
+
+- Impact on project goals:
+  - Dramatically lowers the barrier to testing and running the full Meshtastic integration
+  - Fixes a show-stopping bug that would prevent mesh LLM processing entirely
+
+- Files modified:
+  - `admin/commands/queue/work.ts` — imported and registered MeshLLMJob (handler, queue, concurrency)
+  - `install/management_compose.yaml` — added meshtastic-bridge service with Docker profile
+
+- Files created:
+  - `dev.sh` — one-command dev launcher
+  - `start.sh` — one-command production launcher

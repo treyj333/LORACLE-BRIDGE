@@ -41,3 +41,15 @@ admin/public/assets
 
 # Admin specific development files
 admin/storage
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+*.egg-info/
+
+# RAG knowledge base (user-provided documents — too large for git)
+CONTEXT FILES/*.pdf
+CONTEXT FILES/*.zim
+~/.mesh-llm/

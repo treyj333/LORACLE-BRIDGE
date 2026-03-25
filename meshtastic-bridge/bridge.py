@@ -10,6 +10,7 @@ import hashlib
 import logging
 import threading
 from collections import defaultdict
+from typing import Dict, Set, Tuple
 
 import meshtastic
 import meshtastic.serial_interface
@@ -28,11 +29,11 @@ logging.basicConfig(
 logger = logging.getLogger("bridge")
 
 # Deduplication cache: (node_id, content_hash) -> timestamp
-_dedup_cache: dict[tuple[str, str], float] = {}
+_dedup_cache = {}  # type: Dict[Tuple[str, str], float]
 DEDUP_TTL = 300  # 5 minutes
 
 # Track nodes with pending responses
-_active_nodes: set[str] = set()
+_active_nodes = set()  # type: Set[str]
 _active_nodes_lock = threading.Lock()
 
 
