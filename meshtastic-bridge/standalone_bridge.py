@@ -317,18 +317,11 @@ class StandaloneBridge:
             if not text or not text.strip():
                 return
 
-            # Determine if this is a DM (directed to our node) or public channel
-            my_id = None
-            if self.interface and hasattr(self.interface, "myInfo") and self.interface.myInfo:
-                my_id = getattr(self.interface.myInfo, "my_node_num", None)
-            # toId of '^all' or broadcast means public; matching our ID means DM
-            is_dm = (to_id != "^all" and to_id != BROADCAST_ADDR and my_id is not None
-                     and str(to_id) == str(my_id))
-
-            # On public channels, only respond if addressed to the AI
-            if not is_dm and not _is_addressed_to_ai(text):
-                logger.debug(f"Ignoring unaddressed public message from {sender}: {text[:60]}")
-                return
+            # Always respond via DM back to the sender.
+            # The Meshtastic toId format (e.g. '!02e5f1e0') vs node num (int)
+            # makes reliable DM detection fragile, so we treat every incoming
+            # text message as directed at us and always reply privately.
+            is_dm = True
 
             # Deduplication
             content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
