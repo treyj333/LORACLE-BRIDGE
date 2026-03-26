@@ -254,6 +254,7 @@ Anyone on the mesh network can send these special commands (prefix with `!`):
 | Command | What It Does |
 |---------|-------------|
 | `!help` | Shows the list of available commands |
+| `!more` | Gets the next page of a long response (see "How Messages Are Sent" below) |
 | `!status` | Shows bridge info: which model, uptime, node count, message count, RAG stats |
 | `!model <name>` | Switches the AI model (e.g., `!model mistral`) |
 | `!models` | Lists all installed Ollama models |
@@ -283,7 +284,6 @@ Response:
   --max-length <int>      Max response characters (default: 200)
   --system-prompt <text>  Custom system prompt for the AI
   --no-compression        Disable zlib compression on chunks
-  --chunk-delay <secs>    Delay between message parts (default: 3.0 seconds)
 
 Knowledge Base (on by default):
   --no-rag                Disable RAG knowledge base
@@ -327,14 +327,27 @@ LoRa has a **233-byte message limit**. The bridge sends responses as plain text 
 
 **Short responses** (under 233 bytes) are sent as a single message.
 
-**Long responses** are automatically split into numbered parts:
+**Long responses** are automatically truncated at the nearest sentence boundary and the user is prompted to send `!more` to get the rest:
+
 ```
-[1/3] First part of the response...
-[2/3] Continuation of the response...
-[3/3] Final part of the response.
+You:   "How do I build a debris shelter?"
+AI:    "Find a ridgepole and prop it between a tree and the ground.
+        Lean branches along both sides to form an A-frame, then pile
+        leaves and debris thickly over the frame... (!more)"
+You:   "!more"
+AI:    "The debris layer should be 2-3 feet thick for insulation.
+        Stuff the interior with dry leaves for bedding. Build it
+        just big enough to fit your body to retain heat."
 ```
 
-Each part is sent **3 seconds apart** (configurable with `--chunk-delay`) to give the LoRa network time to transmit without collisions.
+This pager approach is used instead of multi-message splitting because the Meshtastic app groups messages by sender and only displays the most recent one — sending `[1/3]`, `[2/3]`, `[3/3]` as separate messages would result in only `[3/3]` being visible.
+
+### LoRa Technical Notes
+
+- **Half-duplex radio**: LoRa radios can only transmit OR receive at any given time, never both. The bridge sends with `wantAck=False` so the radio transmits once (~1-2 seconds) and immediately returns to receive mode, minimizing the window where incoming messages could be missed.
+- **Conversation history**: The bridge maintains per-node conversation history (up to 10 messages) so follow-up questions have context. History is automatically cleared after 1 hour of inactivity.
+- **Deduplication**: Mesh relay can cause duplicate messages. The bridge uses a content hash + 5-minute TTL cache to filter these out.
+- **Rate limiting**: A 5-second cooldown per node prevents message flooding during inference.
 
 ---
 
@@ -431,9 +444,13 @@ loracle/
 - The default `gemma3:4b` is a good balance of quality and speed
 - For faster but lower quality: `./mesh-llm.sh --model llama3.2:1b`
 
-### Messages arriving out of order
-- Increase chunk delay: `./mesh-llm.sh --chunk-delay 5.0`
-- This gives the LoRa network more time between transmissions
+### Response was cut off
+- Send `!more` to get the next page of a long response
+- The bridge automatically truncates at sentence boundaries to fit the 233-byte LoRa limit
+
+### Follow-up messages not received
+- LoRa is half-duplex — the radio can't receive while transmitting. Wait a few seconds after getting a response before sending your next message
+- Check the dashboard Debug tab for "Rate-limited" or "Duplicate" log entries
 
 ---
 
