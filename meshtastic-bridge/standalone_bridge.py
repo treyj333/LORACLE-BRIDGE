@@ -25,6 +25,7 @@ from typing import Dict, Optional, Set, Tuple
 import meshtastic
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
+from meshtastic import BROADCAST_ADDR
 from pubsub import pub
 
 try:
@@ -60,6 +61,17 @@ _dedup_cache = {}  # type: Dict[Tuple[str, str], float]
 DEDUP_TTL = 300  # 5 minutes
 CONTEXT_TTL = 3600  # 1 hour — auto-clear conversation context after inactivity
 RATE_LIMIT_SECS = 5  # Min seconds between messages from same node
+
+# Trigger words — public channel messages must contain one of these to get a response
+_AI_TRIGGERS = {"agent", "ai", "oracle", "loracle", "bridge", "help", "hey"}
+
+
+def _is_addressed_to_ai(text: str) -> bool:
+    """Check if a public channel message is directed at the AI."""
+    if text.startswith("!"):
+        return True  # Commands are always for us
+    prefix = text[:50].lower()
+    return any(trigger in prefix for trigger in _AI_TRIGGERS)
 
 
 def auto_detect_serial_port() -> Optional[str]:
@@ -298,9 +310,24 @@ class StandaloneBridge:
         """Handle incoming text message from the mesh."""
         try:
             sender = packet.get("fromId", "unknown")
+            to_id = packet.get("toId", "")
             text = packet.get("decoded", {}).get("text", "")
+            channel = packet.get("channel", 0)
 
             if not text or not text.strip():
+                return
+
+            # Determine if this is a DM (directed to our node) or public channel
+            my_id = None
+            if self.interface and hasattr(self.interface, "myInfo") and self.interface.myInfo:
+                my_id = getattr(self.interface.myInfo, "my_node_num", None)
+            # toId of '^all' or broadcast means public; matching our ID means DM
+            is_dm = (to_id != "^all" and to_id != BROADCAST_ADDR and my_id is not None
+                     and str(to_id) == str(my_id))
+
+            # On public channels, only respond if addressed to the AI
+            if not is_dm and not _is_addressed_to_ai(text):
+                logger.debug(f"Ignoring unaddressed public message from {sender}: {text[:60]}")
                 return
 
             # Deduplication
@@ -328,9 +355,10 @@ class StandaloneBridge:
             self._known_nodes.add(sender)
             self._node_count = len(self._known_nodes)
 
-            logger.info(f"Received from {sender}: {text[:100]}")
+            ch_label = "DM" if is_dm else f"ch{channel}"
+            logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
             record_message("in", sender, text.strip())
-            self._request_queue.put((sender, text.strip()))
+            self._request_queue.put((sender, text.strip(), channel, is_dm))
 
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
@@ -339,7 +367,7 @@ class StandaloneBridge:
         """Process queued messages through Ollama and send responses."""
         while self._running:
             try:
-                node_id, text = self._request_queue.get(timeout=1)
+                node_id, text, channel, is_dm = self._request_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
@@ -356,7 +384,7 @@ class StandaloneBridge:
                     logger.info(f"Processing query from {node_id}...")
 
                     # Send immediate acknowledgment so user knows not to resend
-                    self._send_raw(node_id, "Thinking...")
+                    self._send_raw(node_id, "Thinking...", channel=channel, is_dm=is_dm)
 
                     # RAG: search for relevant context
                     context_messages = None
@@ -388,11 +416,11 @@ class StandaloneBridge:
                     node_count=self._node_count,
                     known_nodes=list(self._known_nodes),
                 )
-                self._send_response(node_id, response)
+                self._send_response(node_id, response, channel=channel, is_dm=is_dm)
 
             except Exception as e:
                 logger.error(f"Error processing message from {node_id}: {e}")
-                self._send_response(node_id, f"Error: {e}")
+                self._send_response(node_id, f"Error: {e}", channel=channel, is_dm=is_dm)
 
     def _handle_command(self, node_id: str, text: str) -> Optional[str]:
         """Handle ! commands. Returns response string or None for regular messages."""
@@ -532,28 +560,36 @@ class StandaloneBridge:
             self.interface = None
         self._connect_radio()
 
-    def _send_raw(self, node_id: str, text: str):
+    def _send_raw(self, node_id: str, text: str, channel: int = 0, is_dm: bool = True):
         """Send a short status message (no pager, no overflow).
 
         Used for 'Thinking...' and other ephemeral status indicators.
+        Replies on the same channel the original message came from.
         Includes a post-TX settle delay so the radio returns to RX mode.
         """
         if not self.interface or not self._is_interface_alive():
             return
         try:
-            self.interface.sendText(text, destinationId=node_id, wantAck=False)
-            logger.info(f"Status to {node_id}: {text}")
+            dest = node_id if is_dm else BROADCAST_ADDR
+            self.interface.sendText(
+                text, destinationId=dest, channelIndex=channel, wantAck=False,
+            )
+            ch_label = "DM" if is_dm else f"ch{channel}"
+            logger.info(f"Status to {node_id} ({ch_label}): {text}")
             time.sleep(3)  # Post-TX settle — let radio return to RX
         except Exception as e:
             logger.warning(f"Failed to send status to {node_id}: {e}")
 
-    def _send_response(self, node_id: str, content: str):
+    def _send_response(self, node_id: str, content: str, channel: int = 0, is_dm: bool = True):
         """Send a single plain-text response over the mesh.
 
         The Meshtastic app groups messages by sender and only shows the latest,
         so we ALWAYS send exactly one message. If the response is too long, we
         truncate at a sentence boundary and store the overflow for the !more
         command (interactive pager).
+
+        Replies on the same channel the original message came from:
+        DMs get a DM back, public channel messages get a public reply.
         """
         if not self.interface:
             logger.error("No radio interface — cannot send")
@@ -615,14 +651,17 @@ class StandaloneBridge:
                     return
 
             try:
+                dest = node_id if is_dm else BROADCAST_ADDR
                 result = self.interface.sendText(
                     message,
-                    destinationId=node_id,
+                    destinationId=dest,
+                    channelIndex=channel,
                     wantAck=False,
                 )
                 pkt_id = getattr(result, "id", None)
+                ch_label = "DM" if is_dm else f"ch{channel}"
                 logger.info(
-                    f"Sent to {node_id} (pkt_id={pkt_id}, attempt={attempt})"
+                    f"Sent to {node_id} ({ch_label}, pkt_id={pkt_id}, attempt={attempt})"
                 )
                 time.sleep(3)  # Post-TX settle — let radio return to RX
                 return  # Success
