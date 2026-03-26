@@ -589,7 +589,7 @@ class StandaloneBridge:
             return
 
         MORE_HINT = "... (!more)"
-        READY_HINT = " [Ready]"
+        READY_HINT = " [End]"
         content_bytes = content.encode("utf-8")
 
         if len(content_bytes) <= MAX_LORA_TEXT:
