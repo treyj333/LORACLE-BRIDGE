@@ -594,7 +594,7 @@ class StandaloneBridge:
                 result = self.interface.sendText(
                     message,
                     destinationId=node_id,
-                    wantAck=True,
+                    wantAck=False,
                 )
                 pkt_id = getattr(result, "id", None)
                 logger.info(
