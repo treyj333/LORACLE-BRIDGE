@@ -436,4 +436,7 @@ echo "  Press Ctrl+C to stop"
 echo "=========================================="
 echo ""
 
+# Open dashboard in default browser after a short delay (non-blocking)
+(sleep 3 && (open "http://localhost:$DASHBOARD_PORT" 2>/dev/null || xdg-open "http://localhost:$DASHBOARD_PORT" 2>/dev/null)) &
+
 venv/bin/python standalone_bridge.py "${BRIDGE_ARGS[@]}"

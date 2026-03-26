@@ -7,10 +7,12 @@ page with inline CSS/JS — no external assets or build step.
 
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
 
+import requests as requests_lib
 from flask import Flask, jsonify, Response, request
 
 logger = logging.getLogger("dashboard")
@@ -190,6 +192,102 @@ def api_rag_stats():
         return jsonify({"available": True, "stats": stats, "documents": docs})
     except Exception as e:
         return jsonify({"available": False, "error": str(e)})
+
+
+@app.route("/api/rag/ingest-url", methods=["POST"])
+def api_rag_ingest_url():
+    """Fetch a URL, extract text, save to CONTEXT FILES, and ingest into RAG."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not hasattr(_bridge, "rag_engine") or _bridge.rag_engine is None:
+        return jsonify({"error": "RAG not available"}), 400
+
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        return jsonify({"error": "Invalid URL. Must start with http:// or https://"}), 400
+
+    try:
+        import re as _re
+        from urllib.parse import urlparse
+        from rag.extractors import _strip_html, _clean_text
+
+        # Fetch the URL
+        resp = requests_lib.get(
+            url, timeout=30,
+            headers={"User-Agent": "LORACLE-Bridge/1.0"},
+        )
+        resp.raise_for_status()
+
+        # Cap response size (5MB)
+        content = resp.text[:5_000_000]
+
+        # Extract text
+        text = _strip_html(content)
+        text = _clean_text(text)
+
+        if not text or len(text.strip()) < 50:
+            return jsonify({"error": "No meaningful text extracted from URL"}), 400
+
+        # Generate filename from URL
+        parsed = urlparse(url)
+        slug = parsed.netloc + parsed.path
+        slug = _re.sub(r"[^\w\-.]", "_", slug).strip("_")[:80]
+        if not slug:
+            slug = "web_page"
+        filename = f"{slug}.txt"
+
+        # Save to CONTEXT FILES directory
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        context_dir = os.path.join(project_root, "CONTEXT FILES")
+        os.makedirs(context_dir, exist_ok=True)
+        save_path = os.path.join(context_dir, filename)
+
+        # Check for duplicate
+        if _bridge.rag_engine.is_ingested(filename):
+            return jsonify({"error": f"Already ingested: {filename}"}), 409
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # Ingest into RAG
+        result = _bridge.rag_engine.ingest_file(save_path)
+
+        return jsonify({
+            "ok": True,
+            "filename": result["filename"],
+            "chunks": result["chunks"],
+            "doc_id": result["doc_id"],
+        })
+
+    except requests_lib.Timeout:
+        return jsonify({"error": "URL fetch timed out (30s)"}), 408
+    except requests_lib.ConnectionError:
+        return jsonify({"error": "Could not connect to URL"}), 502
+    except requests_lib.HTTPError as e:
+        return jsonify({"error": f"HTTP error: {e.response.status_code}"}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/delete", methods=["POST"])
+def api_rag_delete():
+    """Delete a document from the RAG knowledge base."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not hasattr(_bridge, "rag_engine") or _bridge.rag_engine is None:
+        return jsonify({"error": "RAG not available"}), 400
+
+    data = request.get_json(silent=True) or {}
+    doc_id = data.get("doc_id", "").strip()
+    if not doc_id:
+        return jsonify({"error": "Missing doc_id"}), 400
+
+    try:
+        deleted = _bridge.rag_engine.delete_document(doc_id)
+        return jsonify({"ok": True, "deleted": deleted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/system-prompt", methods=["GET"])
@@ -790,6 +888,19 @@ input, select, textarea { font-family: var(--font-sans); }
           </label>
         </div>
         <div id="ctrl-rag-stats" class="card-sub" style="margin-top:8px"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+          <label style="font-size:0.82em;color:var(--text-muted)">Add web page to knowledge base</label>
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <input type="url" id="ctrl-rag-url" placeholder="https://example.com/article"
+                   style="flex:1;background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:0.85em">
+            <button onclick="ingestUrl()" class="btn btn-primary" style="white-space:nowrap">Add URL</button>
+          </div>
+          <div id="ctrl-rag-url-status" style="margin-top:6px;font-size:0.82em"></div>
+        </div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+          <label style="font-size:0.82em;color:var(--text-muted)">Ingested documents</label>
+          <div id="ctrl-rag-docs" style="margin-top:6px;font-size:0.82em;max-height:300px;overflow-y:auto"></div>
+        </div>
       </div>
 
       <div class="ctrl-card" style="border-color:var(--accent-red)">
@@ -1208,6 +1319,7 @@ async function loadControlsData() {
       var stats = rs.stats || {};
       document.getElementById('ctrl-rag-stats').textContent =
         (stats.documents || 0) + ' docs, ' + (stats.chunks || 0) + ' chunks';
+      loadRagDocs();
     }
   }
 }
@@ -1253,6 +1365,57 @@ async function applySettings() {
 async function toggleRag(enabled) {
   var d = await callApi('POST', '/api/rag/toggle', {enabled: enabled});
   if (d && d.ok) showToast('RAG ' + (enabled ? 'enabled' : 'disabled'), 'success');
+}
+
+async function ingestUrl() {
+  var urlInput = document.getElementById('ctrl-rag-url');
+  var url = urlInput.value.trim();
+  if (!url) return;
+  var status = document.getElementById('ctrl-rag-url-status');
+  status.innerHTML = '<span style="color:var(--text-muted)">Fetching & ingesting...</span>';
+  var d = await callApi('POST', '/api/rag/ingest-url', {url: url});
+  if (d && d.ok) {
+    status.innerHTML = '<span style="color:var(--accent-green)">Ingested: ' +
+      escapeHtml(d.filename) + ' (' + d.chunks + ' chunks)</span>';
+    urlInput.value = '';
+    loadRagDocs();
+  } else {
+    status.innerHTML = '<span style="color:var(--accent-red)">Error: ' +
+      escapeHtml((d && d.error) || 'Unknown error') + '</span>';
+  }
+}
+
+async function loadRagDocs() {
+  var d = await callApi('GET', '/api/rag/stats');
+  var container = document.getElementById('ctrl-rag-docs');
+  if (!container) return;
+  if (!d || !d.documents || d.documents.length === 0) {
+    container.innerHTML = '<span style="color:var(--text-muted)">No documents ingested yet.</span>';
+    return;
+  }
+  var html = '<table style="width:100%;border-collapse:collapse">';
+  html += '<tr style="color:var(--text-muted);font-size:0.9em"><td>Document</td><td style="width:60px;text-align:right">Chunks</td><td style="width:50px"></td></tr>';
+  d.documents.forEach(function(doc) {
+    html += '<tr style="border-top:1px solid var(--border)">';
+    html += '<td style="padding:4px 0;word-break:break-all">' + escapeHtml(doc.filename) + '</td>';
+    html += '<td style="text-align:right;padding:4px 0">' + doc.chunk_count + '</td>';
+    html += '<td style="text-align:right;padding:4px 0"><button onclick="deleteDoc(\'' +
+      escapeHtml(doc.doc_id) + '\')" style="background:none;border:none;color:var(--accent-red);cursor:pointer;font-size:0.85em" title="Delete">&#x2715;</button></td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  container.innerHTML = html;
+}
+
+async function deleteDoc(docId) {
+  if (!confirm('Delete this document from the knowledge base?')) return;
+  var d = await callApi('POST', '/api/rag/delete', {doc_id: docId});
+  if (d && d.ok) {
+    showToast('Document deleted', 'success');
+    loadRagDocs();
+  } else {
+    showToast('Delete failed: ' + ((d && d.error) || 'Unknown error'), 'error');
+  }
 }
 
 async function clearHistory() {

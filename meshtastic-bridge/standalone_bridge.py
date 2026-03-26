@@ -89,7 +89,7 @@ class StandaloneBridge:
         max_response_length: int = 200,
         system_prompt: Optional[str] = None,
         compression_enabled: bool = True,
-        inter_chunk_delay: float = 15.0,
+        inter_chunk_delay: float = 20.0,
         rag_enabled: bool = True,
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
@@ -575,16 +575,22 @@ class StandaloneBridge:
                         return
 
                 try:
+                    # For multi-part messages, disable wantAck to prevent
+                    # the radio from blocking on ACK timeouts between chunks.
+                    # Single-part messages keep wantAck for delivery confirmation.
+                    use_ack = len(parts) == 1
                     result = self.interface.sendText(
                         part,
                         destinationId=node_id,
-                        wantAck=True,
+                        wantAck=use_ack,
                     )
                     pkt_id = getattr(result, "id", None)
                     logger.info(
                         f"Sent part {i+1}/{len(parts)} to {node_id} "
-                        f"(pkt_id={pkt_id}, attempt={attempt})"
+                        f"(pkt_id={pkt_id}, ack={use_ack}, attempt={attempt})"
                     )
+                    # Brief settling delay to let radio complete TX
+                    time.sleep(2)
                     sent = True
                     break
 
@@ -696,8 +702,8 @@ def parse_args():
     parser.add_argument(
         "--chunk-delay",
         type=float,
-        default=15.0,
-        help="Seconds between chunks (default: 15.0)",
+        default=20.0,
+        help="Seconds between chunks (default: 20.0)",
     )
     parser.add_argument(
         "--list-models",
