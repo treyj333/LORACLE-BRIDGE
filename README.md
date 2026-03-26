@@ -50,7 +50,21 @@ You don't need to install any of this yourself. The launch script handles everyt
 | **Homebrew** | macOS package manager used to install everything else | Auto-installed if missing |
 | **Python 3.9+** | Runs the bridge code | Auto-installed via Homebrew if missing |
 | **Ollama** | Runs AI models locally on your machine — no cloud needed | Auto-installed via Homebrew (macOS) or install script (Linux) |
-| **gemma3:4b** | The default AI model (3.3GB, follows instructions well, practical answers) | Auto-pulled by Ollama on first run |
+| **AI Model** | Auto-selected based on your RAM (see below) | Auto-pulled by Ollama on first run |
+
+### Smart Model Selection
+
+The bridge automatically picks the best AI model for your system:
+
+| Your RAM | Model Selected | Why |
+|----------|---------------|-----|
+| **16GB+** | `phi4:14b` | Best reasoning, connects dots across RAG documents |
+| **8GB+** | `qwen3:8b` | Latest generation, excellent instruction-following |
+| **< 8GB** | `gemma3:4b` | Lightweight fallback, runs on low-RAM devices |
+
+Other supported models (auto-selected if installed): `qwen3:14b`, `qwen2.5:14b`, `qwen2.5:7b`
+
+You can override with `--model <name>` (e.g., `./mesh-llm.sh --model qwen3:14b`).
 
 ---
 
@@ -69,6 +83,9 @@ Connect your Meshtastic radio to your computer with a USB-C cable. That's it —
 
 ### Step 3: Run It
 
+**Option A — Double-click:** Open `LORACLE BRIDGE.command` in the project folder. It launches the bridge and opens the dashboard in your browser automatically.
+
+**Option B — Terminal:**
 ```bash
 ./mesh-llm.sh
 ```
@@ -128,7 +145,7 @@ http://localhost:8000
 |-----|-------------|
 | **Dashboard** | Live status cards (connection, model, messages, nodes, avg response time, RAG), recent message feed, and a **chat panel** to test the LLM directly from your browser |
 | **Messages** | Full message log with direction filters (In/Out/All), text search, and auto-scroll |
-| **Controls** | Switch AI models, edit the system prompt, adjust response length and chunk delay, toggle compression and RAG, clear conversation history |
+| **Controls** | Switch AI models, edit the system prompt, adjust response length and chunk delay, toggle RAG, **add web URLs to the knowledge base**, manage ingested documents, clear conversation history |
 | **Debug** | Live color-coded log viewer (filterable by level), firmware/library versions, performance metrics, thread and queue internals |
 | **Guide** | Built-in quick start, connection method explanations, mesh command reference, and troubleshooting tips |
 
@@ -237,8 +254,22 @@ The script will automatically:
 
 **Supported file types:** `.pdf`, `.zim`, `.txt`, `.md`
 
+### Adding Web Pages
+
+You can also add web pages to the knowledge base directly from the dashboard:
+
+1. Open `http://localhost:8000` and go to the **Controls** tab
+2. Scroll to **Knowledge Base (RAG)**
+3. Paste a URL and click **Add URL**
+4. The bridge fetches the page, extracts the text, and ingests it
+
+The page is saved as a `.txt` file in `CONTEXT FILES/` so it persists across restarts.
+
 ### Managing Documents
 
+From the **dashboard** (Controls > Knowledge Base), you can view all ingested documents and delete individual ones.
+
+From the **command line:**
 ```bash
 ./mesh-llm.sh --docs                    # List all ingested documents
 ./mesh-llm.sh --docs-stats              # Show knowledge base statistics
@@ -276,7 +307,7 @@ Connection (default: USB serial, auto-detected):
   --ble [address]         Connect via Bluetooth LE (scan if no address given)
 
 Model:
-  --model <name>          Ollama model to use (default: gemma3:4b)
+  --model <name>          Ollama model to use (default: auto-selected by RAM)
   --ollama-url <url>      Ollama API URL (default: http://localhost:11434)
   --list-models           List available Ollama models and exit
 
@@ -323,24 +354,38 @@ Other:
 
 ## How Messages Are Sent
 
-LoRa has a **233-byte message limit**. The bridge sends responses as plain text using `sendText()` so they're readable on any Meshtastic device or app.
+LoRa has a **233-byte message limit**. The bridge sends responses as plain text so they're readable on any Meshtastic device or app.
 
-**Short responses** (under 233 bytes) are sent as a single message.
+### Message Flow
 
-**Long responses** are automatically truncated at the nearest sentence boundary and the user is prompted to send `!more` to get the rest:
+When someone sends a question:
+
+1. **"Thinking..."** — the bridge immediately sends a status message so the user knows their question was received and not to resend
+2. **AI response** — the actual answer, ending with `[End]` to indicate the response is complete
+3. If the response is too long for one message, it's truncated at a sentence boundary with `... (!more)` — send `!more` to get the rest
 
 ```
 You:   "How do I build a debris shelter?"
+AI:    "Thinking..."
 AI:    "Find a ridgepole and prop it between a tree and the ground.
         Lean branches along both sides to form an A-frame, then pile
         leaves and debris thickly over the frame... (!more)"
 You:   "!more"
 AI:    "The debris layer should be 2-3 feet thick for insulation.
         Stuff the interior with dry leaves for bedding. Build it
-        just big enough to fit your body to retain heat."
+        just big enough to fit your body to retain heat. [End]"
 ```
 
-This pager approach is used instead of multi-message splitting because the Meshtastic app groups messages by sender and only displays the most recent one — sending `[1/3]`, `[2/3]`, `[3/3]` as separate messages would result in only `[3/3]` being visible.
+### Why Single Messages?
+
+The Meshtastic app groups messages by sender and only displays the most recent one — sending `[1/3]`, `[2/3]`, `[3/3]` as separate messages would result in only `[3/3]` being visible. The `!more` pager approach lets the user control when they're ready for the next part.
+
+### Responses Are Always DMs
+
+All AI responses are sent as **direct messages (DMs)** back to the person who asked. This means:
+- Other people on the mesh don't see AI responses cluttering the public channel
+- Each person's conversation with the AI is private
+- Anyone on the mesh can ask questions independently
 
 ### LoRa Technical Notes
 
@@ -388,7 +433,8 @@ This pager approach is used instead of multi-message splitting because the Mesht
 ```
 loracle/
 │
-├── mesh-llm.sh                  # THE ONE COMMAND — run this to start everything
+├── LORACLE BRIDGE.command       # DOUBLE-CLICK TO LAUNCH (macOS)
+├── mesh-llm.sh                  # Or run this from the terminal
 │
 ├── CONTEXT FILES/               # Drop PDFs, text files here for the knowledge base
 │

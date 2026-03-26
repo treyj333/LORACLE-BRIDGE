@@ -1,8 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=LORACLE BRIDGE
-Comment=Offline AI Over Mesh Radio
-Exec=bash -c 'cd "$(dirname "%k")" && ./mesh-llm.sh; if [ $? -ne 0 ]; then echo "Bridge exited with an error. Press Enter to close."; read; fi'
-Terminal=true
-Categories=Utility;Network;
