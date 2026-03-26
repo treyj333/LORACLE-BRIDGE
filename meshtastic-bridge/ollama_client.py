@@ -1,4 +1,4 @@
-"""Ollama API client for LORACLE.
+"""Ollama API client for LORACLE BRIDGE.
 
 Calls Ollama's REST API directly and maintains per-node conversation history.
 """
@@ -7,6 +7,7 @@ import logging
 import os
 import platform
 import subprocess
+import time
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Tuple
 
@@ -15,10 +16,9 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful AI assistant. "
-    "Keep responses brief, around 2-4 sentences. "
-    "Write in short plain sentences. Never use bullet points, lists, asterisks, "
-    "markdown, or code blocks. "
+    "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+    "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
+    "Never use bullet points, lists, asterisks, markdown, or code blocks. "
     "Be direct and give practical, actionable advice. "
     "Only state facts you are confident about. If unsure, say so."
 )
@@ -35,7 +35,21 @@ MODEL_PROFILES = [
         "description": "Microsoft Phi-4 — strong reasoning, connects dots across RAG chunks",
         "system_prompt": (
             "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
-            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
+            "Never use bullet points, lists, asterisks, markdown, or code blocks. "
+            "When context documents are provided, reason carefully across them to synthesize an answer. "
+            "Cite which context you drew from when relevant. "
+            "Be direct and give practical, actionable advice. Only state facts you are confident about."
+        ),
+    },
+    {
+        "name": "qwen3:14b",
+        "min_ram_gb": 16,
+        "tier": "large",
+        "description": "Qwen 3 14B — latest generation, strong reasoning and instruction-following",
+        "system_prompt": (
+            "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+            "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
             "Never use bullet points, lists, asterisks, markdown, or code blocks. "
             "When context documents are provided, reason carefully across them to synthesize an answer. "
             "Cite which context you drew from when relevant. "
@@ -49,10 +63,23 @@ MODEL_PROFILES = [
         "description": "Qwen 2.5 14B — excellent instruction-following, table/structured data reading",
         "system_prompt": (
             "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
-            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
             "Never use bullet points, lists, asterisks, markdown, or code blocks. "
             "You excel at reading structured data and tables from context documents. "
             "When provided with context, extract precise facts and figures. "
+            "Be direct and give practical, actionable advice. Only state facts you are confident about."
+        ),
+    },
+    {
+        "name": "qwen3:8b",
+        "min_ram_gb": 8,
+        "tier": "medium",
+        "description": "Qwen 3 8B — latest generation, excellent instruction-following at lower resource usage",
+        "system_prompt": (
+            "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
+            "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
+            "Never use bullet points, lists, asterisks, markdown, or code blocks. "
+            "When context documents are provided, use them to give accurate answers. "
             "Be direct and give practical, actionable advice. Only state facts you are confident about."
         ),
     },
@@ -63,7 +90,7 @@ MODEL_PROFILES = [
         "description": "Qwen 2.5 7B — strong instruction-following, good balance of speed and quality",
         "system_prompt": (
             "You are a helpful AI assistant communicating over a low-bandwidth LoRa mesh radio. "
-            "Keep responses brief, 2-4 sentences. Write in short plain sentences. "
+            "Keep responses under 220 characters. Respond in 1-2 short sentences maximum. "
             "Never use bullet points, lists, asterisks, markdown, or code blocks. "
             "When context documents are provided, use them to give accurate answers. "
             "Be direct and give practical, actionable advice. Only state facts you are confident about."
@@ -215,6 +242,7 @@ class OllamaClient:
             lambda: deque(maxlen=history_length)
         )
         self._history_length = history_length
+        self._last_activity = {}  # node_id -> timestamp for auto-clear
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT.format(
             max_chars=max_response_length
         )
@@ -257,8 +285,20 @@ class OllamaClient:
             context_messages: Optional RAG context messages to inject
                 between system prompt and history.
         """
+        # Auto-clear stale conversation context (>1 hour idle)
+        now = time.time()
+        if node_id in self._last_activity:
+            if now - self._last_activity[node_id] > 3600:
+                logger.info(f"Auto-clearing stale context for {node_id} (>1h idle)")
+                self.clear_history(node_id)
+        self._last_activity[node_id] = now
+
         # Build messages array: [system] + [context] + [history] + [user]
-        messages = [{"role": "system", "content": self.system_prompt}]
+        system_content = self.system_prompt
+        if context_messages:
+            from rag.engine import RAG_SYSTEM_ADDENDUM
+            system_content = f"{self.system_prompt}\n\n{RAG_SYSTEM_ADDENDUM}"
+        messages = [{"role": "system", "content": system_content}]
         if context_messages:
             messages.extend(context_messages)
         messages.extend(list(self._history[node_id]))

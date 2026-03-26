@@ -1,4 +1,4 @@
-"""LORACLE — Control Panel Dashboard.
+"""LORACLE BRIDGE — Control Panel Dashboard.
 
 Full-featured single-page web UI with live monitoring, controls,
 debug tools, and a built-in user guide. Served as a single HTML
@@ -323,7 +323,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LORACLE</title>
+<title>LORACLE BRIDGE</title>
 <style>
 :root {
   --bg-primary: #0d1117;
@@ -622,7 +622,7 @@ input, select, textarea { font-family: var(--font-sans); }
       <path d="M4.93 4.93l4.24 4.24"/><path d="M14.83 14.83l4.24 4.24"/>
       <path d="M19.07 4.93l-4.24 4.24"/><path d="M9.17 14.83l-4.24 4.24"/>
     </svg>
-    LORACLE
+    LORACLE BRIDGE
   </div>
   <div class="top-badges">
     <div class="badge">

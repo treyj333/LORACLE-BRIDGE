@@ -1,6 +1,6 @@
-# Contributing to LORACLE
+# Contributing to LORACLE BRIDGE
 
-Thank you for your interest in contributing to LORACLE! Community contributions help keep this project growing and improving.
+Thank you for your interest in contributing to LORACLE BRIDGE! Community contributions help keep this project growing and improving.
 
 ---
 
@@ -81,4 +81,4 @@ Thank you for your interest in contributing to LORACLE! Community contributions 
 
 ---
 
-*LORACLE is licensed under the [Apache License 2.0](LICENSE).*
+*LORACLE BRIDGE is licensed under the [Apache License 2.0](LICENSE).*

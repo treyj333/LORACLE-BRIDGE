@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# mesh-llm.sh — One-command LORACLE
+# mesh-llm.sh — One-command LORACLE BRIDGE
 #
 # Connects a Meshtastic radio to a local Ollama LLM.
 # Connects a Meshtastic radio to a local Ollama LLM.
@@ -37,7 +37,7 @@ for arg in "$@"; do
     --no-rag) RAG_ENABLED=false ;;
     --ble) BLE_MODE=true ;;
     --help|-h)
-      echo "LORACLE — Chat with a local AI over mesh radio"
+      echo "LORACLE BRIDGE — Chat with a local AI over mesh radio"
       echo ""
       echo "Usage: ./mesh-llm.sh [OPTIONS]"
       echo ""
@@ -106,7 +106,7 @@ trap cleanup EXIT INT TERM
 
 echo ""
 echo "=========================================="
-echo "  LORACLE"
+echo "  LORACLE BRIDGE"
 echo "=========================================="
 echo ""
 
@@ -292,9 +292,9 @@ except:
 " 2>/dev/null || echo "8")
 
   if [ "$TOTAL_RAM_GB" -ge 16 ]; then
-    PULL_MODEL="qwen2.5:14b"
+    PULL_MODEL="phi4:14b"
   elif [ "$TOTAL_RAM_GB" -ge 8 ]; then
-    PULL_MODEL="qwen2.5:7b"
+    PULL_MODEL="qwen3:8b"
   else
     PULL_MODEL="gemma3:4b"
   fi

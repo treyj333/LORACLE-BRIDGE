@@ -1,6 +1,6 @@
 <div align="center">
 
-# LORACLE
+# LORACLE BRIDGE
 ### Offline AI Over Mesh Radio
 
 **Chat with a local LLM over LoRa — no internet required**
@@ -90,7 +90,7 @@ You'll see output like this:
 
 ```
 ==========================================
-  LORACLE
+  LORACLE BRIDGE
 ==========================================
 
 OK Python 3.12.13
@@ -345,7 +345,7 @@ Each part is sent **3 seconds apart** (configurable with `--chunk-delay`) to giv
 │                     YOUR COMPUTER                        │
 │                                                          │
 │  ┌─────────────────┐     ┌──────────────────────────┐   │
-│  │   Ollama         │     │   LORACLE         │   │
+│  │   Ollama         │     │   LORACLE BRIDGE         │   │
 │  │   (local AI)     │◄───►│   standalone_bridge.py   │   │
 │  │                  │     │                          │   │
 │  │  gemma3:4b       │     │  ┌── Dashboard (:8000)   │   │
@@ -439,4 +439,4 @@ loracle/
 
 ## License
 
-LORACLE is licensed under the [Apache License 2.0](LICENSE).
+LORACLE BRIDGE is licensed under the [Apache License 2.0](LICENSE).

@@ -1,27 +1,27 @@
 # Project Context
 
-This file tracks the history of changes, decisions, and current state of LORACLE.
+This file tracks the history of changes, decisions, and current state of LORACLE BRIDGE.
 
 ---
 
 ## [2026-03-25] — Independence Cleanup
 
 - What changed:
-  - Removed all references to the original project that LORACLE was forked from
+  - Removed all references to the original project that LORACLE BRIDGE was forked from
   - Deleted unused files and directories that were not part of the standalone bridge
-  - Updated LICENSE, README, CONTRIBUTING.md to reflect LORACLE as an independent project
+  - Updated LICENSE, README, CONTRIBUTING.md to reflect LORACLE BRIDGE as an independent project
   - Cleaned up comments and docstrings across all source files
 
 - Why:
-  - LORACLE's standalone bridge has zero code dependencies on the original project
-  - Making a clean break ensures LORACLE is a fully independent open-source project
+  - LORACLE BRIDGE's standalone bridge has zero code dependencies on the original project
+  - Making a clean break ensures LORACLE BRIDGE is a fully independent open-source project
 
 ---
 
-## [2026-03-24] — LORACLE Rebrand
+## [2026-03-24] — LORACLE BRIDGE Rebrand
 
 - What changed:
-  - Rebranded the project to LORACLE (LoRa + Oracle)
+  - Rebranded the project to LORACLE BRIDGE (LoRa + Oracle)
   - Updated all user-facing strings, banners, and documentation
 
 ---

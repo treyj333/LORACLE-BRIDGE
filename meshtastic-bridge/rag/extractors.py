@@ -221,6 +221,9 @@ def _clean_text(text):
         return ""
     # Remove null bytes and control characters (keep newlines and tabs)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Strip broken UTF-8 sequences (common in old scanned PDFs)
+    text = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    text = text.replace("\ufffd", "")
     # Collapse dot/dash leaders from TOC pages (e.g. "Chapter 1 ........... 3")
     # These tokenize as one token per character and blow up embedding context windows
     text = re.sub(r"\.{4,}", "...", text)

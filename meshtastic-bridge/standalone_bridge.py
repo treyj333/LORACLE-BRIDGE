@@ -1,4 +1,4 @@
-"""LORACLE — Offline AI Over Mesh Radio.
+"""LORACLE BRIDGE — Offline AI Over Mesh Radio.
 
 Connects directly to a Meshtastic radio and Ollama.
 Receives text messages over the mesh, processes them through a local LLM,
@@ -59,6 +59,7 @@ MAX_LORA_TEXT = 233
 _dedup_cache = {}  # type: Dict[Tuple[str, str], float]
 DEDUP_TTL = 300  # 5 minutes
 CONTEXT_TTL = 3600  # 1 hour — auto-clear conversation context after inactivity
+RATE_LIMIT_SECS = 5  # Min seconds between messages from same node
 
 
 def auto_detect_serial_port() -> Optional[str]:
@@ -74,7 +75,7 @@ def auto_detect_serial_port() -> Optional[str]:
 
 
 class StandaloneBridge:
-    """LORACLE — LoRa + Oracle mesh AI bridge."""
+    """LORACLE BRIDGE — LoRa + Oracle mesh AI bridge."""
 
     def __init__(
         self,
@@ -88,7 +89,7 @@ class StandaloneBridge:
         max_response_length: int = 200,
         system_prompt: Optional[str] = None,
         compression_enabled: bool = True,
-        inter_chunk_delay: float = 3.0,
+        inter_chunk_delay: float = 15.0,
         rag_enabled: bool = True,
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
@@ -145,7 +146,7 @@ class StandaloneBridge:
 
     def start(self):
         """Start the bridge."""
-        logger.info("Starting Standalone LORACLE")
+        logger.info("Starting Standalone LORACLE BRIDGE")
 
         # Start web dashboard
         start_dashboard(self.dashboard_port)
@@ -313,6 +314,16 @@ class StandaloneBridge:
                 return
 
             _dedup_cache[cache_key] = now
+
+            # Rate limiting — prevent spam while inference is running
+            if sender in self._node_last_active:
+                elapsed_since_last = now - self._node_last_active[sender]
+                if elapsed_since_last < RATE_LIMIT_SECS:
+                    logger.info(
+                        f"Rate-limited {sender} "
+                        f"({elapsed_since_last:.0f}s < {RATE_LIMIT_SECS}s cooldown)"
+                    )
+                    return
 
             # Track nodes
             self._known_nodes.add(sender)
@@ -515,8 +526,9 @@ class StandaloneBridge:
     def _send_response(self, node_id: str, content: str):
         """Send a plain-text response over the mesh, with retry and reconnection.
 
-        Uses sendText() so responses are readable on any standard Meshtastic
-        device or app. Long responses are split into numbered parts.
+        Long responses are split into numbered parts with a generous delay
+        between them so the user has time to read each message before the
+        next arrives.
         """
         if not self.interface:
             logger.error("No radio interface — cannot send")
@@ -527,24 +539,20 @@ class StandaloneBridge:
         if len(content_bytes) <= MAX_LORA_TEXT:
             parts = [content]
         else:
-            # Split into numbered parts that fit in MAX_LORA_TEXT bytes
             parts = []
             remaining = content
             while remaining:
-                # Estimate how many parts we'll need (for the [X/N] prefix)
                 est_total = max(1, (len(remaining.encode("utf-8")) + MAX_LORA_TEXT - 1) // (MAX_LORA_TEXT - 8))
                 prefix_len = len(f"[{len(parts)+1}/{est_total}] ".encode("utf-8"))
                 budget = MAX_LORA_TEXT - prefix_len
 
-                # Find the split point (don't break mid-character)
                 chunk_text = remaining
                 while len(chunk_text.encode("utf-8")) > budget and len(chunk_text) > 1:
-                    chunk_text = chunk_text[:len(chunk_text) - 1]
+                    chunk_text = chunk_text[: len(chunk_text) - 1]
 
                 parts.append(chunk_text)
                 remaining = remaining[len(chunk_text):]
 
-            # Add part numbers
             total = len(parts)
             if total > 1:
                 parts = [f"[{i+1}/{total}] {p}" for i, p in enumerate(parts)]
@@ -555,7 +563,6 @@ class StandaloneBridge:
         for i, part in enumerate(parts):
             sent = False
             for attempt in range(1, max_retries + 1):
-                # Health check before each attempt
                 if not self._is_interface_alive():
                     logger.warning(
                         f"Interface not alive before send (attempt {attempt}/{max_retries})"
@@ -587,7 +594,6 @@ class StandaloneBridge:
                         f"(attempt {attempt}/{max_retries}): {e}"
                     )
                     if attempt < max_retries:
-                        # Before last attempt, try reconnecting
                         if attempt == max_retries - 1:
                             self._reconnect_radio()
                         else:
@@ -640,7 +646,7 @@ class StandaloneBridge:
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Standalone LORACLE — chat with a local AI over mesh radio"
+        description="Standalone LORACLE BRIDGE — chat with a local AI over mesh radio"
     )
 
     conn = parser.add_mutually_exclusive_group()
@@ -690,8 +696,8 @@ def parse_args():
     parser.add_argument(
         "--chunk-delay",
         type=float,
-        default=3.0,
-        help="Seconds between chunks (default: 3.0)",
+        default=15.0,
+        help="Seconds between chunks (default: 15.0)",
     )
     parser.add_argument(
         "--list-models",

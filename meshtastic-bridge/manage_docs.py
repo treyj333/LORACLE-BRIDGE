@@ -1,4 +1,4 @@
-"""CLI document manager for the LORACLE knowledge base.
+"""CLI document manager for the LORACLE BRIDGE knowledge base.
 
 Usage:
     python manage_docs.py ingest <file_or_directory>
@@ -153,7 +153,7 @@ def cmd_search(args, engine):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manage documents for the LORACLE knowledge base"
+        description="Manage documents for the LORACLE BRIDGE knowledge base"
     )
     parser.add_argument(
         "--ollama-url",

@@ -428,7 +428,10 @@ class RAGEngine:
                 )
                 sanitized.append(t[:MAX_EMBED_CHARS])
             else:
-                sanitized.append(t)
+                # Sanitize for Ollama embedding API: strip broken UTF-8 sequences
+                clean = t.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+                clean = clean.replace("\ufffd", "")
+                sanitized.append(clean)
 
         all_embeddings = [None] * len(sanitized)
         zero_vec = [0.0] * EMBEDDING_DIM
