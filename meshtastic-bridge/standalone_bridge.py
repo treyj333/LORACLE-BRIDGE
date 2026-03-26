@@ -89,7 +89,6 @@ class StandaloneBridge:
         max_response_length: int = 200,
         system_prompt: Optional[str] = None,
         compression_enabled: bool = True,
-        inter_chunk_delay: float = 20.0,
         rag_enabled: bool = True,
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
@@ -101,7 +100,6 @@ class StandaloneBridge:
         self.ble_address = ble_address
         self.dashboard_port = dashboard_port
         self.compression_enabled = compression_enabled
-        self.inter_chunk_delay = inter_chunk_delay
         self.interface = None
         self._running = False
         self._reconnect_delay = 1
@@ -111,6 +109,7 @@ class StandaloneBridge:
         self._node_count = 0
         self._known_nodes = set()  # type: Set[str]
         self._node_last_active: Dict[str, float] = {}  # node_id -> last message timestamp
+        self._overflow: Dict[str, str] = {}  # node_id -> remaining text for !more pager
 
         # RAG
         self.rag_enabled = rag_enabled
@@ -380,9 +379,7 @@ class StandaloneBridge:
                     logger.info(f"Ollama responded in {elapsed:.1f}s ({len(response)} chars)")
 
                 # Send response
-                content_bytes = response.encode("utf-8")
-                num_parts = max(1, (len(content_bytes) + MAX_LORA_TEXT - 1) // MAX_LORA_TEXT)
-                record_message("out", node_id, response, chunks=num_parts, llm_time=elapsed)
+                record_message("out", node_id, response, chunks=1, llm_time=elapsed)
                 update_state(
                     message_count=self._message_count,
                     node_count=self._node_count,
@@ -407,6 +404,7 @@ class StandaloneBridge:
             help_text = (
                 "Commands: "
                 "!help - this message, "
+                "!more - next page of long response, "
                 "!status - bridge info, "
                 "!model <name> - switch model, "
                 "!models - list models, "
@@ -460,6 +458,14 @@ class StandaloneBridge:
 
         elif cmd == "!ping":
             return "pong"
+
+        elif cmd == "!more":
+            remaining = self._overflow.get(node_id, "")
+            if not remaining:
+                return "No more content."
+            # Remove from overflow — _send_response will re-page if still too long
+            del self._overflow[node_id]
+            return remaining
 
         elif cmd == "!rag":
             if not self.rag_enabled:
@@ -524,95 +530,90 @@ class StandaloneBridge:
         self._connect_radio()
 
     def _send_response(self, node_id: str, content: str):
-        """Send a plain-text response over the mesh, with retry and reconnection.
+        """Send a single plain-text response over the mesh.
 
-        Long responses are split into numbered parts with a generous delay
-        between them so the user has time to read each message before the
-        next arrives.
+        The Meshtastic app groups messages by sender and only shows the latest,
+        so we ALWAYS send exactly one message. If the response is too long, we
+        truncate at a sentence boundary and store the overflow for the !more
+        command (interactive pager).
         """
         if not self.interface:
             logger.error("No radio interface — cannot send")
             return
 
-        # Split into LoRa-sized plain-text parts
+        MORE_HINT = "... (!more)"
         content_bytes = content.encode("utf-8")
+
         if len(content_bytes) <= MAX_LORA_TEXT:
-            parts = [content]
+            # Fits in one message — clear any previous overflow
+            message = content
+            self._overflow.pop(node_id, None)
         else:
-            parts = []
-            remaining = content
-            while remaining:
-                est_total = max(1, (len(remaining.encode("utf-8")) + MAX_LORA_TEXT - 1) // (MAX_LORA_TEXT - 8))
-                prefix_len = len(f"[{len(parts)+1}/{est_total}] ".encode("utf-8"))
-                budget = MAX_LORA_TEXT - prefix_len
+            # Too long — truncate at sentence boundary, store overflow
+            budget = MAX_LORA_TEXT - len(MORE_HINT.encode("utf-8"))
 
-                chunk_text = remaining
-                while len(chunk_text.encode("utf-8")) > budget and len(chunk_text) > 1:
-                    chunk_text = chunk_text[: len(chunk_text) - 1]
+            # Find the cut point (don't break mid-character)
+            truncated = content
+            while len(truncated.encode("utf-8")) > budget and len(truncated) > 1:
+                truncated = truncated[: len(truncated) - 1]
 
-                parts.append(chunk_text)
-                remaining = remaining[len(chunk_text):]
+            # Try to break at last sentence boundary (keep >40% of content)
+            min_keep = len(truncated) * 2 // 5
+            best_break = -1
+            for sep in [". ", "! ", "? "]:
+                idx = truncated.rfind(sep)
+                if idx > min_keep:
+                    best_break = max(best_break, idx + len(sep))
+            if best_break > 0:
+                truncated = truncated[:best_break]
 
-            total = len(parts)
-            if total > 1:
-                parts = [f"[{i+1}/{total}] {p}" for i, p in enumerate(parts)]
+            message = truncated.rstrip() + MORE_HINT
+            remaining = content[len(truncated):].lstrip()
+            self._overflow[node_id] = remaining
+            logger.info(
+                f"Response paged: sending {len(message)} bytes, "
+                f"{len(remaining)} chars remaining for !more"
+            )
 
-        logger.info(f"Sending to {node_id}: {len(content)} chars, {len(parts)} part(s)")
+        logger.info(f"Sending to {node_id}: {len(message)} bytes")
 
         max_retries = 3
-        for i, part in enumerate(parts):
-            sent = False
-            for attempt in range(1, max_retries + 1):
-                if not self._is_interface_alive():
-                    logger.warning(
-                        f"Interface not alive before send (attempt {attempt}/{max_retries})"
-                    )
-                    if attempt < max_retries:
+        for attempt in range(1, max_retries + 1):
+            if not self._is_interface_alive():
+                logger.warning(
+                    f"Interface not alive before send (attempt {attempt}/{max_retries})"
+                )
+                if attempt < max_retries:
+                    self._reconnect_radio()
+                    continue
+                else:
+                    logger.error("Interface dead after all retries, giving up")
+                    return
+
+            try:
+                result = self.interface.sendText(
+                    message,
+                    destinationId=node_id,
+                    wantAck=True,
+                )
+                pkt_id = getattr(result, "id", None)
+                logger.info(
+                    f"Sent to {node_id} (pkt_id={pkt_id}, attempt={attempt})"
+                )
+                return  # Success
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to send to {node_id} "
+                    f"(attempt {attempt}/{max_retries}): {e}"
+                )
+                if attempt < max_retries:
+                    if attempt == max_retries - 1:
                         self._reconnect_radio()
-                        continue
                     else:
-                        logger.error("Interface dead after all retries, giving up")
-                        return
+                        time.sleep(1)
 
-                try:
-                    # For multi-part messages, disable wantAck to prevent
-                    # the radio from blocking on ACK timeouts between chunks.
-                    # Single-part messages keep wantAck for delivery confirmation.
-                    use_ack = len(parts) == 1
-                    result = self.interface.sendText(
-                        part,
-                        destinationId=node_id,
-                        wantAck=use_ack,
-                    )
-                    pkt_id = getattr(result, "id", None)
-                    logger.info(
-                        f"Sent part {i+1}/{len(parts)} to {node_id} "
-                        f"(pkt_id={pkt_id}, ack={use_ack}, attempt={attempt})"
-                    )
-                    # Brief settling delay to let radio complete TX
-                    time.sleep(2)
-                    sent = True
-                    break
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to send part {i+1}/{len(parts)} to {node_id} "
-                        f"(attempt {attempt}/{max_retries}): {e}"
-                    )
-                    if attempt < max_retries:
-                        if attempt == max_retries - 1:
-                            self._reconnect_radio()
-                        else:
-                            time.sleep(1)
-
-            if not sent:
-                logger.error(f"Could not send part {i+1}/{len(parts)}, aborting remaining")
-                return
-
-            if i < len(parts) - 1:
-                time.sleep(self.inter_chunk_delay)
-
-        logger.info(f"Response fully sent to {node_id}")
+        logger.error(f"All send retries exhausted for {node_id}")
 
     def _dedup_cleanup_loop(self):
         """Clean up expired deduplication cache entries."""
@@ -698,12 +699,6 @@ def parse_args():
         "--no-compression",
         action="store_true",
         help="Disable zlib compression for chunks",
-    )
-    parser.add_argument(
-        "--chunk-delay",
-        type=float,
-        default=20.0,
-        help="Seconds between chunks (default: 20.0)",
     )
     parser.add_argument(
         "--list-models",
@@ -818,7 +813,6 @@ def main():
         max_response_length=args.max_length,
         system_prompt=effective_prompt,
         compression_enabled=not args.no_compression,
-        inter_chunk_delay=args.chunk_delay,
         rag_enabled=not args.no_rag,
         rag_dir=args.rag_dir,
         dashboard_port=args.dashboard_port,

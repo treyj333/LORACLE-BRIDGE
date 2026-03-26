@@ -315,7 +315,6 @@ def api_get_config():
         return jsonify({"error": "Bridge not initialized"}), 503
     return jsonify({
         "max_response_length": _bridge.ollama.max_response_length,
-        "inter_chunk_delay": _bridge.inter_chunk_delay,
         "compression_enabled": _bridge.compression_enabled,
         "connection_type": _bridge.connection_type,
         "ollama_url": _bridge.ollama.base_url,
@@ -332,10 +331,6 @@ def api_set_config():
         val = int(data["max_response_length"])
         _bridge.ollama.max_response_length = val
         updated["max_response_length"] = val
-    if "inter_chunk_delay" in data:
-        val = float(data["inter_chunk_delay"])
-        _bridge.inter_chunk_delay = val
-        updated["inter_chunk_delay"] = val
     if "compression_enabled" in data:
         val = bool(data["compression_enabled"])
         _bridge.compression_enabled = val
@@ -862,11 +857,6 @@ input, select, textarea { font-family: var(--font-sans); }
           <span class="ctrl-range-val" id="ctrl-max-len-val">500</span>
         </div>
         <div class="ctrl-row">
-          <span class="ctrl-label">Chunk Delay</span>
-          <input class="ctrl-range" type="range" id="ctrl-chunk-delay" min="0.5" max="10" step="0.5" value="2.0" oninput="document.getElementById('ctrl-chunk-delay-val').textContent=this.value+'s'">
-          <span class="ctrl-range-val" id="ctrl-chunk-delay-val">2.0s</span>
-        </div>
-        <div class="ctrl-row">
           <span class="ctrl-label">Compression</span>
           <label class="toggle">
             <input type="checkbox" id="ctrl-compression" checked>
@@ -1026,7 +1016,7 @@ input, select, textarea { font-family: var(--font-sans); }
         <p><strong>Model</strong> &mdash; Switch between installed Ollama models. Smaller models (e.g., <code>llama3.2:1b</code>) respond faster. Click "Refresh" to rescan.</p>
         <p><strong>System Prompt</strong> &mdash; Customize the AI's personality and behavior. For example: <em>"You are a wilderness survival expert. Be concise."</em></p>
         <p><strong>Max Response Length</strong> &mdash; Limits how many characters the AI can return. Lower = fewer chunks over LoRa = faster delivery. Default: 500.</p>
-        <p><strong>Chunk Delay</strong> &mdash; Time between sending each chunk over LoRa. Increase if messages arrive out of order. Default: 2 seconds.</p>
+        <p><strong>Pager (!more)</strong> &mdash; Long responses are automatically truncated to fit one LoRa message. Send <code>!more</code> to get the next page.</p>
         <p><strong>Compression</strong> &mdash; Zlib compression on chunks. Reduces chunk count when possible. Leave on unless debugging.</p>
         <p><strong>Knowledge Base</strong> &mdash; Toggle RAG on/off (only available if started with <code>--rag</code>).</p>
       </div>
@@ -1038,7 +1028,7 @@ input, select, textarea { font-family: var(--font-sans); }
         <p><strong>"No Meshtastic device found"</strong> &mdash; Make sure the radio is plugged in via USB-C and powered on. Try a different cable (some are charge-only). Run <code>ls /dev/cu.usb*</code> to check.</p>
         <p><strong>"Ollama not responding"</strong> &mdash; Run <code>ollama serve</code> in a separate terminal. Check: <code>curl http://localhost:11434/api/tags</code></p>
         <p><strong>Responses are slow</strong> &mdash; Use a smaller model: <code>./mesh-llm.sh --model llama3.2:1b</code>. Or reduce max length in Controls.</p>
-        <p><strong>Chunks arriving out of order</strong> &mdash; Increase chunk delay in Controls (try 4-5 seconds).</p>
+        <p><strong>Response was cut off</strong> &mdash; Send <code>!more</code> to get the next page of a long response.</p>
         <p><strong>Dashboard not loading</strong> &mdash; Default port is 8000. If in use: <code>./mesh-llm.sh --dashboard-port 9000</code></p>
         <p><strong>BLE issues</strong> &mdash; Requires Python 3.11+. Try: <code>rm -rf venv && ./mesh-llm.sh --ble</code> to rebuild.</p>
       </div>
@@ -1304,8 +1294,6 @@ async function loadControlsData() {
   if (cd) {
     document.getElementById('ctrl-max-len').value = cd.max_response_length;
     document.getElementById('ctrl-max-len-val').textContent = cd.max_response_length;
-    document.getElementById('ctrl-chunk-delay').value = cd.inter_chunk_delay;
-    document.getElementById('ctrl-chunk-delay-val').textContent = cd.inter_chunk_delay + 's';
     document.getElementById('ctrl-compression').checked = cd.compression_enabled;
   }
   // RAG
@@ -1356,7 +1344,6 @@ document.getElementById('ctrl-prompt').addEventListener('input', function() {
 async function applySettings() {
   var d = await callApi('POST', '/api/config', {
     max_response_length: parseInt(document.getElementById('ctrl-max-len').value),
-    inter_chunk_delay: parseFloat(document.getElementById('ctrl-chunk-delay').value),
     compression_enabled: document.getElementById('ctrl-compression').checked
   });
   if (d && d.ok) showToast('Settings applied', 'success');
