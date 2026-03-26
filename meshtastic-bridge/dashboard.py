@@ -89,7 +89,7 @@ def record_message(direction, node_id, text, chunks=0, llm_time=0):
         "ts": time.time(),
         "dir": direction,
         "node": node_id,
-        "text": text[:200],
+        "text": text[:2000],
         "chunks": chunks,
         "llm_time": round(llm_time, 1),
     })
