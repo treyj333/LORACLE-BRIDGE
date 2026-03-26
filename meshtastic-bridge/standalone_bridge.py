@@ -355,6 +355,9 @@ class StandaloneBridge:
                     # Regular message — send to Ollama
                     logger.info(f"Processing query from {node_id}...")
 
+                    # Send immediate acknowledgment so user knows not to resend
+                    self._send_raw(node_id, "Thinking...")
+
                     # RAG: search for relevant context
                     context_messages = None
                     if (
@@ -529,6 +532,21 @@ class StandaloneBridge:
             self.interface = None
         self._connect_radio()
 
+    def _send_raw(self, node_id: str, text: str):
+        """Send a short status message (no pager, no overflow).
+
+        Used for 'Thinking...' and other ephemeral status indicators.
+        Includes a post-TX settle delay so the radio returns to RX mode.
+        """
+        if not self.interface or not self._is_interface_alive():
+            return
+        try:
+            self.interface.sendText(text, destinationId=node_id, wantAck=False)
+            logger.info(f"Status to {node_id}: {text}")
+            time.sleep(3)  # Post-TX settle — let radio return to RX
+        except Exception as e:
+            logger.warning(f"Failed to send status to {node_id}: {e}")
+
     def _send_response(self, node_id: str, content: str):
         """Send a single plain-text response over the mesh.
 
@@ -542,12 +560,18 @@ class StandaloneBridge:
             return
 
         MORE_HINT = "... (!more)"
+        READY_HINT = " [Ready]"
         content_bytes = content.encode("utf-8")
 
         if len(content_bytes) <= MAX_LORA_TEXT:
             # Fits in one message — clear any previous overflow
-            message = content
             self._overflow.pop(node_id, None)
+            # Append ready hint if it still fits
+            with_hint = content + READY_HINT
+            if len(with_hint.encode("utf-8")) <= MAX_LORA_TEXT:
+                message = with_hint
+            else:
+                message = content
         else:
             # Too long — truncate at sentence boundary, store overflow
             budget = MAX_LORA_TEXT - len(MORE_HINT.encode("utf-8"))
@@ -600,6 +624,7 @@ class StandaloneBridge:
                 logger.info(
                     f"Sent to {node_id} (pkt_id={pkt_id}, attempt={attempt})"
                 )
+                time.sleep(3)  # Post-TX settle — let radio return to RX
                 return  # Success
 
             except Exception as e:
