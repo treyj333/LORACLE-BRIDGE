@@ -405,9 +405,15 @@ CONTEXT_DIR="$PROJECT_ROOT/CONTEXT FILES"
 if [ "$RAG_ENABLED" = true ] && [ -d "$CONTEXT_DIR" ]; then
   FILE_COUNT=$(find "$CONTEXT_DIR" -maxdepth 1 -type f \( -name "*.pdf" -o -name "*.zim" -o -name "*.txt" -o -name "*.md" \) | wc -l | tr -d ' ')
   if [ "$FILE_COUNT" -gt 0 ]; then
-    echo "Auto-ingesting $FILE_COUNT file(s) from CONTEXT FILES/ (skipping already ingested)..."
-    venv/bin/python manage_docs.py ingest "$CONTEXT_DIR" --skip-existing
-    echo ""
+    echo "Checking $FILE_COUNT file(s) in CONTEXT FILES/ for new content..."
+    # Run quietly — suppress per-file logs, only show summary
+    INGEST_OUT=$(venv/bin/python manage_docs.py ingest "$CONTEXT_DIR" --skip-existing 2>&1)
+    NEW_CHUNKS=$(echo "$INGEST_OUT" | grep -o 'Ingested: [0-9]* chunks' | grep -o '[0-9]*' || echo "0")
+    if [ "${NEW_CHUNKS:-0}" -gt 0 ]; then
+      echo "OK Knowledge base updated: $NEW_CHUNKS new chunks"
+    else
+      echo "OK Knowledge base up to date"
+    fi
   fi
 fi
 
