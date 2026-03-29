@@ -4,6 +4,32 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-03-28] — Addon System + Dead Drop, Triage, Brief
+
+- What changed:
+  - **Plugin architecture**: Added addon system with base class, command registry, dashboard tab injection, and message observer hooks. Addons register commands, dashboard tabs, and API routes without modifying core bridge code.
+  - **LORACLE DEAD DROP**: Encrypted async store-and-forward messaging over mesh. Fernet encryption (AES-128-CBC + HMAC), SQLite message queue, 72-hour TTL, commands: `!drop-key`, `!drop`, `!pickup`, `!pending`. Dashboard tab with pending/delivered status and purge controls.
+  - **LORACLE TRIAGE**: Offline medical reference assistant. Separate RAG instance for medical docs (TCCC, field medicine, trauma protocols). Stateless queries with medical disclaimer. High-contrast dashboard UI. Commands: `!triage <question>`, `!triage topics`, `!triage status`.
+  - **LORACLE BRIEF**: AI-generated situation reports from mesh traffic. Traffic aggregator observes all messages, scheduled SITREP generation via LLM (military format: SITUATION, KEY ACTIVITY, NODE STATUS, ASSESSMENT), text/PDF export, template fallback. Commands: `!brief`, `!brief now`, `!brief history`.
+  - **Command registry refactor**: Replaced if/elif chain in `_handle_command` with dict-based registry. Addon commands auto-appear in `!help`.
+  - **Dashboard tab injection**: Addons inject tabs via string replacement at serve time — no template engine needed.
+  - **OllamaClient**: Added `system_prompt_override` parameter to `chat()` for addon-specific system prompts.
+  - **New CLI flags**: `--enable-dead-drop`, `--enable-triage`, `--enable-brief`, `--enable-all-addons`, `--triage-dir`, `--brief-interval`
+  - **New dependency**: `cryptography>=41.0.0` for Dead Drop encryption
+
+- Key decisions:
+  - Addons are opt-in (disabled by default) to keep the core bridge lightweight
+  - Triage uses a separate RAGEngine instance (isolated medical KB, no cross-contamination with general docs)
+  - Triage queries are stateless (no conversation history) for grounded, fresh answers
+  - Dead Drop uses Fernet symmetric encryption (passphrase → PBKDF2 key derivation) — simpler than PKI, appropriate for the threat model
+  - Brief falls back to template-based SITREPs when LLM is unavailable
+  - Plugin loading is explicit (config/CLI controlled), not auto-discovery
+
+- Files added:
+  - `meshtastic-bridge/addons/` — full addon system (base.py + 3 addon packages)
+
+---
+
 ## [2026-03-26] — DM-Only Responses, End Indicator
 
 - What changed:

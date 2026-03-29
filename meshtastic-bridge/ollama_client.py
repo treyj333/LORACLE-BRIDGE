@@ -274,6 +274,7 @@ class OllamaClient:
         node_id: str,
         message: str,
         context_messages: Optional[List[Dict]] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> str:  # noqa: C901
         """Send a message to Ollama and return the response.
 
@@ -284,6 +285,8 @@ class OllamaClient:
             message: The user's message.
             context_messages: Optional RAG context messages to inject
                 between system prompt and history.
+            system_prompt_override: If provided, use this instead of the
+                default system prompt (used by addons like Triage).
         """
         # Auto-clear stale conversation context (>1 hour idle)
         now = time.time()
@@ -294,8 +297,8 @@ class OllamaClient:
         self._last_activity[node_id] = now
 
         # Build messages array: [system] + [context] + [history] + [user]
-        system_content = self.system_prompt
-        if context_messages:
+        system_content = system_prompt_override or self.system_prompt
+        if context_messages and not system_prompt_override:
             from rag.engine import RAG_SYSTEM_ADDENDUM
             system_content = f"{self.system_prompt}\n\n{RAG_SYSTEM_ADDENDUM}"
         messages = [{"role": "system", "content": system_content}]

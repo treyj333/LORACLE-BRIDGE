@@ -139,7 +139,7 @@ The bridge includes a full-featured web control panel that starts automatically.
 http://localhost:8000
 ```
 
-### 5 Tabs
+### Dashboard Tabs
 
 | Tab | What It Does |
 |-----|-------------|
@@ -148,6 +148,9 @@ http://localhost:8000
 | **Controls** | Switch AI models, edit the system prompt, adjust response length and chunk delay, toggle RAG, **add web URLs to the knowledge base**, manage ingested documents, clear conversation history |
 | **Debug** | Live color-coded log viewer (filterable by level), firmware/library versions, performance metrics, thread and queue internals |
 | **Guide** | Built-in quick start, connection method explanations, mesh command reference, and troubleshooting tips |
+| **Dead Drop** | *(addon)* Encrypted message queue — pending/delivered status, purge controls, stats |
+| **Triage** | *(addon)* Medical reference search — query TCCC knowledge base, manage medical docs, ingest URLs |
+| **Brief** | *(addon)* Situation reports — latest SITREP, generate on demand, history, export as text/PDF |
 
 ### Chat Panel
 
@@ -293,6 +296,19 @@ Anyone on the mesh network can send these special commands (prefix with `!`):
 | `!ping` | Simple connectivity test — confirms the bridge is alive |
 | `!rag on/off` | Toggles knowledge base search on or off for your node |
 | `!docs` | Lists all ingested documents in the knowledge base |
+| **Dead Drop Commands** | *(requires `--enable-dead-drop`)* |
+| `!drop-key <passphrase>` | Register your encryption key for Dead Drop |
+| `!drop <node> <message>` | Leave an encrypted message for another node |
+| `!pickup` | Retrieve your pending encrypted messages |
+| `!pending` | Check how many Dead Drop messages are waiting |
+| **Triage Commands** | *(requires `--enable-triage`)* |
+| `!triage <question>` | Query the offline medical reference (TCCC/field medicine) |
+| `!triage topics` | List available medical topics in the knowledge base |
+| `!triage status` | Show medical knowledge base statistics |
+| **Brief Commands** | *(requires `--enable-brief`)* |
+| `!brief` | Get the latest AI-generated situation report |
+| `!brief now` | Generate a fresh SITREP immediately |
+| `!brief history` | List available SITREPs by timestamp |
 
 ---
 
@@ -323,6 +339,14 @@ Knowledge Base (on by default):
   --docs                  List ingested documents
   --docs-stats            Show knowledge base statistics
 
+Addons:
+  --enable-dead-drop      Enable Dead Drop encrypted async messaging
+  --enable-triage         Enable Triage offline medical reference
+  --triage-dir <path>     Triage medical KB directory (default: ~/.mesh-llm/triage)
+  --enable-brief          Enable Brief AI-generated situation reports
+  --brief-interval <int>  SITREP generation interval in minutes (default: 60)
+  --enable-all-addons     Enable all available addons
+
 Other:
   --dashboard-port <int>  Web dashboard port (default: 8000)
   --help                  Show help and exit
@@ -348,6 +372,59 @@ Other:
 
 # List what models you have installed
 ./mesh-llm.sh --list-models
+```
+
+---
+
+## Addons — LORACLE Ecosystem
+
+The bridge supports pluggable addons that extend its capabilities. Each addon adds mesh commands, a dashboard tab, and API endpoints.
+
+### LORACLE DEAD DROP — Encrypted Async Messaging
+
+Leave encrypted messages for mesh nodes that get picked up when they reconnect. Store-and-forward over LoRa.
+
+```bash
+./mesh-llm.sh --enable-dead-drop
+```
+
+- Nodes register encryption keys with `!drop-key <passphrase>`
+- Messages encrypted with Fernet (AES-128-CBC + HMAC) at rest on the bridge
+- Auto-expire after 72 hours
+- Dashboard tab shows pending/delivered status
+
+### LORACLE TRIAGE — Offline Medical Reference
+
+Offline TCCC (Tactical Combat Casualty Care) and field medicine reference. Queryable over mesh or from the dashboard.
+
+```bash
+./mesh-llm.sh --enable-triage
+```
+
+- Separate medical knowledge base (doesn't mix with general RAG)
+- Optimized for concise, actionable medical guidance
+- Ingest TCCC PDFs, wilderness medicine references, trauma protocols
+- Every response includes a medical disclaimer
+- High-contrast dashboard UI designed for speed under stress
+
+### LORACLE BRIEF — AI-Generated Situation Reports
+
+Watches mesh traffic and generates structured SITREPs (situation reports) using the local LLM.
+
+```bash
+./mesh-llm.sh --enable-brief --brief-interval 30
+```
+
+- Aggregates all mesh traffic (messages, commands, alerts)
+- Auto-generates SITREPs on a configurable schedule (default: hourly)
+- Military SITREP format: SITUATION, KEY ACTIVITY, NODE STATUS, ASSESSMENT
+- Export as text or PDF
+- Falls back to template-based reports if LLM is unavailable
+
+### Enable All Addons
+
+```bash
+./mesh-llm.sh --enable-all-addons
 ```
 
 ---
@@ -442,14 +519,30 @@ loracle/
 │   ├── standalone_bridge.py     # Main bridge — radio connection, message routing, LLM calls
 │   ├── ollama_client.py         # Talks to Ollama's REST API for AI responses
 │   ├── protocol.py              # LoRa chunking protocol
-│   ├── dashboard.py             # 5-tab web control panel (Flask, inline HTML/CSS/JS)
+│   ├── dashboard.py             # Web control panel with dynamic addon tab injection
 │   ├── manage_docs.py           # Document management CLI (ingest, list, stats)
-│   ├── config.py                # Default configuration values
 │   ├── requirements.txt         # Python dependencies
 │   ├── rag/                     # Knowledge base subsystem
 │   │   ├── engine.py            # SQLite + NumPy vector store with cosine similarity search
 │   │   ├── extractors.py        # Extracts text from PDFs, ZIM archives, and text files
 │   │   └── chunker.py           # Splits text into overlapping chunks for embedding
+│   ├── addons/                  # Pluggable addon system
+│   │   ├── base.py              # Base Addon class — interface for all addons
+│   │   ├── dead_drop/           # LORACLE DEAD DROP — encrypted async messaging
+│   │   │   ├── addon.py         # Command handlers, lifecycle hooks
+│   │   │   ├── store.py         # SQLite message queue (pending/delivered/expired)
+│   │   │   ├── crypto.py        # Fernet encryption (AES-128-CBC + HMAC)
+│   │   │   └── dashboard.py     # Dashboard tab HTML/JS + API routes
+│   │   ├── triage/              # LORACLE TRIAGE — offline medical reference
+│   │   │   ├── addon.py         # Medical query handler with separate RAG instance
+│   │   │   ├── prompts.py       # TCCC-optimized system prompts
+│   │   │   └── dashboard.py     # High-contrast medical reference UI
+│   │   └── brief/               # LORACLE BRIEF — AI-generated SITREPs
+│   │       ├── addon.py         # Traffic observer, SITREP scheduler
+│   │       ├── aggregator.py    # SQLite traffic event collector
+│   │       ├── generator.py     # LLM-powered SITREP generation
+│   │       ├── exporter.py      # Text + PDF export
+│   │       └── dashboard.py     # SITREP display, history, export controls
 │   └── tests/                   # Unit tests
 │       ├── test_protocol.py     # Protocol chunking/reassembly tests
 │       └── test_ollama_client.py

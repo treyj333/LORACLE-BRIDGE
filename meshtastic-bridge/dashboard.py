@@ -106,6 +106,63 @@ def set_bridge(bridge):
     logger.info("Dashboard bridge reference set")
 
 
+# ─── Addon tab/route registration ────────────────────────────────────────────
+
+_addon_tabs = []  # List of {id, label, html, js} dicts
+
+
+def register_addon_tab(tab_config: dict):
+    """Register a dashboard tab from an addon.
+
+    Args:
+        tab_config: Dict with keys: id, label, html, js
+    """
+    _addon_tabs.append(tab_config)
+    logger.info(f"Dashboard tab registered: {tab_config.get('label', tab_config.get('id'))}")
+
+
+def register_addon_api_route(method: str, path: str, handler):
+    """Register an API route from an addon.
+
+    Args:
+        method: HTTP method (GET, POST, DELETE, etc.)
+        path: URL path (e.g. "/api/dead_drop/pending")
+        handler: Flask view function
+    """
+    endpoint = path.replace("/", "_").strip("_")
+    app.add_url_rule(path, endpoint=endpoint, view_func=handler, methods=[method])
+    logger.info(f"API route registered: {method} {path}")
+
+
+def _inject_addon_tabs(html: str) -> str:
+    """Inject addon tabs into the dashboard HTML at serve time."""
+    if not _addon_tabs:
+        return html
+
+    # Inject tab buttons before </nav>
+    tab_buttons = ""
+    tab_sections = ""
+    tab_js = ""
+    for tab in _addon_tabs:
+        tab_buttons += (
+            f'  <button class="tab-btn" data-tab="{tab["id"]}">'
+            f'{tab["label"]}</button>\n'
+        )
+        tab_sections += (
+            f'<section id="tab-{tab["id"]}" class="tab-panel">\n'
+            f'{tab["html"]}\n'
+            f'</section>\n\n'
+        )
+        tab_js += f'\n// ─── Addon: {tab["label"]} ───\n{tab["js"]}\n'
+
+    # Inject at markers
+    html = html.replace("</nav>", tab_buttons + "</nav>")
+    html = html.replace("</main>", tab_sections + "</main>")
+    html = html.replace("</script>\n</body>", tab_js + "\n</script>\n</body>")
+
+    return html
+
+
 # ─── Flask app ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
@@ -113,7 +170,8 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return Response(DASHBOARD_HTML, mimetype="text/html")
+    html = _inject_addon_tabs(DASHBOARD_HTML)
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/state")

@@ -41,7 +41,11 @@ except ImportError:
 
 from ollama_client import OllamaClient, auto_select_model, MODEL_PROFILES, get_system_ram_gb
 from protocol import chunk_message
-from dashboard import start_dashboard, record_message, update_state, set_bridge
+from dashboard import (
+    start_dashboard, record_message, update_state, set_bridge,
+    register_addon_tab, register_addon_api_route,
+)
+from addons import load_addons
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +108,7 @@ class StandaloneBridge:
         rag_enabled: bool = True,
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
+        addon_config: Optional[Dict[str, dict]] = None,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -155,6 +160,25 @@ class StandaloneBridge:
             system_prompt=system_prompt,
         )
 
+        # Command registry: {cmd_string: (handler, help_text)}
+        self._command_registry: Dict[str, Tuple[callable, str]] = {}
+        self._init_commands()
+
+        # Addons
+        self._addons = []
+        if addon_config is not None:
+            self._addons = load_addons(self, addon_config)
+            for addon in self._addons:
+                # Register addon commands
+                for cmd, (handler, help_text) in addon.get_commands().items():
+                    self._command_registry[cmd] = (handler, help_text)
+                # Register addon dashboard tabs and API routes
+                tab = addon.get_dashboard_tab()
+                if tab:
+                    register_addon_tab(tab)
+                for method, path, handler in addon.get_api_routes():
+                    register_addon_api_route(method, path, handler)
+
     def start(self):
         """Start the bridge."""
         logger.info("Starting Standalone LORACLE BRIDGE")
@@ -192,6 +216,13 @@ class StandaloneBridge:
 
         # Connect to radio in background — bridge runs even without radio
         threading.Thread(target=self._radio_connection_loop, daemon=True).start()
+
+        # Start addons
+        for addon in self._addons:
+            try:
+                addon.on_start()
+            except Exception as e:
+                logger.warning(f"Addon {addon.name} on_start error: {e}")
 
         logger.info("Bridge ready — dashboard at http://localhost:%d", self.dashboard_port)
 
@@ -351,6 +382,14 @@ class StandaloneBridge:
             ch_label = "DM" if is_dm else f"ch{channel}"
             logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
             record_message("in", sender, text.strip())
+
+            # Notify addon observers
+            for addon in self._addons:
+                try:
+                    addon.on_message(sender, text.strip(), packet)
+                except Exception as e:
+                    logger.warning(f"Addon {addon.name} on_message error: {e}")
+
             self._request_queue.put((sender, text.strip(), channel, is_dm))
 
         except Exception as e:
@@ -415,8 +454,108 @@ class StandaloneBridge:
                 logger.error(f"Error processing message from {node_id}: {e}")
                 self._send_response(node_id, f"Error: {e}", channel=channel, is_dm=is_dm)
 
+    def _init_commands(self):
+        """Register built-in commands into the command registry."""
+        self._command_registry["!help"] = (self._cmd_help, "this message")
+        self._command_registry["!status"] = (self._cmd_status, "bridge info")
+        self._command_registry["!model"] = (self._cmd_model, "<name> - switch model")
+        self._command_registry["!models"] = (self._cmd_models, "list models")
+        self._command_registry["!clear"] = (self._cmd_clear, "reset conversation")
+        self._command_registry["!ping"] = (self._cmd_ping, "connectivity test")
+        self._command_registry["!more"] = (self._cmd_more, "next page of long response")
+        if self.rag_enabled:
+            self._command_registry["!rag"] = (self._cmd_rag, "on/off - toggle knowledge base")
+            self._command_registry["!docs"] = (self._cmd_docs, "list documents")
+
+    def _cmd_help(self, node_id: str, arg: str) -> str:
+        parts = []
+        for cmd, (_handler, help_text) in sorted(self._command_registry.items()):
+            parts.append(f"{cmd} - {help_text}")
+        return "Commands: " + ", ".join(parts)
+
+    def _cmd_status(self, node_id: str, arg: str) -> str:
+        uptime = int(time.time() - self._start_time)
+        h, rem = divmod(uptime, 3600)
+        m, s = divmod(rem, 60)
+        status = (
+            f"Model: {self.ollama.model}, "
+            f"Uptime: {h}h{m}m{s}s, "
+            f"Nodes: {self._node_count}, "
+            f"Messages: {self._message_count}"
+        )
+        if self.rag_enabled and self.rag_engine:
+            stats = self.rag_engine.get_stats()
+            rag_active = "on" if node_id not in self._rag_disabled_nodes else "off"
+            status += (
+                f", RAG: {rag_active} "
+                f"({stats['total_docs']} docs, {stats['total_chunks']} chunks)"
+            )
+        # Show active addons
+        if self._addons:
+            addon_names = [a.display_name for a in self._addons]
+            status += f", Addons: {', '.join(addon_names)}"
+        return status
+
+    def _cmd_model(self, node_id: str, arg: str) -> str:
+        if not arg:
+            return f"Current model: {self.ollama.model}. Usage: !model <name>"
+        if self.ollama.set_model(arg):
+            return f"Switched to model: {self.ollama.model}"
+        models = self.ollama.list_models()
+        return f"Model '{arg}' not found. Available: {', '.join(models[:5])}"
+
+    def _cmd_models(self, node_id: str, arg: str) -> str:
+        models = self.ollama.list_models()
+        if models:
+            return f"Models: {', '.join(models)}"
+        return "No models installed."
+
+    def _cmd_clear(self, node_id: str, arg: str) -> str:
+        self.ollama.clear_history(node_id)
+        return "Conversation history cleared."
+
+    def _cmd_ping(self, node_id: str, arg: str) -> str:
+        return "pong"
+
+    def _cmd_more(self, node_id: str, arg: str) -> str:
+        remaining = self._overflow.get(node_id, "")
+        if not remaining:
+            return "No more content."
+        del self._overflow[node_id]
+        return remaining
+
+    def _cmd_rag(self, node_id: str, arg: str) -> str:
+        if not self.rag_enabled:
+            return "RAG not enabled. Start bridge with --rag flag."
+        if arg.lower() == "on":
+            self._rag_disabled_nodes.discard(node_id)
+            return "Knowledge base enabled for your node."
+        elif arg.lower() == "off":
+            self._rag_disabled_nodes.add(node_id)
+            return "Knowledge base disabled for your node."
+        else:
+            active = "on" if node_id not in self._rag_disabled_nodes else "off"
+            stats = self.rag_engine.get_stats()
+            return (
+                f"RAG: {active} for your node. "
+                f"{stats['total_docs']} docs, {stats['total_chunks']} chunks. "
+                f"Usage: !rag on/off"
+            )
+
+    def _cmd_docs(self, node_id: str, arg: str) -> str:
+        if not self.rag_enabled or not self.rag_engine:
+            return "RAG not enabled. Start bridge with --rag flag."
+        docs = self.rag_engine.list_documents()
+        if not docs:
+            return "No documents in knowledge base."
+        lines = [f"{d['filename']} ({d['chunk_count']} chunks)" for d in docs[:10]]
+        result = "Docs: " + ", ".join(lines)
+        if len(docs) > 10:
+            result += f" ...and {len(docs) - 10} more"
+        return result
+
     def _handle_command(self, node_id: str, text: str) -> Optional[str]:
-        """Handle ! commands. Returns response string or None for regular messages."""
+        """Handle ! commands via registry lookup. Returns response or None."""
         if not text.startswith("!"):
             return None
 
@@ -424,105 +563,12 @@ class StandaloneBridge:
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        if cmd == "!help":
-            help_text = (
-                "Commands: "
-                "!help - this message, "
-                "!more - next page of long response, "
-                "!status - bridge info, "
-                "!model <name> - switch model, "
-                "!models - list models, "
-                "!clear - reset conversation, "
-                "!ping - connectivity test"
-            )
-            if self.rag_enabled:
-                help_text += (
-                    ", !rag on/off - toggle knowledge base, "
-                    "!docs - list documents"
-                )
-            return help_text
+        entry = self._command_registry.get(cmd)
+        if entry:
+            handler, _help = entry
+            return handler(node_id, arg)
 
-        elif cmd == "!status":
-            uptime = int(time.time() - self._start_time)
-            h, rem = divmod(uptime, 3600)
-            m, s = divmod(rem, 60)
-            status = (
-                f"Model: {self.ollama.model}, "
-                f"Uptime: {h}h{m}m{s}s, "
-                f"Nodes: {self._node_count}, "
-                f"Messages: {self._message_count}"
-            )
-            if self.rag_enabled and self.rag_engine:
-                stats = self.rag_engine.get_stats()
-                rag_active = "on" if node_id not in self._rag_disabled_nodes else "off"
-                status += (
-                    f", RAG: {rag_active} "
-                    f"({stats['total_docs']} docs, {stats['total_chunks']} chunks)"
-                )
-            return status
-
-        elif cmd == "!model":
-            if not arg:
-                return f"Current model: {self.ollama.model}. Usage: !model <name>"
-            if self.ollama.set_model(arg):
-                return f"Switched to model: {self.ollama.model}"
-            else:
-                models = self.ollama.list_models()
-                return f"Model '{arg}' not found. Available: {', '.join(models[:5])}"
-
-        elif cmd == "!models":
-            models = self.ollama.list_models()
-            if models:
-                return f"Models: {', '.join(models)}"
-            return "No models installed."
-
-        elif cmd == "!clear":
-            self.ollama.clear_history(node_id)
-            return "Conversation history cleared."
-
-        elif cmd == "!ping":
-            return "pong"
-
-        elif cmd == "!more":
-            remaining = self._overflow.get(node_id, "")
-            if not remaining:
-                return "No more content."
-            # Remove from overflow — _send_response will re-page if still too long
-            del self._overflow[node_id]
-            return remaining
-
-        elif cmd == "!rag":
-            if not self.rag_enabled:
-                return "RAG not enabled. Start bridge with --rag flag."
-            if arg.lower() == "on":
-                self._rag_disabled_nodes.discard(node_id)
-                return "Knowledge base enabled for your node."
-            elif arg.lower() == "off":
-                self._rag_disabled_nodes.add(node_id)
-                return "Knowledge base disabled for your node."
-            else:
-                active = "on" if node_id not in self._rag_disabled_nodes else "off"
-                stats = self.rag_engine.get_stats()
-                return (
-                    f"RAG: {active} for your node. "
-                    f"{stats['total_docs']} docs, {stats['total_chunks']} chunks. "
-                    f"Usage: !rag on/off"
-                )
-
-        elif cmd == "!docs":
-            if not self.rag_enabled or not self.rag_engine:
-                return "RAG not enabled. Start bridge with --rag flag."
-            docs = self.rag_engine.list_documents()
-            if not docs:
-                return "No documents in knowledge base."
-            lines = [f"{d['filename']} ({d['chunk_count']} chunks)" for d in docs[:10]]
-            result = "Docs: " + ", ".join(lines)
-            if len(docs) > 10:
-                result += f" ...and {len(docs) - 10} more"
-            return result
-
-        else:
-            return None  # Unknown ! prefix — treat as regular message
+        return None  # Unknown ! prefix — treat as regular message
 
     def _is_interface_alive(self) -> bool:
         """Quick check if the radio interface is still usable."""
@@ -699,6 +745,13 @@ class StandaloneBridge:
 
     def _cleanup(self):
         """Clean up resources."""
+        # Stop addons
+        for addon in self._addons:
+            try:
+                addon.on_stop()
+            except Exception as e:
+                logger.warning(f"Addon {addon.name} on_stop error: {e}")
+
         if self.interface:
             try:
                 self.interface.close()
@@ -785,6 +838,43 @@ def parse_args():
         help="Web dashboard port (default: 8000)",
     )
 
+    # Addon flags
+    parser.add_argument(
+        "--enable-dead-drop",
+        action="store_true",
+        default=False,
+        help="Enable Dead Drop encrypted async messaging",
+    )
+    parser.add_argument(
+        "--enable-triage",
+        action="store_true",
+        default=False,
+        help="Enable Triage offline medical reference",
+    )
+    parser.add_argument(
+        "--triage-dir",
+        default=None,
+        help="Triage medical knowledge base directory (default: ~/.mesh-llm/triage)",
+    )
+    parser.add_argument(
+        "--enable-brief",
+        action="store_true",
+        default=False,
+        help="Enable Brief AI-generated situation reports",
+    )
+    parser.add_argument(
+        "--brief-interval",
+        type=int,
+        default=60,
+        help="Brief SITREP generation interval in minutes (default: 60)",
+    )
+    parser.add_argument(
+        "--enable-all-addons",
+        action="store_true",
+        default=False,
+        help="Enable all available addons",
+    )
+
     return parser.parse_args()
 
 
@@ -859,6 +949,20 @@ def main():
     # Use profile prompt unless user provided a custom --system-prompt
     effective_prompt = args.system_prompt or profile_prompt
 
+    # Build addon config from CLI flags
+    addon_config = {}
+    if args.enable_all_addons or args.enable_dead_drop:
+        addon_config["dead_drop"] = {}
+    if args.enable_all_addons or args.enable_triage:
+        addon_config["triage"] = {
+            "data_dir": args.triage_dir,
+            "ollama_url": args.ollama_url,
+        }
+    if args.enable_all_addons or args.enable_brief:
+        addon_config["brief"] = {
+            "interval_minutes": args.brief_interval,
+        }
+
     bridge = StandaloneBridge(
         connection_type=connection_type,
         serial_port=serial_port,
@@ -873,6 +977,7 @@ def main():
         rag_enabled=not args.no_rag,
         rag_dir=args.rag_dir,
         dashboard_port=args.dashboard_port,
+        addon_config=addon_config if addon_config else None,
     )
 
     # Pull the better model in background after bridge starts
