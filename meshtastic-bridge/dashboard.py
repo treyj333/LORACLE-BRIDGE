@@ -175,6 +175,32 @@ def _inject_addon_tabs(html: str) -> str:
 
 app = Flask(__name__)
 
+# ─── Offline tile serving ───────────────────────────────────────────────────
+
+_TILE_DIR = os.path.expanduser("~/.mesh-llm/tiles")
+
+
+@app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
+def serve_tile(z, x, y):
+    """Serve map tiles from local cache, falling back to online."""
+    tile_path = os.path.join(_TILE_DIR, str(z), str(x), f"{y}.png")
+    if os.path.exists(tile_path):
+        return Response(open(tile_path, "rb").read(), mimetype="image/png")
+    # Fallback: proxy from OSM (and cache for offline use)
+    try:
+        import random
+        server = random.choice(["a", "b", "c"])
+        url = f"https://{server}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        resp = requests_lib.get(url, timeout=5, headers={"User-Agent": "LORACLE-Bridge/1.0"})
+        if resp.status_code == 200:
+            os.makedirs(os.path.dirname(tile_path), exist_ok=True)
+            with open(tile_path, "wb") as f:
+                f.write(resp.content)
+            return Response(resp.content, mimetype="image/png")
+    except Exception:
+        pass
+    return Response(b"", status=404)
+
 
 @app.route("/")
 def index():
@@ -1645,7 +1671,7 @@ async function infLoadRagDocs() {
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border-subtle)">' +
         '<span style="color:var(--text-secondary)">' + escapeHtml(doc.filename || doc.doc_id) + '</span>' +
         '<span style="display:flex;align-items:center;gap:8px">' +
-          '<span style="color:var(--text-dim)">' + (doc.chunks || 0) + ' chunks</span>' +
+          '<span style="color:var(--text-dim)">' + (doc.chunk_count || doc.chunks || 0) + ' chunks</span>' +
           '<button class="btn btn-sm" style="background:transparent;color:var(--accent-red);border-color:var(--accent-red);padding:2px 6px;font-size:0.72em" ' +
             'onclick="infDeleteDoc(\'' + escapeHtml(doc.doc_id) + '\')">x</button>' +
         '</span></div>';
@@ -1718,9 +1744,9 @@ function initMap() {
   if (_meshMap) return;
   var el = document.getElementById('mesh-map');
   if (!el || typeof L === 'undefined') return;
-  _meshMap = L.map('mesh-map', {attributionControl: false}).setView([0, 0], 2);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
+  _meshMap = L.map('mesh-map', {attributionControl: false}).setView([39.8, -98.5], 4);
+  L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+    maxZoom: 15,
     attribution: 'OSM'
   }).addTo(_meshMap);
 }
