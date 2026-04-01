@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "loracle-bridge",
+      "runtimeExecutable": "./meshtastic-bridge/venv/bin/python",
+      "runtimeArgs": ["meshtastic-bridge/standalone_bridge.py", "--dashboard-port", "8000", "--enable-all-addons"],
+      "port": 8000
+    }
+  ]
+}

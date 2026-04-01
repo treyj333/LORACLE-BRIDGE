@@ -15,12 +15,14 @@ Usage:
 import argparse
 import glob
 import hashlib
+import json
 import logging
+import os
 import queue
 import sys
 import threading
 import time
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import meshtastic
 import meshtastic.serial_interface
@@ -119,7 +121,10 @@ class StandaloneBridge:
         self.compression_enabled = compression_enabled
         self.interface = None
         self._running = False
+        self._connection_paused = False
         self._reconnect_delay = 1
+        self._ble_scanning = False
+        self._connecting = False
         self._request_queue: queue.Queue = queue.Queue()
         self._start_time = time.time()
         self._message_count = 0
@@ -127,6 +132,7 @@ class StandaloneBridge:
         self._known_nodes = set()  # type: Set[str]
         self._node_last_active: Dict[str, float] = {}  # node_id -> last message timestamp
         self._overflow: Dict[str, str] = {}  # node_id -> remaining text for !more pager
+        self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
 
         # RAG
         self.rag_enabled = rag_enabled
@@ -204,8 +210,9 @@ class StandaloneBridge:
 
         logger.info(f"Ollama connected: {self.ollama.base_url} (model: {self.ollama.model})")
 
-        # Register message handler
+        # Register message handlers
         pub.subscribe(self._on_receive, "meshtastic.receive.text")
+        pub.subscribe(self._on_position, "meshtastic.receive.position")
 
         self._running = True
 
@@ -276,13 +283,24 @@ class StandaloneBridge:
     def _radio_connection_loop(self):
         """Background loop: connect to radio, reconnect if it drops."""
         while self._running:
+            if self._connection_paused:
+                time.sleep(2)
+                continue
             if self._is_interface_alive():
                 time.sleep(5)
+                continue
+            # Skip if another thread is already connecting (e.g. dashboard switch)
+            if self._connecting:
+                time.sleep(2)
                 continue
             # Interface is dead or not connected — try to connect
             self._connect_radio()
             if self.interface:
                 self._check_firmware()
+                self._load_nodedb_positions()
+                # BLE needs more time to stabilize after connecting
+                if self.connection_type == "ble":
+                    time.sleep(10)
             else:
                 time.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(self._reconnect_delay * 2, 60)
@@ -293,6 +311,9 @@ class StandaloneBridge:
         Sets self.interface on success, leaves it None on failure.
         Never calls sys.exit — caller handles retries.
         """
+        if self._connecting:
+            return
+        self._connecting = True
         try:
             if self.connection_type == "ble":
                 if not BLE_AVAILABLE:
@@ -328,7 +349,13 @@ class StandaloneBridge:
 
             self._reconnect_delay = 1
             logger.info("Connected to Meshtastic device")
-            update_state(connected=True)
+            if self.connection_type == "ble":
+                conn_addr = self.ble_address or "scan"
+            elif self.connection_type == "tcp":
+                conn_addr = f"{self.tcp_host}:{self.tcp_port}"
+            else:
+                conn_addr = self.serial_port or "auto"
+            update_state(connected=True, connection_address=conn_addr or "auto")
 
         except Exception as e:
             logger.error(
@@ -336,6 +363,176 @@ class StandaloneBridge:
             )
             self.interface = None
             update_state(connected=False)
+        finally:
+            self._connecting = False
+
+    # ─── BLE scanning & connection management ──────────────────────────────────
+
+    def scan_ble_devices(self, timeout: float = 10.0) -> List[dict]:
+        """Scan for nearby Meshtastic BLE devices.
+
+        Runs the scan in a **subprocess** to protect the bridge from macOS
+        CoreBluetooth SIGABRT crashes (which happen if Python's Info.plist
+        lacks NSBluetoothAlwaysUsageDescription).  The subprocess uses the
+        meshtastic library's BLEInterface.scan() which filters by the
+        Meshtastic service UUID.
+        """
+        if not BLE_AVAILABLE:
+            return []
+        if self._ble_scanning:
+            return []
+
+        self._ble_scanning = True
+        try:
+            import subprocess
+            # Run scan in isolated subprocess — if it crashes, bridge survives
+            scan_script = (
+                "import json, sys\n"
+                "try:\n"
+                "    import meshtastic.ble_interface\n"
+                "    devices = meshtastic.ble_interface.BLEInterface.scan()\n"
+                "    result = []\n"
+                "    for d in devices:\n"
+                "        result.append({\n"
+                "            'name': d.name or 'Meshtastic Device',\n"
+                "            'address': str(d.address),\n"
+                "            'rssi': d.rssi if hasattr(d, 'rssi') and d.rssi else -100,\n"
+                "        })\n"
+                "    result.sort(key=lambda x: x['rssi'], reverse=True)\n"
+                "    print(json.dumps(result))\n"
+                "except Exception as e:\n"
+                "    print(json.dumps({'error': str(e)}))\n"
+            )
+            # Use the same Python that's running the bridge
+            venv_python = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python"
+            )
+            python_cmd = venv_python if os.path.exists(venv_python) else sys.executable
+
+            proc = subprocess.run(
+                [python_cmd, "-c", scan_script],
+                capture_output=True, text=True,
+                timeout=int(timeout) + 10,
+            )
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.strip()
+                if "NSBluetoothAlwaysUsageDescription" in stderr or proc.returncode == -6:
+                    logger.error(
+                        "BLE scan crashed — Python lacks Bluetooth permission on macOS. "
+                        "Run: sudo /usr/libexec/PlistBuddy -c "
+                        "\"Add :NSBluetoothAlwaysUsageDescription string "
+                        "'Needs Bluetooth for Meshtastic.'\" "
+                        "\"$(python3 -c \"import sys,os; print(os.path.join("
+                        "sys.base_prefix,'Resources/Python.app/Contents/Info.plist'))\")\" "
+                        "&& then restart the bridge."
+                    )
+                    return [{"error": "bluetooth_permission",
+                             "message": "Python needs Bluetooth permission on macOS. "
+                                        "Restart the bridge with ./mesh-llm.sh to auto-fix, "
+                                        "or see the Debug log for manual instructions."}]
+                logger.error(f"BLE scan subprocess failed (exit {proc.returncode}): {stderr}")
+                return [{"error": "scan_failed", "message": stderr or "BLE scan crashed"}]
+
+            output = proc.stdout.strip()
+            if not output:
+                return []
+
+            data = json.loads(output)
+            if isinstance(data, dict) and "error" in data:
+                logger.error(f"BLE scan error: {data['error']}")
+                return [{"error": "scan_error", "message": data["error"]}]
+            return data
+
+        except subprocess.TimeoutExpired:
+            logger.error("BLE scan timed out")
+            return [{"error": "timeout", "message": "BLE scan timed out"}]
+        except Exception as e:
+            logger.error(f"BLE scan failed: {e}")
+            return [{"error": "scan_failed", "message": str(e)}]
+        finally:
+            self._ble_scanning = False
+
+    def disconnect_radio(self):
+        """Disconnect current radio and pause auto-reconnect."""
+        self._connection_paused = True
+        if self.interface:
+            try:
+                self.interface.close()
+            except Exception as e:
+                logger.warning(f"Error closing interface: {e}")
+            self.interface = None
+        update_state(connected=False, connection_address="")
+        logger.info("Radio disconnected (auto-reconnect paused)")
+
+    def switch_connection(self, connection_type: str, address: str = None,
+                          host: str = None, port: int = None) -> dict:
+        """Switch to a different connection type/device.
+
+        Returns {ok: bool, error: str?}
+        """
+        # Close existing interface
+        if self.interface:
+            try:
+                self.interface.close()
+            except Exception:
+                pass
+            self.interface = None
+
+        # Update connection params
+        self.connection_type = connection_type
+        if connection_type == "ble":
+            self.ble_address = address
+            if address:
+                self._save_last_ble_device(address)
+        elif connection_type == "tcp":
+            if host:
+                self.tcp_host = host
+            if port:
+                self.tcp_port = port
+        elif connection_type == "serial":
+            self.serial_port = address  # None means auto-detect
+
+        # Unpause and reset reconnect delay
+        self._connection_paused = False
+        self._reconnect_delay = 1
+        update_state(connection_type=connection_type)
+
+        # Attempt immediate connection
+        self._connect_radio()
+        if self.interface:
+            self._check_firmware()
+            addr = address or host or self.serial_port or "auto"
+            update_state(connection_address=addr)
+            return {"ok": True}
+        else:
+            return {"ok": False, "error": "Connection failed — will retry in background"}
+
+    @staticmethod
+    def _ble_config_path() -> str:
+        config_dir = os.path.expanduser("~/.mesh-llm")
+        os.makedirs(config_dir, exist_ok=True)
+        return os.path.join(config_dir, "ble_last_device.json")
+
+    def _save_last_ble_device(self, address: str, name: str = ""):
+        """Persist last-connected BLE device for quick reconnect."""
+        try:
+            with open(self._ble_config_path(), "w") as f:
+                json.dump({"address": address, "name": name}, f)
+        except Exception as e:
+            logger.warning(f"Failed to save BLE device: {e}")
+
+    @staticmethod
+    def load_last_ble_device() -> Optional[dict]:
+        """Load last-connected BLE device info."""
+        path = StandaloneBridge._ble_config_path()
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
 
     def _on_receive(self, packet, interface):
         """Handle incoming text message from the mesh."""
@@ -394,6 +591,63 @@ class StandaloneBridge:
 
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
+
+    def _on_position(self, packet, interface):
+        """Handle incoming position packet from the mesh."""
+        try:
+            sender = packet.get("fromId", "")
+            if not sender:
+                return
+            pos = packet.get("decoded", {}).get("position", {})
+            lat = pos.get("latitude") or pos.get("latitudeI")
+            lon = pos.get("longitude") or pos.get("longitudeI")
+            if lat is None or lon is None:
+                return
+            # latitudeI/longitudeI are in 1e-7 degrees
+            if isinstance(lat, int) and abs(lat) > 900:
+                lat = lat / 1e7
+            if isinstance(lon, int) and abs(lon) > 1800:
+                lon = lon / 1e7
+            if lat == 0 and lon == 0:
+                return  # Skip zero coordinates
+            self._node_positions[sender] = {
+                "lat": lat,
+                "lon": lon,
+                "alt": pos.get("altitude", 0),
+                "last_update": time.time(),
+            }
+            logger.debug(f"Position update: {sender} -> {lat:.5f}, {lon:.5f}")
+        except Exception as e:
+            logger.debug(f"Error processing position: {e}")
+
+    def _load_nodedb_positions(self):
+        """Read initial position data from the meshtastic nodeDB after connecting."""
+        if not self.interface:
+            return
+        try:
+            nodes = getattr(self.interface, "nodes", None)
+            if not nodes:
+                return
+            count = 0
+            for node_id, info in nodes.items():
+                pos = info.get("position", {})
+                if not pos:
+                    continue
+                lat = pos.get("latitude", 0)
+                lon = pos.get("longitude", 0)
+                if lat == 0 and lon == 0:
+                    continue
+                self._node_positions[str(node_id)] = {
+                    "lat": lat,
+                    "lon": lon,
+                    "alt": pos.get("altitude", 0),
+                    "last_update": pos.get("time", time.time()),
+                }
+                count += 1
+            if count:
+                logger.info(f"Loaded {count} node positions from nodeDB")
+        except Exception as e:
+            logger.debug(f"Could not read nodeDB positions: {e}")
 
     def _processing_loop(self):
         """Process queued messages through Ollama and send responses."""
@@ -581,6 +835,10 @@ class StandaloneBridge:
             # For TCP: check socket is not None (used by _writeBytes)
             if hasattr(self.interface, "socket") and self.interface.socket is None:
                 return False
+            # For BLE: check the client is still connected
+            if BLE_AVAILABLE and isinstance(self.interface, meshtastic.ble_interface.BLEInterface):
+                if hasattr(self.interface, "client") and self.interface.client is None:
+                    return False
             # Verify localNode is accessible (used by _sendPacket for hop_limit)
             _ = self.interface.localNode
             return True
@@ -842,13 +1100,13 @@ def parse_args():
     parser.add_argument(
         "--enable-dead-drop",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable Dead Drop encrypted async messaging",
     )
     parser.add_argument(
         "--enable-triage",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable Triage offline medical reference",
     )
     parser.add_argument(
@@ -859,7 +1117,7 @@ def parse_args():
     parser.add_argument(
         "--enable-brief",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable Brief AI-generated situation reports",
     )
     parser.add_argument(
@@ -871,7 +1129,7 @@ def parse_args():
     parser.add_argument(
         "--enable-all-addons",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable all available addons",
     )
 

@@ -85,116 +85,151 @@ def get_api_routes(addon):
         addon.rag_engine.delete_document(doc_id)
         return jsonify({"ok": True})
 
+    def api_ingest_file():
+        if not addon.rag_engine:
+            return jsonify({"error": "Triage RAG not available"}), 503
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        f = request.files["file"]
+        if not f.filename:
+            return jsonify({"error": "No filename"}), 400
+        import tempfile
+        tmp_path = os.path.join(tempfile.gettempdir(), f.filename)
+        try:
+            f.save(tmp_path)
+            result = addon.rag_engine.ingest_file(tmp_path)
+            return jsonify({"ok": True, "filename": result.get("filename", f.filename),
+                            "chunks": result.get("chunks", 0)})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
     return [
         ("GET", "/api/triage/status", api_status),
         ("GET", "/api/triage/documents", api_documents),
         ("POST", "/api/triage/query", api_query),
         ("POST", "/api/triage/ingest-url", api_ingest_url),
+        ("POST", "/api/triage/ingest-file", api_ingest_file),
         ("POST", "/api/triage/delete", api_delete_doc),
     ]
 
 
 _TAB_HTML = """
 <div style="max-width: 800px; margin: 0 auto;">
-  <h2 style="color: #ff4444; margin-bottom: 4px;">LORACLE TRIAGE</h2>
-  <p style="color: var(--text-muted); margin-bottom: 20px; font-size: 0.85em;">
-    Offline Medical Reference — TCCC &amp; Field Medicine
-  </p>
+  <h2 style="color: var(--accent-red); margin-bottom: 4px;">LORACLE TRIAGE</h2>
+  <div style="padding:6px 12px;background:rgba(255,51,51,0.1);border-left:3px solid var(--accent-red);margin-bottom:16px;font-size:0.8em;color:var(--accent-red)">
+    Offline Medical Reference — NOT a substitute for professional medical care
+  </div>
 
-  <!-- Query Section -->
-  <div style="margin-bottom: 24px;">
-    <div style="display: flex; gap: 8px;">
+  <!-- Empty State: No docs loaded -->
+  <div id="triage-empty-state" style="display:none;padding:20px;background:var(--bg-secondary);border:var(--border-width) solid var(--border);border-top:3px solid var(--accent-yellow);margin-bottom:20px">
+    <div style="font-size:0.95em;color:var(--text-primary);margin-bottom:12px">Load medical references to begin</div>
+    <div style="font-size:0.82em;color:var(--text-muted);margin-bottom:16px">
+      Upload TCCC handbooks, field medicine PDFs, or add URLs to medical references.
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <input type="file" id="triage-file-empty" accept=".pdf,.txt,.md,.zim"
+        style="font-size:0.82em;color:var(--text-secondary);flex:1;min-width:150px">
+      <button class="btn" onclick="triageUploadFile('triage-file-empty')">Upload PDF</button>
+    </div>
+    <div style="display:flex;gap:8px">
+      <input type="url" id="triage-url-empty" placeholder="https://example.com/medical-reference"
+        style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:8px 10px;font-size:0.85em">
+      <button class="btn" onclick="triageIngestUrl('triage-url-empty')">Add URL</button>
+    </div>
+  </div>
+
+  <!-- Loaded State: Search + Results -->
+  <div id="triage-loaded-state" style="display:none">
+    <!-- Search -->
+    <div style="display:flex;gap:8px;margin-bottom:16px">
       <input type="text" id="triage-query" placeholder="e.g. how to apply a tourniquet"
-        style="flex: 1; padding: 12px 16px; font-size: 1.1em; background: var(--bg-secondary);
-        border: 2px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+        style="flex:1;min-width:0;padding:10px 14px;font-size:1em;background:var(--bg-secondary);
+        border:2px solid var(--border);color:var(--text-primary)"
         onkeydown="if(event.key==='Enter')triageSearch()">
       <button onclick="triageSearch()"
-        style="background: #ff4444; color: white; border: none; padding: 12px 24px;
-        border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer;">
+        style="background:var(--accent-red);color:#0a0f06;border:2px solid var(--border);padding:10px 20px;font-size:0.95em;cursor:pointer;box-shadow:var(--shadow-raised)">
         Search
       </button>
     </div>
-  </div>
 
-  <!-- Result Section -->
-  <div id="triage-result" style="display: none; padding: 16px; background: var(--bg-secondary);
-    border-radius: 8px; border-left: 4px solid #ff4444; margin-bottom: 24px;
-    font-size: 1.05em; line-height: 1.6; white-space: pre-wrap;">
-  </div>
-  <div id="triage-loading" style="display: none; padding: 20px; text-align: center;
-    color: var(--text-muted);">
-    Searching medical references...
-  </div>
+    <!-- Result -->
+    <div id="triage-result" style="display:none;padding:14px;background:var(--bg-secondary);
+      border-left:4px solid var(--accent-red);margin-bottom:16px;
+      font-size:0.95em;line-height:1.6;white-space:pre-wrap;text-transform:none">
+    </div>
+    <div id="triage-loading" style="display:none;padding:16px;text-align:center;color:var(--text-muted)">
+      Searching medical references...
+    </div>
 
-  <!-- Stats -->
-  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px;">
-    <div class="stat-card">
-      <div class="stat-label">Medical Docs</div>
-      <div class="stat-value" id="triage-docs">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Knowledge Chunks</div>
-      <div class="stat-value" id="triage-chunks">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Status</div>
-      <div class="stat-value" id="triage-status-val" style="font-size: 0.8em;">—</div>
-    </div>
-  </div>
-
-  <!-- Document Management -->
-  <details style="margin-top: 16px;">
-    <summary style="cursor: pointer; font-weight: 600; padding: 8px 0;">
-      Medical Knowledge Base Management
-    </summary>
-    <div style="padding: 12px 0;">
-      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-        <input type="text" id="triage-ingest-url" placeholder="URL to medical reference..."
-          style="flex: 1; padding: 8px 12px; background: var(--bg-secondary);
-          border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);">
-        <button onclick="triageIngestUrl()"
-          style="background: var(--accent-blue); color: white; border: none;
-          padding: 8px 16px; border-radius: 6px; cursor: pointer;">
-          Ingest URL
-        </button>
+    <!-- Stats -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      <div class="stat-card">
+        <div class="stat-label">References</div>
+        <div class="stat-value" id="triage-docs">0</div>
       </div>
-      <div id="triage-doc-list" style="font-size: 0.85em;"></div>
+      <div class="stat-card">
+        <div class="stat-label">Sections</div>
+        <div class="stat-value" id="triage-chunks">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" id="triage-status-val" style="font-size:0.8em">—</div>
+      </div>
     </div>
-  </details>
 
-  <div style="margin-top: 20px; padding: 10px 14px; background: rgba(255,68,68,0.1);
-    border-radius: 6px; font-size: 0.8em; color: #ff6666; text-align: center;">
-    NOT a substitute for professional medical care — seek qualified help
+    <!-- Document Management (always visible when loaded) -->
+    <div style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);padding:14px;border-top:3px solid var(--accent-red)">
+      <div style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px;margin-bottom:10px">Manage References</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <input type="file" id="triage-file-loaded" accept=".pdf,.txt,.md,.zim"
+          style="font-size:0.82em;color:var(--text-secondary);flex:1;min-width:150px">
+        <button class="btn btn-sm" onclick="triageUploadFile('triage-file-loaded')">Upload</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input type="url" id="triage-url-loaded" placeholder="https://..."
+          style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;font-size:0.85em">
+        <button class="btn btn-sm" onclick="triageIngestUrl('triage-url-loaded')">Add URL</button>
+      </div>
+      <div id="triage-doc-list" style="font-size:0.82em;max-height:250px;overflow-y:auto"></div>
+    </div>
   </div>
 </div>
 """
 
 _TAB_JS = """
-// Triage polling
 async function triagePoll() {
   try {
     var res = await fetch('/api/triage/status');
     var data = await res.json();
-    document.getElementById('triage-docs').textContent = data.docs || 0;
+    var docCount = data.docs || 0;
+    document.getElementById('triage-docs').textContent = docCount;
     document.getElementById('triage-chunks').textContent = data.chunks || 0;
     document.getElementById('triage-status-val').textContent = data.available ? 'Ready' : 'No RAG';
+
+    // State-aware: show empty or loaded state
+    document.getElementById('triage-empty-state').style.display = (docCount === 0) ? 'block' : 'none';
+    document.getElementById('triage-loaded-state').style.display = (docCount > 0) ? 'block' : 'none';
 
     var docsRes = await fetch('/api/triage/documents');
     var docsData = await docsRes.json();
     var list = document.getElementById('triage-doc-list');
     if (docsData.documents && docsData.documents.length > 0) {
       list.innerHTML = docsData.documents.map(function(d) {
-        return '<div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">' +
-          '<span>' + d.filename + ' (' + d.chunk_count + ' chunks)</span>' +
-          '<button onclick="triageDeleteDoc(\\'' + d.doc_id + '\\')" style="background: none; border: none; color: var(--accent-red); cursor: pointer; font-size: 0.85em;">Delete</button>' +
-          '</div>';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-subtle)">' +
+          '<span style="color:var(--text-secondary)">' + escapeHtml(d.filename) + '</span>' +
+          '<span style="display:flex;align-items:center;gap:8px">' +
+            '<span style="color:var(--text-dim)">' + d.chunk_count + ' sections</span>' +
+            '<button onclick="triageDeleteDoc(\\'' + d.doc_id + '\\')" ' +
+              'style="background:none;border:1px solid var(--accent-red);color:var(--accent-red);padding:2px 8px;cursor:pointer;font-size:0.8em">x</button>' +
+          '</span></div>';
       }).join('');
     } else {
-      list.innerHTML = '<div style="color: var(--text-muted); padding: 8px 0;">No medical documents loaded. Add TCCC PDFs to get started.</div>';
+      list.innerHTML = '<div style="color:var(--text-dim);padding:6px 0">No documents loaded</div>';
     }
-  } catch(e) {
-    console.log('Triage poll error:', e);
-  }
+  } catch(e) {}
 }
 
 async function triageSearch() {
@@ -204,8 +239,7 @@ async function triageSearch() {
   document.getElementById('triage-result').style.display = 'none';
   try {
     var res = await fetch('/api/triage/query', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question: query})
     });
     var data = await res.json();
@@ -218,40 +252,53 @@ async function triageSearch() {
   document.getElementById('triage-loading').style.display = 'none';
 }
 
-async function triageIngestUrl() {
-  var url = document.getElementById('triage-ingest-url').value.trim();
+async function triageUploadFile(inputId) {
+  var input = document.getElementById(inputId);
+  if (!input || !input.files.length) return;
+  var formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    var res = await fetch('/api/triage/ingest-file', {method: 'POST', body: formData});
+    var data = await res.json();
+    if (data.ok) {
+      showToast('Uploaded: ' + data.filename + ' (' + data.chunks + ' sections)');
+      input.value = '';
+      triagePoll();
+    } else {
+      showToast(data.error || 'Upload failed', 'error');
+    }
+  } catch(e) { showToast('Upload error', 'error'); }
+}
+
+async function triageIngestUrl(inputId) {
+  var input = document.getElementById(inputId);
+  var url = input ? input.value.trim() : '';
   if (!url) return;
   try {
     var res = await fetch('/api/triage/ingest-url', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url: url})
     });
     var data = await res.json();
     if (data.ok) {
-      showToast('Ingested: ' + data.filename + ' (' + data.chunks + ' chunks)');
-      document.getElementById('triage-ingest-url').value = '';
+      showToast('Ingested: ' + data.filename + ' (' + data.chunks + ' sections)');
+      input.value = '';
       triagePoll();
     } else {
-      showToast('Ingest failed: ' + (data.error || 'Unknown error'), true);
+      showToast(data.error || 'Ingest failed', 'error');
     }
-  } catch(e) {
-    showToast('Ingest error: ' + e, true);
-  }
+  } catch(e) { showToast('Ingest error', 'error'); }
 }
 
 async function triageDeleteDoc(docId) {
   try {
     await fetch('/api/triage/delete', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({doc_id: docId})
     });
-    showToast('Document deleted');
+    showToast('Deleted');
     triagePoll();
-  } catch(e) {
-    showToast('Delete failed: ' + e, true);
-  }
+  } catch(e) { showToast('Delete failed', 'error'); }
 }
 
 triagePoll();

@@ -364,6 +364,39 @@ if [ "$BLE_MODE" = true ]; then
   echo "OK BLE support ready"
 fi
 
+# ─── 5b. Ensure macOS Bluetooth permission for Python ──────────────────────
+# macOS 15+ requires NSBluetoothAlwaysUsageDescription in the app's Info.plist.
+# Homebrew Python doesn't include this key, causing CoreBluetooth to SIGABRT.
+
+if [[ "$(uname)" == "Darwin" ]]; then
+  PYTHON_PLIST=$(venv/bin/python -c "
+import sys, os
+prefix = sys.base_prefix
+plist = os.path.join(prefix, 'Resources/Python.app/Contents/Info.plist')
+if os.path.exists(plist):
+    print(plist)
+" 2>/dev/null || true)
+
+  if [ -n "$PYTHON_PLIST" ]; then
+    HAS_BT_KEY=$(/usr/libexec/PlistBuddy -c "Print :NSBluetoothAlwaysUsageDescription" "$PYTHON_PLIST" 2>/dev/null || true)
+    if [ -z "$HAS_BT_KEY" ]; then
+      echo ""
+      echo "Bluetooth setup: Python needs permission to use Bluetooth on macOS."
+      echo "This requires adding a key to Python's Info.plist (needs sudo, one-time only)."
+      echo ""
+      if sudo /usr/libexec/PlistBuddy -c "Add :NSBluetoothAlwaysUsageDescription string 'LORACLE BRIDGE needs Bluetooth to communicate with Meshtastic LoRa radios.'" "$PYTHON_PLIST" 2>/dev/null; then
+        echo "OK Bluetooth permission key added to Python"
+        echo "   (macOS will prompt you to allow Bluetooth on first scan)"
+      else
+        echo "WARN: Could not patch Python's Info.plist for Bluetooth."
+        echo "   BLE scanning from the dashboard may not work."
+        echo "   To fix manually:"
+        echo "   sudo /usr/libexec/PlistBuddy -c \"Add :NSBluetoothAlwaysUsageDescription string 'LORACLE BRIDGE needs Bluetooth.'\" \"$PYTHON_PLIST\""
+      fi
+    fi
+  fi
+fi
+
 # ─── 6. RAG: pull embedding model if needed ──────────────────────────────────
 
 if [ "$RAG_ENABLED" = true ] || [ -n "$INGEST_PATH" ]; then

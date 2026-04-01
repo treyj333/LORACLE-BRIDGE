@@ -22,6 +22,8 @@ logger = logging.getLogger("dashboard")
 _state = {
     "connected": False,
     "connection_type": "",
+    "connection_address": "",
+    "ble_available": False,
     "model": "",
     "ollama_url": "",
     "uptime_start": 0,
@@ -83,16 +85,22 @@ def update_state(**kwargs):
     _state.update(kwargs)
 
 
-def record_message(direction, node_id, text, chunks=0, llm_time=0):
-    """Called by the bridge to record a message event."""
-    _messages.append({
+def record_message(direction, node_id, text, chunks=0, llm_time=0, **kwargs):
+    """Called by the bridge to record a message event.
+
+    Extra kwargs (rag_chunks, rag_docs, model, direction label, etc.)
+    are stored in the message record for the Inference activity log.
+    """
+    msg = {
         "ts": time.time(),
         "dir": direction,
         "node": node_id,
         "text": text[:2000],
         "chunks": chunks,
         "llm_time": round(llm_time, 1),
-    })
+    }
+    msg.update(kwargs)
+    _messages.append(msg)
     if direction == "out" and llm_time > 0:
         _metrics["total_llm_time"] += llm_time
         _metrics["total_llm_calls"] += 1
@@ -184,6 +192,11 @@ def api_state():
     state["avg_llm_time"] = round(_metrics["total_llm_time"] / calls, 1) if calls > 0 else 0
     state["avg_chunks"] = round(_metrics["total_chunks_sent"] / calls, 1) if calls > 0 else 0
     state["total_llm_calls"] = calls
+    # Node positions for map
+    if _bridge and hasattr(_bridge, "_node_positions"):
+        state["node_positions"] = _bridge._node_positions
+    else:
+        state["node_positions"] = {}
     return jsonify(state)
 
 
@@ -449,8 +462,130 @@ def api_debug():
     return jsonify(info)
 
 
+# ─── BLE / Connection management endpoints ─────────────────────────────────
+
+@app.route("/api/ble/available", methods=["GET"])
+def api_ble_available():
+    try:
+        from standalone_bridge import BLE_AVAILABLE
+        return jsonify({"available": BLE_AVAILABLE})
+    except Exception:
+        return jsonify({"available": False})
+
+
+@app.route("/api/ble/scan", methods=["GET"])
+def api_ble_scan():
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    try:
+        from standalone_bridge import BLE_AVAILABLE
+        if not BLE_AVAILABLE:
+            return jsonify({"error": "BLE not available. Requires Python 3.11+ with bleak."}), 400
+    except ImportError:
+        return jsonify({"error": "BLE not available"}), 400
+
+    timeout = float(request.args.get("timeout", 10))
+    devices = _bridge.scan_ble_devices(timeout=timeout)
+    return jsonify({"devices": devices})
+
+
+@app.route("/api/ble/last-device", methods=["GET"])
+def api_ble_last_device():
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    device = _bridge.load_last_ble_device()
+    return jsonify({"device": device})
+
+
+@app.route("/api/connection/switch", methods=["POST"])
+def api_connection_switch():
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    conn_type = data.get("type", "").strip()
+    if conn_type not in ("serial", "tcp", "ble"):
+        return jsonify({"ok": False, "error": "Invalid type. Use: serial, tcp, ble"}), 400
+
+    address = data.get("address", "").strip() or None
+    host = data.get("host", "").strip() or None
+    port = data.get("port")
+    if port:
+        port = int(port)
+
+    result = _bridge.switch_connection(conn_type, address=address, host=host, port=port)
+    return jsonify(result)
+
+
+@app.route("/api/connection/disconnect", methods=["POST"])
+def api_connection_disconnect():
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    _bridge.disconnect_radio()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/send-mesh", methods=["POST"])
+def api_send_mesh():
+    """Send a manual message to the mesh from the dashboard."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Radio not connected"}), 503
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "Empty message"}), 400
+    node_id = data.get("node_id", "").strip()
+    channel = int(data.get("channel", 0))
+    try:
+        from meshtastic import BROADCAST_ADDR
+        is_broadcast = (not node_id or node_id.lower() == "broadcast")
+        dest = BROADCAST_ADDR if is_broadcast else node_id
+        _bridge.interface.sendText(
+            text, destinationId=dest, channelIndex=channel, wantAck=False,
+        )
+        direction = "broadcast" if is_broadcast else f"DM to {node_id}"
+        record_message("out", "dashboard", text, direction=direction)
+        return jsonify({"ok": True, "direction": direction})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/ingest-file", methods=["POST"])
+def api_rag_ingest_file():
+    """Accept a file upload and ingest into the main RAG knowledge base."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not hasattr(_bridge, "rag_engine") or _bridge.rag_engine is None:
+        return jsonify({"error": "RAG not available"}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No filename"}), 400
+    import tempfile
+    tmp_path = os.path.join(tempfile.gettempdir(), f.filename)
+    try:
+        f.save(tmp_path)
+        result = _bridge.rag_engine.ingest_file(tmp_path)
+        return jsonify({"ok": True, "filename": result.get("filename", f.filename),
+                        "chunks": result.get("chunks", 0)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def start_dashboard(port=8000):
     """Start the dashboard in a background thread."""
+    # Set BLE availability in state
+    try:
+        from standalone_bridge import BLE_AVAILABLE
+        update_state(ble_available=BLE_AVAILABLE)
+    except Exception:
+        pass
+
     # Install log handler on root logger to capture everything
     root_logger = logging.getLogger()
     _log_handler.setLevel(logging.DEBUG)
@@ -475,68 +610,84 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LORACLE BRIDGE</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #1c2128;
-  --bg-input: #0d1117;
-  --border: #30363d;
-  --border-subtle: #21262d;
-  --text-primary: #e6edf3;
-  --text-secondary: #c9d1d9;
-  --text-muted: #8b949e;
-  --text-dim: #484f58;
-  --accent-blue: #58a6ff;
-  --accent-green: #3fb950;
-  --accent-red: #f85149;
-  --accent-yellow: #d29922;
-  --accent-purple: #bc8cff;
-  --radius: 8px;
-  --radius-sm: 4px;
-  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --bg-primary: #181a16;
+  --bg-secondary: #1f211c;
+  --bg-tertiary: #272a24;
+  --bg-input: #141613;
+  --border: #3d3f38;
+  --border-subtle: #2e302a;
+  --text-primary: #ffcc00;
+  --text-secondary: #33ff33;
+  --text-muted: #7a8a6a;
+  --text-dim: #4a4f40;
+  --accent-blue: #ffcc00;
+  --accent-green: #00ff41;
+  --accent-red: #ff3333;
+  --accent-yellow: #ffaa00;
+  --accent-purple: #88aaff;
+  --accent-orange: #ff6600;
+  --radius: 0px;
+  --radius-sm: 0px;
+  --font-mono: 'Share Tech Mono', 'Courier New', 'Consolas', monospace;
+  --font-sans: 'Share Tech Mono', 'Courier New', 'Consolas', monospace;
+  --border-width: 2px;
+  --shadow-raised: 2px 2px 0px #0a0f06, inset 0 1px 0 rgba(255,204,0,0.1);
+  --shadow-inset: inset 2px 2px 4px #0a0f06, inset -1px -1px 0 rgba(255,204,0,0.05);
+  --glow-green: 0 0 8px rgba(0,255,65,0.4);
+  --glow-amber: 0 0 8px rgba(255,204,0,0.4);
+  --glow-red: 0 0 8px rgba(255,51,51,0.5);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-secondary); }
+body { font-family: var(--font-sans); background: var(--bg-primary); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+body::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+}
 button { cursor: pointer; font-family: var(--font-sans); }
-input, select, textarea { font-family: var(--font-sans); }
+input, select, textarea { font-family: var(--font-sans); text-transform: none; }
 
 /* ─── Top Bar ─── */
 #top-bar {
   position: sticky; top: 0; z-index: 100;
-  background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary); border-top: 3px solid var(--accent-blue);
+  border-bottom: var(--border-width) solid var(--border);
   padding: 10px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
-.logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1.05em; color: var(--text-primary); white-space: nowrap; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 1.05em; color: var(--text-primary); white-space: nowrap; letter-spacing: 3px; text-shadow: var(--glow-amber); }
 .logo svg { flex-shrink: 0; }
 .top-badges { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto; }
 .badge {
   display: flex; align-items: center; gap: 5px;
-  background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
-  border-radius: 20px; padding: 3px 10px; font-size: 0.78em; white-space: nowrap;
+  background: var(--bg-tertiary); border: var(--border-width) solid var(--border);
+  border-radius: 0; padding: 3px 10px; font-size: 0.78em; white-space: nowrap;
 }
 .badge .label { color: var(--text-muted); }
-.badge .val { color: var(--text-primary); font-weight: 600; }
+.badge .val { color: var(--text-primary); font-weight: 400; }
 .conn-dot {
-  width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.1);
 }
-.conn-dot.on { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); animation: pulse 2s ease-in-out infinite; }
-.conn-dot.off { background: var(--accent-red); }
+.conn-dot.on { background: var(--accent-green); box-shadow: var(--glow-green); animation: pulse 2s ease-in-out infinite; }
+.conn-dot.off { background: var(--accent-red); box-shadow: var(--glow-red); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* ─── Tabs ─── */
 #tab-nav {
-  display: flex; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+  display: flex; background: var(--bg-secondary); border-bottom: var(--border-width) solid var(--border);
   overflow-x: auto; -webkit-overflow-scrolling: touch;
 }
 .tab-btn {
-  background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--text-muted); padding: 10px 18px; font-size: 0.85em; font-weight: 500;
-  transition: color 0.2s, border-color 0.2s; white-space: nowrap;
+  background: none; border: none; border-bottom: 3px solid transparent;
+  color: var(--text-muted); padding: 10px 18px; font-size: 0.85em; font-weight: 400;
+  white-space: nowrap; text-transform: uppercase; letter-spacing: 1px;
 }
 .tab-btn:hover { color: var(--text-secondary); }
-.tab-btn.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
+.tab-btn.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); background: var(--bg-tertiary); }
 
 /* ─── Content ─── */
 #tab-content { max-width: 1100px; margin: 0 auto; padding: 20px; }
@@ -549,11 +700,11 @@ input, select, textarea { font-family: var(--font-sans); }
   gap: 12px; margin-bottom: 20px;
 }
 .card {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px;
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow-inset);
 }
-.card-label { font-size: 0.72em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; letter-spacing: 0.5px; }
-.card-value { font-size: 1.5em; font-weight: 700; color: var(--text-primary); }
+.card-label { font-size: 0.72em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; letter-spacing: 1.5px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px; }
+.card-value { font-size: 1.5em; font-weight: 400; color: var(--text-primary); text-shadow: var(--glow-amber); }
 .card-sub { font-size: 0.78em; color: var(--text-muted); margin-top: 4px; }
 .card-value.green { color: var(--accent-green); }
 .card-value.red { color: var(--accent-red); }
@@ -580,7 +731,7 @@ input, select, textarea { font-family: var(--font-sans); }
   font-size: 0.82em; flex: 1; min-width: 120px;
 }
 .search-input::placeholder { color: var(--text-dim); }
-.msg-scroll { max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.msg-scroll { max-height: 500px; overflow-y: auto; border: var(--border-width) solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-inset); }
 .msg-table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
 .msg-table th {
   text-align: left; color: var(--text-muted); font-weight: 500; font-size: 0.9em;
@@ -593,7 +744,7 @@ input, select, textarea { font-family: var(--font-sans); }
 .dir-out { color: var(--accent-blue); }
 .msg-text { max-width: 420px; word-wrap: break-word; font-family: var(--font-mono); font-size: 0.92em; }
 .meta { color: var(--text-muted); font-size: 0.92em; }
-.node-id { font-family: var(--font-mono); color: #79c0ff; font-size: 0.92em; }
+.node-id { font-family: var(--font-mono); color: var(--text-primary); font-size: 0.92em; }
 .empty { color: var(--text-dim); text-align: center; padding: 40px 20px; }
 
 /* ─── Recent feed (dashboard tab) ─── */
@@ -610,8 +761,8 @@ input, select, textarea { font-family: var(--font-sans); }
 /* ─── Controls ─── */
 .ctrl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
 .ctrl-card {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px;
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius); padding: 16px; border-top: 3px solid var(--accent-blue);
 }
 .ctrl-card h3 { font-size: 0.88em; color: var(--text-primary); margin-bottom: 12px; }
 .ctrl-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
@@ -620,7 +771,7 @@ input, select, textarea { font-family: var(--font-sans); }
 .ctrl-select, .ctrl-input {
   background: var(--bg-input); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 10px; color: var(--text-primary);
-  font-size: 0.85em; flex: 1;
+  font-size: 0.85em; flex: 1; min-width: 0;
 }
 .ctrl-textarea {
   background: var(--bg-input); border: 1px solid var(--border);
@@ -631,25 +782,26 @@ input, select, textarea { font-family: var(--font-sans); }
 .ctrl-range { flex: 1; accent-color: var(--accent-blue); }
 .ctrl-range-val { font-family: var(--font-mono); font-size: 0.82em; color: var(--text-primary); min-width: 50px; text-align: right; }
 .btn {
-  background: var(--accent-blue); color: #fff; border: none;
-  border-radius: var(--radius-sm); padding: 6px 14px; font-size: 0.82em; font-weight: 500;
-  transition: opacity 0.2s;
+  background: var(--accent-blue); color: #0a0f06; border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm); padding: 6px 14px; font-size: 0.82em; font-weight: 400;
+  box-shadow: var(--shadow-raised); text-transform: uppercase; letter-spacing: 1px;
 }
-.btn:hover { opacity: 0.85; }
+.btn:hover { box-shadow: var(--shadow-inset); transform: translate(1px, 1px); }
+.btn:active { box-shadow: var(--shadow-inset); transform: translate(2px, 2px); }
 .btn-sm { padding: 4px 10px; font-size: 0.78em; }
 .btn-danger { background: var(--accent-red); }
-.btn-secondary { background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text-secondary); }
+.btn-secondary { background: var(--bg-tertiary); border: var(--border-width) solid var(--border); color: var(--text-secondary); }
 
 /* Toggle switch */
 .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
 .toggle input { opacity: 0; width: 0; height: 0; }
 .toggle-slider {
-  position: absolute; inset: 0; background: var(--bg-tertiary); border: 1px solid var(--border);
-  border-radius: 22px; transition: 0.2s; cursor: pointer;
+  position: absolute; inset: 0; background: var(--bg-tertiary); border: var(--border-width) solid var(--border);
+  border-radius: 0; transition: 0.2s; cursor: pointer;
 }
 .toggle-slider::before {
   content: ''; position: absolute; width: 16px; height: 16px; left: 2px; bottom: 2px;
-  background: var(--text-muted); border-radius: 50%; transition: 0.2s;
+  background: var(--text-muted); border-radius: 0; transition: 0.2s;
 }
 .toggle input:checked + .toggle-slider { background: var(--accent-blue); border-color: var(--accent-blue); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(18px); background: #fff; }
@@ -657,10 +809,11 @@ input, select, textarea { font-family: var(--font-sans); }
 /* ─── Debug ─── */
 .log-controls { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .log-viewer {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 10px;
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius); padding: 10px; box-shadow: var(--shadow-inset);
   font-family: var(--font-mono); font-size: 0.75em; line-height: 1.6;
   max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  text-shadow: 0 0 2px rgba(51,255,51,0.3);
 }
 .log-line { padding: 1px 0; }
 .log-DEBUG { color: var(--accent-purple); }
@@ -669,8 +822,8 @@ input, select, textarea { font-family: var(--font-sans); }
 .log-ERROR { color: var(--accent-red); }
 .debug-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
 .debug-card {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px;
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow-inset);
 }
 .debug-card h4 { font-size: 0.8em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
 .debug-row { display: flex; justify-content: space-between; font-size: 0.82em; padding: 3px 0; }
@@ -711,9 +864,9 @@ input, select, textarea { font-family: var(--font-sans); }
   display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start;
 }
 .step-num {
-  background: var(--accent-blue); color: #fff; width: 24px; height: 24px;
-  border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size: 0.78em; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+  background: var(--accent-blue); color: #0a0f06; width: 24px; height: 24px;
+  border-radius: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 0.78em; font-weight: 400; flex-shrink: 0; margin-top: 1px;
 }
 .step-text { flex: 1; }
 .step-text strong { color: var(--text-primary); }
@@ -722,7 +875,7 @@ input, select, textarea { font-family: var(--font-sans); }
 .node-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .node-tag {
   background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-  padding: 2px 8px; font-size: 0.78em; font-family: var(--font-mono); color: #79c0ff;
+  padding: 2px 8px; font-size: 0.78em; font-family: var(--font-mono); color: var(--text-primary);
 }
 
 /* ─── Toast ─── */
@@ -738,14 +891,26 @@ input, select, textarea { font-family: var(--font-sans); }
 
 #toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
 .toast {
-  background: var(--bg-secondary); border: 1px solid var(--border); border-left: 3px solid var(--accent-blue);
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border); border-left: 4px solid var(--accent-blue);
   border-radius: var(--radius-sm); padding: 10px 16px; font-size: 0.82em; color: var(--text-primary);
-  animation: slideIn 0.3s ease; min-width: 200px; max-width: 360px;
+  animation: none; min-width: 200px; max-width: 360px; box-shadow: 3px 3px 0 #0a0f06;
 }
 .toast-success { border-left-color: var(--accent-green); }
 .toast-error { border-left-color: var(--accent-red); }
 .toast.fade-out { opacity: 0; transition: opacity 0.3s; }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* ─── Addon stat cards ─── */
+.stat-card {
+  background: var(--bg-secondary); border: var(--border-width) solid var(--border);
+  padding: 14px 16px; box-shadow: var(--shadow-inset);
+}
+.stat-label {
+  font-size: 0.72em; text-transform: uppercase; color: var(--text-muted);
+  letter-spacing: 1.5px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px;
+}
+.stat-value { font-size: 1.5em; color: var(--text-primary); text-shadow: var(--glow-amber); }
 
 /* ─── Responsive ─── */
 @media (max-width: 768px) {
@@ -767,7 +932,7 @@ input, select, textarea { font-family: var(--font-sans); }
 <!-- ═══ Top Bar ═══ -->
 <header id="top-bar">
   <div class="logo">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffcc00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 2L12 8"/><path d="M12 16L12 22"/>
       <circle cx="12" cy="12" r="3"/>
       <path d="M4.93 4.93l4.24 4.24"/><path d="M14.83 14.83l4.24 4.24"/>
@@ -789,7 +954,7 @@ input, select, textarea { font-family: var(--font-sans); }
 
 <!-- ═══ Tab Navigation ═══ -->
 <nav id="tab-nav">
-  <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+  <button class="tab-btn active" data-tab="dashboard">Inference</button>
   <button class="tab-btn" data-tab="messages">Messages</button>
   <button class="tab-btn" data-tab="controls">Controls</button>
   <button class="tab-btn" data-tab="debug">Debug</button>
@@ -799,8 +964,10 @@ input, select, textarea { font-family: var(--font-sans); }
 <!-- ═══ Tab Content ═══ -->
 <main id="tab-content">
 
-  <!-- ──── Dashboard Tab ──── -->
+  <!-- ──── Inference Tab ──── -->
   <section id="tab-dashboard" class="tab-panel active">
+
+    <!-- Status Cards -->
     <div class="cards">
       <div class="card">
         <div class="card-label">Connection</div>
@@ -831,30 +998,79 @@ input, select, textarea { font-family: var(--font-sans); }
       </div>
     </div>
 
+    <!-- Model & Prompt Controls -->
+    <div class="ctrl-grid" style="margin-bottom:16px">
+      <div style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);padding:14px;border-top:3px solid var(--accent-blue)">
+        <div style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px;margin-bottom:8px">Model</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <select class="ctrl-select" id="inf-model-select"><option>Loading...</option></select>
+          <button class="btn btn-sm" onclick="infRefreshModels()">&#x21BB;</button>
+        </div>
+        <button class="btn" onclick="infSwitchModel()" style="width:100%">Apply</button>
+        <div class="card-sub" style="margin-top:6px">Current: <span id="inf-current-model">--</span></div>
+      </div>
+
+      <div style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);padding:14px;border-top:3px solid var(--accent-blue)">
+        <div style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px;margin-bottom:8px">System Prompt</div>
+        <textarea class="ctrl-textarea" id="inf-prompt" rows="3" placeholder="Loading..."></textarea>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+          <span class="card-sub" id="inf-prompt-count">0 chars</span>
+          <button class="btn btn-sm" onclick="infSavePrompt()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge Base / RAG -->
+    <div id="inf-rag-section" style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);padding:14px;margin-bottom:16px;border-top:3px solid var(--accent-blue);display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Knowledge Base</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="card-sub" id="inf-rag-stats">--</span>
+          <label class="toggle">
+            <input type="checkbox" id="inf-rag-toggle" onchange="infToggleRag(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <input type="file" id="inf-file-upload" accept=".pdf,.txt,.md,.zim"
+          style="font-size:0.82em;color:var(--text-secondary);flex:1;min-width:150px">
+        <button class="btn btn-sm" onclick="infUploadFile()">Upload</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="url" id="inf-url-input" placeholder="https://example.com/article"
+          style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;font-size:0.85em">
+        <button class="btn btn-sm" onclick="infIngestUrl()">Add URL</button>
+      </div>
+      <div id="inf-rag-docs" style="font-size:0.82em;max-height:200px;overflow-y:auto"></div>
+    </div>
+
+    <!-- Known Nodes -->
     <div id="dash-nodes-section" style="display:none;margin-bottom:16px">
       <div class="section-title" style="margin-bottom:8px">Known Nodes</div>
       <div class="node-tags" id="dash-node-tags"></div>
     </div>
 
+    <!-- LLM Activity Log -->
     <div class="section-head">
-      <div class="section-title">Recent Messages</div>
+      <div class="section-title">LLM Activity</div>
     </div>
-    <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius)">
+    <div style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);box-shadow:var(--shadow-inset)">
       <div id="dash-feed" class="empty">Waiting for messages...</div>
     </div>
 
-    <!-- Chat Panel -->
+    <!-- Direct Chat -->
     <div style="margin-top:20px">
       <div class="section-head">
-        <div class="section-title">Chat with LLM</div>
+        <div class="section-title">Direct Chat (bypasses mesh)</div>
         <button class="btn btn-sm btn-secondary" onclick="clearChat()">Clear</button>
       </div>
-      <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:0">
+      <div style="background:var(--bg-secondary);border:var(--border-width) solid var(--border);padding:0">
         <div id="chat-history" style="max-height:300px;overflow-y:auto;padding:12px;min-height:60px">
-          <div class="empty" style="padding:20px">Send a message to test the LLM directly (does not transmit over radio)</div>
+          <div class="empty" style="padding:20px">Test the LLM directly — does not transmit over radio</div>
         </div>
         <div style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--border-subtle)">
-          <input class="search-input" type="text" id="chat-input" placeholder="Ask the AI something..." style="flex:1" onkeydown="if(event.key==='Enter')sendChat()">
+          <input class="search-input" type="text" id="chat-input" placeholder="Ask the AI something..." style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')sendChat()">
           <button class="btn" id="chat-send-btn" onclick="sendChat()">Send</button>
         </div>
       </div>
@@ -863,6 +1079,40 @@ input, select, textarea { font-family: var(--font-sans); }
 
   <!-- ──── Messages Tab ──── -->
   <section id="tab-messages" class="tab-panel">
+
+    <!-- ── GPS Map ── -->
+    <div style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Node Map</span>
+        <span id="map-node-count" style="font-size:0.78em;color:var(--text-dim)">0 nodes with GPS</span>
+      </div>
+      <div id="mesh-map" style="height:280px;border:var(--border-width) solid var(--border);background:var(--bg-secondary);box-shadow:var(--shadow-inset)"></div>
+    </div>
+
+    <!-- ── Send Message ── -->
+    <div style="margin-bottom:16px;padding:12px;background:var(--bg-secondary);border:var(--border-width) solid var(--border);border-top:3px solid var(--accent-blue)">
+      <div style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px;margin-bottom:8px">Send Message</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <select class="ctrl-select" id="msg-send-to" style="width:140px;flex-shrink:0">
+          <option value="">Broadcast</option>
+        </select>
+        <select class="ctrl-select" id="msg-send-ch" style="width:70px;flex-shrink:0">
+          <option value="0">Ch 0</option>
+          <option value="1">Ch 1</option>
+          <option value="2">Ch 2</option>
+          <option value="3">Ch 3</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="msg-send-text" placeholder="Type a message..."
+          style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:8px 10px;font-size:0.9em"
+          onkeydown="if(event.key==='Enter')sendMeshMsg()">
+        <button class="btn" onclick="sendMeshMsg()">Send</button>
+      </div>
+      <div id="msg-send-status" style="font-size:0.78em;color:var(--text-dim);margin-top:4px"></div>
+    </div>
+
+    <!-- ── Message Log ── -->
     <div class="msg-controls">
       <button class="filter-btn active" data-filter="all" onclick="setMsgFilter('all')">All</button>
       <button class="filter-btn" data-filter="in" onclick="setMsgFilter('in')">&#x2B07; In</button>
@@ -888,13 +1138,63 @@ input, select, textarea { font-family: var(--font-sans); }
   <section id="tab-controls" class="tab-panel">
     <div class="ctrl-grid">
 
+      <div class="ctrl-card" id="ctrl-connection-card">
+        <h3>Connection</h3>
+
+        <!-- Status bar: dot + status + detail + disconnect — all one row -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span class="conn-dot off" id="conn-mgr-dot"></span>
+          <span id="conn-mgr-status" style="font-size:0.95em">Disconnected</span>
+          <span id="conn-mgr-detail" class="card-sub" style="margin-left:auto"></span>
+          <button class="btn btn-sm" id="conn-disconnect-btn" onclick="disconnectRadio()"
+            style="display:none;background:transparent;border-color:var(--accent-red);color:var(--accent-red)">Disconnect</button>
+        </div>
+
+        <!-- BLE Scanner -->
+        <div style="border-top:1px solid var(--border);padding-top:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <label style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Bluetooth</label>
+            <button class="btn btn-sm" id="ble-scan-btn" onclick="bleScan()">Scan</button>
+          </div>
+          <!-- Last connected quick-reconnect -->
+          <div id="ble-last-device" style="display:none;margin-bottom:10px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border)">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              <span style="font-size:0.82em;color:var(--text-muted);white-space:nowrap">Last:</span>
+              <span id="ble-last-name" style="font-size:0.82em;flex:1;overflow:hidden;text-overflow:ellipsis"></span>
+              <button class="btn btn-sm" onclick="bleQuickConnect()">Reconnect</button>
+            </div>
+          </div>
+          <!-- Scan results -->
+          <div id="ble-scan-status" style="font-size:0.82em;color:var(--text-muted);margin-bottom:6px"></div>
+          <div id="ble-device-list"></div>
+          <div id="ble-unavailable" style="display:none;font-size:0.82em;color:var(--accent-orange);margin-top:6px">
+            BLE not available — requires Python 3.11+ with bleak.
+          </div>
+        </div>
+
+        <!-- Manual Connection — two-row layout to prevent overflow -->
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+          <label style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Manual</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <select class="ctrl-select" id="conn-type-select" onchange="connTypeChanged()" style="width:90px;flex-shrink:0">
+              <option value="serial">Serial</option>
+              <option value="tcp">TCP</option>
+              <option value="ble">BLE</option>
+            </select>
+            <input type="text" id="conn-address-input" placeholder="auto-detect"
+              style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;font-size:0.85em">
+          </div>
+          <button class="btn" onclick="manualConnect()" style="width:100%;margin-top:8px">Connect</button>
+        </div>
+      </div>
+
       <div class="ctrl-card">
         <h3>Model</h3>
         <div class="ctrl-row">
           <select class="ctrl-select" id="ctrl-model-select"><option>Loading...</option></select>
           <button class="btn btn-sm" onclick="refreshModels()">&#x21BB;</button>
-          <button class="btn" onclick="switchModel()">Apply</button>
         </div>
+        <button class="btn" onclick="switchModel()" style="width:100%">Apply</button>
         <div class="card-sub" style="margin-top:6px">Current: <span id="ctrl-current-model">--</span></div>
       </div>
 
@@ -1196,6 +1496,7 @@ function switchTab(name) {
   document.querySelector('[data-tab="' + name + '"]').classList.add('active');
   App.currentTab = name;
   if (name === 'controls' && !App.controlsLoaded) loadControlsData();
+  if (name === 'messages') { setTimeout(function() { initMap(); if (_meshMap) _meshMap.invalidateSize(); }, 100); }
   if (name === 'debug' && !App.debugLoaded) { App.debugLoaded = true; loadDebugData(); }
 }
 
@@ -1221,11 +1522,21 @@ async function poll() {
     document.getElementById('hdr-nodes').textContent = d.node_count;
     if (d.rag_enabled) document.getElementById('hdr-rag-badge').style.display = '';
 
-    // Dashboard tab
-    if (App.currentTab === 'dashboard') updateDashboard(d);
+    // Connection card (always update)
+    updateConnectionCard(d);
+
+    // Inference/Dashboard tab
+    if (App.currentTab === 'dashboard') {
+      if (!_infLoaded) loadInferenceData();
+      updateDashboard(d);
+    }
 
     // Messages tab
-    if (App.currentTab === 'messages') updateMessages(d);
+    if (App.currentTab === 'messages') {
+      updateMessages(d);
+      updateMap(d.node_positions);
+      updateSendDropdown(d.known_nodes);
+    }
 
     // Debug: fetch logs
     if (App.currentTab === 'debug') {
@@ -1240,7 +1551,112 @@ async function poll() {
   } catch(e) { /* silent retry */ }
 }
 
-// ─── Dashboard Tab ──────────────────────────────────────────────────────────
+// ─── Inference Tab ──────────────────────────────────────────────────────────
+
+var _infLoaded = false;
+
+async function loadInferenceData() {
+  if (_infLoaded) return;
+  _infLoaded = true;
+  // Models
+  await infRefreshModels();
+  // System prompt
+  var pd = await callApi('GET', '/api/system-prompt');
+  if (pd) {
+    document.getElementById('inf-prompt').value = pd.prompt;
+    document.getElementById('inf-prompt-count').textContent = pd.prompt.length + ' chars';
+  }
+  document.getElementById('inf-prompt').addEventListener('input', function() {
+    document.getElementById('inf-prompt-count').textContent = this.value.length + ' chars';
+  });
+  // RAG docs
+  infLoadRagDocs();
+}
+
+async function infRefreshModels() {
+  var d = await callApi('GET', '/api/models');
+  if (!d) return;
+  var sel = document.getElementById('inf-model-select');
+  sel.innerHTML = d.models.map(function(m) {
+    return '<option' + (m === d.current ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+  }).join('');
+  document.getElementById('inf-current-model').textContent = d.current;
+}
+
+async function infSwitchModel() {
+  var model = document.getElementById('inf-model-select').value;
+  var d = await callApi('POST', '/api/model', {model: model});
+  if (d && d.ok) { showToast('Model: ' + d.model); infRefreshModels(); }
+}
+
+async function infSavePrompt() {
+  var prompt = document.getElementById('inf-prompt').value;
+  var d = await callApi('POST', '/api/system-prompt', {prompt: prompt});
+  if (d && d.ok) showToast('Prompt saved');
+}
+
+async function infToggleRag(enabled) {
+  await callApi('POST', '/api/rag/toggle', {enabled: enabled});
+}
+
+async function infUploadFile() {
+  var input = document.getElementById('inf-file-upload');
+  if (!input.files.length) return;
+  var formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    var res = await fetch('/api/rag/ingest-file', {method: 'POST', body: formData});
+    var data = await res.json();
+    if (data.ok) {
+      showToast('Uploaded: ' + data.filename + ' (' + data.chunks + ' chunks)');
+      input.value = '';
+      infLoadRagDocs();
+    } else {
+      showToast(data.error || 'Upload failed', 'error');
+    }
+  } catch(e) { showToast('Upload error', 'error'); }
+}
+
+async function infIngestUrl() {
+  var url = document.getElementById('inf-url-input').value.trim();
+  if (!url) return;
+  var d = await callApi('POST', '/api/rag/ingest-url', {url: url});
+  if (d && d.ok) {
+    showToast('Ingested: ' + (d.filename || url));
+    document.getElementById('inf-url-input').value = '';
+    infLoadRagDocs();
+  }
+}
+
+async function infLoadRagDocs() {
+  var d = await callApi('GET', '/api/rag/stats');
+  if (!d || !d.available) return;
+  document.getElementById('inf-rag-section').style.display = '';
+  document.getElementById('inf-rag-toggle').checked = App.state ? App.state.rag_enabled : true;
+  var stats = d.stats || {};
+  document.getElementById('inf-rag-stats').textContent =
+    (stats.total_docs || 0) + ' docs, ' + (stats.total_chunks || 0) + ' chunks';
+  var docs = d.documents || [];
+  var el = document.getElementById('inf-rag-docs');
+  if (docs.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);padding:4px 0">No documents loaded</div>';
+  } else {
+    el.innerHTML = docs.map(function(doc) {
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border-subtle)">' +
+        '<span style="color:var(--text-secondary)">' + escapeHtml(doc.filename || doc.doc_id) + '</span>' +
+        '<span style="display:flex;align-items:center;gap:8px">' +
+          '<span style="color:var(--text-dim)">' + (doc.chunks || 0) + ' chunks</span>' +
+          '<button class="btn btn-sm" style="background:transparent;color:var(--accent-red);border-color:var(--accent-red);padding:2px 6px;font-size:0.72em" ' +
+            'onclick="infDeleteDoc(\'' + escapeHtml(doc.doc_id) + '\')">x</button>' +
+        '</span></div>';
+    }).join('');
+  }
+}
+
+async function infDeleteDoc(docId) {
+  var d = await callApi('POST', '/api/rag/delete', {doc_id: docId});
+  if (d && d.ok) { showToast('Deleted'); infLoadRagDocs(); }
+}
 
 function updateDashboard(d) {
   // Cards
@@ -1293,6 +1709,92 @@ function updateDashboard(d) {
 }
 
 // ─── Messages Tab ───────────────────────────────────────────────────────────
+
+// Leaflet map
+var _meshMap = null;
+var _mapMarkers = {};
+
+function initMap() {
+  if (_meshMap) return;
+  var el = document.getElementById('mesh-map');
+  if (!el || typeof L === 'undefined') return;
+  _meshMap = L.map('mesh-map', {attributionControl: false}).setView([0, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: 'OSM'
+  }).addTo(_meshMap);
+}
+
+function updateMap(positions) {
+  if (!_meshMap) initMap();
+  if (!_meshMap || !positions) return;
+  var bounds = [];
+  var count = 0;
+  Object.keys(positions).forEach(function(nodeId) {
+    var p = positions[nodeId];
+    if (!p.lat || !p.lon) return;
+    count++;
+    var latlng = [p.lat, p.lon];
+    bounds.push(latlng);
+    if (_mapMarkers[nodeId]) {
+      _mapMarkers[nodeId].setLatLng(latlng);
+    } else {
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="background:var(--accent-green);width:12px;height:12px;border:2px solid #0a0f06;box-shadow:0 0 6px rgba(0,255,65,0.5)"></div>',
+        iconSize: [12, 12], iconAnchor: [6, 6]
+      });
+      _mapMarkers[nodeId] = L.marker(latlng, {icon: icon}).addTo(_meshMap);
+    }
+    var age = p.last_update ? relativeTime(p.last_update) : '';
+    var alt = p.alt ? ' | Alt: ' + Math.round(p.alt) + 'm' : '';
+    _mapMarkers[nodeId].bindPopup(
+      '<div style="font-family:monospace;font-size:12px;text-transform:none">' +
+      '<b>' + escapeHtml(nodeId) + '</b><br>' +
+      p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + alt + '<br>' +
+      '<span style="color:#888">' + age + '</span></div>'
+    );
+  });
+  // Remove stale markers
+  Object.keys(_mapMarkers).forEach(function(id) {
+    if (!positions[id]) { _meshMap.removeLayer(_mapMarkers[id]); delete _mapMarkers[id]; }
+  });
+  document.getElementById('map-node-count').textContent = count + ' node(s) with GPS';
+  if (bounds.length > 0 && !App._mapFitted) {
+    _meshMap.fitBounds(bounds, {padding: [30, 30], maxZoom: 14});
+    App._mapFitted = true;
+  }
+}
+
+// Populate send-to dropdown with known nodes
+function updateSendDropdown(knownNodes) {
+  var sel = document.getElementById('msg-send-to');
+  if (!sel) return;
+  var cur = sel.value;
+  var opts = '<option value="">Broadcast</option>';
+  (knownNodes || []).forEach(function(n) {
+    opts += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
+  });
+  sel.innerHTML = opts;
+  if (cur) sel.value = cur;
+}
+
+async function sendMeshMsg() {
+  var text = document.getElementById('msg-send-text').value.trim();
+  if (!text) return;
+  var nodeId = document.getElementById('msg-send-to').value;
+  var channel = parseInt(document.getElementById('msg-send-ch').value);
+  var statusEl = document.getElementById('msg-send-status');
+  statusEl.textContent = 'Sending...';
+  var d = await callApi('POST', '/api/send-mesh', {text: text, node_id: nodeId, channel: channel});
+  if (d && d.ok) {
+    statusEl.textContent = 'Sent (' + d.direction + ')';
+    document.getElementById('msg-send-text').value = '';
+    setTimeout(function() { statusEl.textContent = ''; }, 3000);
+  } else {
+    statusEl.textContent = 'Failed: ' + (d ? d.error : 'network error');
+  }
+}
 
 function setMsgFilter(f) {
   App.messageFilter = f;
@@ -1582,6 +2084,172 @@ function renderChat() {
   }).join('');
   history.scrollTop = history.scrollHeight;
 }
+
+// ─── Connection Management ────────────────────────────────────────────────
+
+var _bleLastDevice = null;
+
+function updateConnectionCard(d) {
+  var dot = document.getElementById('conn-mgr-dot');
+  var status = document.getElementById('conn-mgr-status');
+  var detail = document.getElementById('conn-mgr-detail');
+  var disconnBtn = document.getElementById('conn-disconnect-btn');
+  if (d.connected) {
+    dot.className = 'conn-dot on';
+    status.textContent = 'Connected';
+    detail.textContent = (d.connection_type || '').toUpperCase() +
+      (d.connection_address ? ' — ' + d.connection_address : '');
+    disconnBtn.style.display = '';
+  } else {
+    dot.className = 'conn-dot off';
+    status.textContent = 'Disconnected';
+    detail.textContent = '';
+    disconnBtn.style.display = 'none';
+  }
+  // BLE availability
+  if (d.ble_available === false) {
+    document.getElementById('ble-unavailable').style.display = '';
+    document.getElementById('ble-scan-btn').disabled = true;
+    document.getElementById('ble-scan-btn').title = 'BLE not available';
+  }
+}
+
+async function bleScan() {
+  var btn = document.getElementById('ble-scan-btn');
+  var statusEl = document.getElementById('ble-scan-status');
+  var listEl = document.getElementById('ble-device-list');
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  statusEl.textContent = 'Scanning for Meshtastic devices (~10s)...';
+  listEl.innerHTML = '';
+  try {
+    var d = await callApi('GET', '/api/ble/scan?timeout=10');
+    if (!d || !d.devices) {
+      statusEl.textContent = 'Scan failed.';
+      return;
+    }
+    if (d.devices.length === 0) {
+      statusEl.textContent = 'No Meshtastic devices found. Make sure Bluetooth is enabled on your radio.';
+      return;
+    }
+    // Check for error responses (e.g. permission issues)
+    if (d.devices.length === 1 && d.devices[0].error) {
+      var err = d.devices[0];
+      if (err.error === 'bluetooth_permission') {
+        statusEl.textContent = '';
+        listEl.innerHTML = '<div style="padding:12px;background:var(--bg-secondary);border:1px solid var(--accent-orange);border-radius:6px;font-size:0.85em">' +
+          '<div style="color:var(--accent-orange);font-weight:600;margin-bottom:6px">Bluetooth Permission Required</div>' +
+          '<div style="color:var(--text-secondary);margin-bottom:8px">' + escapeHtml(err.message) + '</div>' +
+          '<div style="color:var(--text-muted);font-size:0.82em">Restart with <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px">./mesh-llm.sh</code> to auto-fix, or check the Debug tab for manual instructions.</div>' +
+          '</div>';
+      } else {
+        statusEl.textContent = 'Scan error: ' + (err.message || err.error);
+      }
+      return;
+    }
+    // Filter out any error entries mixed with real devices
+    var realDevices = d.devices.filter(function(dev) { return !dev.error; });
+    if (realDevices.length === 0) {
+      statusEl.textContent = 'No Meshtastic devices found. Make sure Bluetooth is enabled on your radio.';
+      return;
+    }
+    statusEl.textContent = realDevices.length + ' device(s) found:';
+    var html = '<div style="display:flex;flex-direction:column;gap:6px">';
+    realDevices.forEach(function(dev) {
+      var rssiPct = Math.min(100, Math.max(0, (dev.rssi + 100)));
+      var rssiColor = rssiPct > 60 ? 'var(--accent-green)' : rssiPct > 30 ? 'var(--accent-orange)' : 'var(--accent-red)';
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-secondary);border-radius:6px;border:1px solid var(--border)">' +
+        '<div style="flex:1">' +
+          '<div style="font-size:0.9em">' + escapeHtml(dev.name || 'Unknown') + '</div>' +
+          '<div style="font-size:0.75em;color:var(--text-muted)">' + escapeHtml(dev.address) + '</div>' +
+        '</div>' +
+        '<div style="width:60px;text-align:center">' +
+          '<div style="height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden">' +
+            '<div style="height:100%;width:' + rssiPct + '%;background:' + rssiColor + '"></div>' +
+          '</div>' +
+          '<div style="font-size:0.7em;color:var(--text-muted);margin-top:2px">' + dev.rssi + ' dBm</div>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="bleConnect(\'' + escapeHtml(dev.address) + '\',\'' + escapeHtml(dev.name || '') + '\')">Connect</button>' +
+      '</div>';
+    });
+    html += '</div>';
+    listEl.innerHTML = html;
+  } catch(e) {
+    statusEl.textContent = 'Scan error: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Scan';
+  }
+}
+
+async function bleConnect(address, name) {
+  var statusEl = document.getElementById('ble-scan-status');
+  statusEl.textContent = 'Connecting to ' + (name || address) + '...';
+  var d = await callApi('POST', '/api/connection/switch', {type: 'ble', address: address});
+  if (d && d.ok) {
+    statusEl.textContent = 'Connected to ' + (name || address);
+    loadLastBleDevice();
+  } else {
+    statusEl.textContent = 'Connection attempt started — retrying in background...';
+  }
+}
+
+async function bleQuickConnect() {
+  if (!_bleLastDevice) return;
+  await bleConnect(_bleLastDevice.address, _bleLastDevice.name);
+}
+
+async function disconnectRadio() {
+  await callApi('POST', '/api/connection/disconnect');
+}
+
+function connTypeChanged() {
+  var sel = document.getElementById('conn-type-select');
+  var inp = document.getElementById('conn-address-input');
+  if (sel.value === 'serial') inp.placeholder = 'auto-detect (or /dev/...)';
+  else if (sel.value === 'tcp') inp.placeholder = '192.168.1.1:4403';
+  else inp.placeholder = 'BLE address (or leave empty to scan)';
+}
+
+async function manualConnect() {
+  var type = document.getElementById('conn-type-select').value;
+  var addr = document.getElementById('conn-address-input').value.trim();
+  var payload = {type: type};
+  if (type === 'ble') payload.address = addr || null;
+  else if (type === 'tcp') {
+    if (addr && addr.indexOf(':') !== -1) {
+      var parts = addr.split(':');
+      payload.host = parts[0];
+      payload.port = parseInt(parts[1]);
+    } else if (addr) {
+      payload.host = addr;
+    }
+  } else {
+    payload.address = addr || null;
+  }
+  var d = await callApi('POST', '/api/connection/switch', payload);
+  if (d && d.ok) {
+    document.getElementById('ble-scan-status').textContent = 'Connected!';
+  } else {
+    document.getElementById('ble-scan-status').textContent = 'Connecting in background...';
+  }
+}
+
+async function loadLastBleDevice() {
+  try {
+    var d = await callApi('GET', '/api/ble/last-device');
+    if (d && d.device && d.device.address) {
+      _bleLastDevice = d.device;
+      var el = document.getElementById('ble-last-device');
+      el.style.display = '';
+      document.getElementById('ble-last-name').textContent =
+        (d.device.name || d.device.address);
+    }
+  } catch(e) {}
+}
+
+// Load last device on init
+loadLastBleDevice();
 
 // ─── Init ───────────────────────────────────────────────────────────────────
 

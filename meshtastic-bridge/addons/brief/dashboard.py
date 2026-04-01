@@ -117,24 +117,24 @@ _TAB_HTML = """
 <div style="display: flex; gap: 8px; margin-bottom: 16px;">
   <button onclick="briefGenerate()"
     style="background: var(--accent-blue); color: white; border: none;
-    padding: 8px 20px; border-radius: 6px; font-weight: 600; cursor: pointer;">
+    padding: 8px 20px; border-radius: 0; font-weight: 600; cursor: pointer;">
     Generate SITREP Now
   </button>
   <button onclick="briefExport('text')"
     style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border);
-    padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+    padding: 8px 16px; border-radius: 0; cursor: pointer;">
     Export Text
   </button>
   <button onclick="briefExport('pdf')"
     style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border);
-    padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+    padding: 8px 16px; border-radius: 0; cursor: pointer;">
     Export PDF
   </button>
 </div>
 
 <!-- Latest SITREP -->
 <div id="brief-latest" style="padding: 16px; background: var(--bg-secondary);
-  border-radius: 8px; border-left: 4px solid var(--accent-blue); margin-bottom: 20px;
+  border-radius: 0; border-left: 4px solid var(--accent-blue); margin-bottom: 20px;
   font-family: monospace; font-size: 0.9em; line-height: 1.6; white-space: pre-wrap;
   color: var(--text-secondary);">
   No SITREPs generated yet. Click "Generate SITREP Now" or wait for automatic generation.

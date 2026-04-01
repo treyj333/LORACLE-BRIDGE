@@ -74,7 +74,7 @@ _TAB_HTML = """
 
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
   <h3 style="margin: 0;">Recent Messages</h3>
-  <button onclick="ddPurge()" style="background: var(--accent-red); color: white; border: none; padding: 6px 14px; border-radius: 6px; font-size: 0.8em; cursor: pointer;">
+  <button onclick="ddPurge()" style="background: var(--accent-red); color: white; border: none; padding: 6px 14px; border-radius: 0; font-size: 0.8em; cursor: pointer;">
     Purge Expired
   </button>
 </div>
@@ -96,7 +96,7 @@ _TAB_HTML = """
   </table>
 </div>
 
-<div style="margin-top: 20px; padding: 14px; background: var(--bg-secondary); border-radius: 8px;">
+<div style="margin-top: 20px; padding: 14px; background: var(--bg-secondary); border-radius: 0;">
   <h3 style="margin: 0 0 8px 0; font-size: 0.9em;">Mesh Commands</h3>
   <div style="font-size: 0.82em; color: var(--text-secondary); line-height: 1.6;">
     <code>!drop-key &lt;passphrase&gt;</code> — Register your encryption key<br>
