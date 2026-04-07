@@ -484,7 +484,33 @@ CLI flags:
 - `--no-auto-greet` to disable
 - `--greet-message "Custom welcome text"` to override the default
 
-Greeter status (counts, queue length, grace remaining) is visible at `/api/state.greeter`.
+Greeter status (counts, queue length, grace remaining, current message) is visible at `/api/state.greeter`.
+
+### Manual Broadcast: Welcome → Public
+
+The dashboard's Messages tab has a **Welcome → Public** button next to the Send button. Click it and the Send Message form pre-fills with the current greeter text, the recipient drops to **Broadcast**, and the channel is set to **Ch 0**. Review the text, then click **Send** to broadcast it. It does **not** auto-send — accidental clicks won't spam the channel.
+
+---
+
+## Public Channel Mode
+
+DMs to the bridge always get a private reply, the same as before. On a public channel, the bridge stays silent during normal chat — it only responds when explicitly addressed.
+
+A public-channel message gets a reply when **any** of these are true:
+- It starts with `!` (e.g. `!nav 34,-118`, `!help`, `!triage`, …)
+- It contains one of the trigger words anywhere in the first 50 characters: `agent`, `ai`, `oracle`, `loracle`, `bridge`, `help`, `hey` (case-insensitive)
+
+So `hey loracle, what is the capital of france` will trigger a reply on the same channel it came in on. `discussing the weather today` will not.
+
+Safety:
+- Real DM detection compares the packet's `toId` against the local `!hex` node id. DMs to other nodes never trip the bridge.
+- 8-second per-channel cooldown — a chain of trigger-word messages can't saturate the channel with bot replies.
+- Per-sender rate limit (5 s) still applies on top of the channel cooldown.
+- Long replies still go through the existing `!more` pager, so a single big response on a public channel is one truncated message + an opt-in continuation, not a flood of chunks.
+
+CLI flags:
+- `--no-public-talk` — disable entirely, DM-only
+- `--public-talk` — explicit on (this is the default)
 
 ---
 

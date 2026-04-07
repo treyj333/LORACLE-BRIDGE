@@ -62,6 +62,10 @@ logger = logging.getLogger("standalone")
 # a single one-shot load right after _connect_radio() catches almost nothing.
 NODEDB_REFRESH_INTERVAL_S = 30
 
+# Per-channel cooldown for public-channel AI replies. Prevents a chain of
+# trigger-word messages from saturating the channel with bot responses.
+PUBLIC_CHANNEL_COOLDOWN_SECS = 8
+
 # Suppress noisy meshtastic protobuf DEBUG spam, but keep warnings visible
 logging.getLogger("meshtastic.mesh_interface").setLevel(logging.WARNING)
 logging.getLogger("meshtastic.stream_interface").setLevel(logging.WARNING)
@@ -120,6 +124,7 @@ class StandaloneBridge:
         addon_config: Optional[Dict[str, dict]] = None,
         auto_greet: bool = True,
         greet_message: Optional[str] = None,
+        public_talk: bool = True,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -144,6 +149,8 @@ class StandaloneBridge:
         self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
         self._node_meta: Dict[str, dict] = {}  # node_id -> {hops, hops_updated}
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
+        self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
+        self.public_talk = public_talk  # respond on public channels when addressed
 
         # Coverage logger — append-only JSONL of (ts, node, lat, lon, rssi, snr) samples
         coverage_path = os.path.join(
@@ -593,11 +600,47 @@ class StandaloneBridge:
             if not text or not text.strip():
                 return
 
-            # Always respond via DM back to the sender.
-            # The Meshtastic toId format (e.g. '!02e5f1e0') vs node num (int)
-            # makes reliable DM detection fragile, so we treat every incoming
-            # text message as directed at us and always reply privately.
-            is_dm = True
+            # ── DM vs broadcast detection ──────────────────────────────────
+            # We compare the packet's `toId` against our own `!hex` node id.
+            # If `_get_self_node_id()` returns None (interface still warming
+            # up), fall back to legacy "treat everything as a DM" so we never
+            # silently drop a message during the first few seconds after a
+            # reconnect. Real DMs to us → always reply privately.
+            self_id = self._get_self_node_id()
+            if self_id and to_id:
+                is_dm = (to_id.lower() == self_id.lower())
+            else:
+                is_dm = True  # legacy fallback
+
+            # Public channel: only reply when explicitly addressed (or to !cmds).
+            # This keeps the bridge silent on casual chat. Trigger word logic
+            # lives in the module-level _is_addressed_to_ai() helper.
+            if not is_dm:
+                if not self.public_talk:
+                    return  # public-channel talk hard-disabled via CLI
+                if not _is_addressed_to_ai(text):
+                    # Still let addon observers see public traffic (Brief etc.)
+                    for addon in self._addons:
+                        try:
+                            addon.on_message(sender, text.strip(), packet)
+                        except Exception as e:
+                            logger.debug(f"Addon {addon.name} observer error: {e}")
+                    logger.debug(
+                        f"Public ch{channel} from {sender} not addressed to AI, ignoring"
+                    )
+                    return
+                # Per-channel cooldown — stops a chain of trigger-word messages
+                # from saturating the public channel with bot replies.
+                last = self._channel_last_send.get(channel, 0)
+                if time.time() - last < PUBLIC_CHANNEL_COOLDOWN_SECS:
+                    logger.info(
+                        f"Public ch{channel} cooldown active "
+                        f"({int(time.time() - last)}s < {PUBLIC_CHANNEL_COOLDOWN_SECS}s), "
+                        f"dropping reply to {sender}"
+                    )
+                    return
+                self._channel_last_send[channel] = time.time()
+                logger.info(f"Public ch{channel}: addressed by {sender}")
 
             # Deduplication
             content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
@@ -1332,6 +1375,19 @@ def parse_args():
         default=None,
         help="Override the auto-greet message text (default: built-in)",
     )
+    parser.add_argument(
+        "--public-talk",
+        dest="public_talk",
+        action="store_true",
+        default=True,
+        help="Respond to public-channel messages that address LORACLE by name (default: on)",
+    )
+    parser.add_argument(
+        "--no-public-talk",
+        dest="public_talk",
+        action="store_false",
+        help="Disable public-channel replies — DM only",
+    )
 
     return parser.parse_args()
 
@@ -1440,6 +1496,7 @@ def main():
         addon_config=addon_config if addon_config else None,
         auto_greet=args.auto_greet,
         greet_message=args.greet_message,
+        public_talk=args.public_talk,
     )
 
     # Pull the better model in background after bridge starts

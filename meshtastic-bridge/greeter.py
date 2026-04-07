@@ -221,6 +221,7 @@ class GreeterService:
         with self._lock:
             return {
                 "enabled": self.enabled,
+                "message": self.message,
                 "greeted_count": len(self._greeted),
                 "queued": len(self._queue),
                 "sent_this_session": self._sent_count,

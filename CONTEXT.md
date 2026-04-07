@@ -4,6 +4,34 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-07] — Public-Channel Talk + Manual Broadcast Welcome
+
+- What changed:
+  - **Real DM vs broadcast detection** in `_on_receive` (`standalone_bridge.py`). Replaced the hardcoded `is_dm = True` with a proper comparison: `is_dm = (to_id.lower() == self_id.lower())` where `self_id` comes from `_get_self_node_id()` (added with the greeter work). Falls back to legacy "everything is a DM" only if `self_id` is None (interface still warming up), so we never silently drop a message.
+  - **Trigger-gated public-channel replies** — wired up the existing-but-dormant `_is_addressed_to_ai()` function. On a public channel, the bridge stays silent unless the message starts with `!` or contains a trigger word from `_AI_TRIGGERS = {agent, ai, oracle, loracle, bridge, help, hey}`. Casual chat is ignored. When triggered, the response goes back as a broadcast on the same channel index.
+  - **Per-channel cooldown** (`PUBLIC_CHANNEL_COOLDOWN_SECS = 8`, tracked in new `_channel_last_send` dict) prevents a chain of trigger-word messages from saturating a public channel with bot replies. Per-sender rate limit still applies on top.
+  - **Hard kill switch**: `--no-public-talk` CLI flag (default on). Routes through `__init__` as `public_talk: bool`.
+  - **Greeter message exposed**: `GreeterService.stats()` now includes `"message"` so the dashboard can read the welcome text.
+  - **New dashboard button "Welcome → Public"** next to the existing Send button on the Messages tab. Clicking it pre-fills `#msg-send-text` with the greeter message, sets recipient to Broadcast and channel to 0, and focuses the input. **Does not auto-send** — user reviews and clicks Send. Reuses the existing `/api/send-mesh` endpoint, no new routes.
+  - **README updated** with a "Public Channel Mode" section under the existing Auto-Greeter section.
+
+- Why:
+  - The bridge previously ignored public-channel traffic entirely. New users on the mesh had to discover LORACLE via DM, which required out-of-band knowledge. The trigger-gated public reply gives anyone on the mesh a way to interact (`hey loracle, ...`) while keeping the bot quiet during normal chat. The manual broadcast button lets the operator post the welcome message on demand without typing it out.
+
+- Key decisions:
+  - Trigger-gated, not auto-reply. A bot that replies to every public message is spam.
+  - Reuse the existing infrastructure (`_send_response` + `_request_queue` + `_is_addressed_to_ai`) rather than building parallel paths. The whole pipeline already accepted `is_dm` and `channel`; only `_on_receive` needed real values.
+  - Pre-fill, don't auto-send. The user explicitly chose "no auto-send" in planning so accidental clicks don't spam the channel.
+  - 8-second per-channel cooldown is conservative. If the user wants chattier replies they can lower it; if they want it strict it can go higher.
+
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — `_on_receive` real DM detection + trigger gating, `PUBLIC_CHANNEL_COOLDOWN_SECS` constant, `_channel_last_send` dict, `public_talk` init arg, `--no-public-talk` / `--public-talk` CLI flags
+  - `meshtastic-bridge/greeter.py` — `stats()` returns `message`
+  - `meshtastic-bridge/dashboard.py` — Welcome → Public button + `prefillWelcome()` JS
+  - `README.md` — Public Channel Mode subsection
+
+---
+
 ## [2026-04-07] — Auto-Greeter for New Mesh Nodes
 
 - What changed:

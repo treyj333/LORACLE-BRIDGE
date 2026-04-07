@@ -1230,6 +1230,10 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
           onkeydown="if(event.key==='Enter')sendMeshMsg()">
         <button class="btn" onclick="sendMeshMsg()">Send</button>
       </div>
+      <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+        <button class="btn btn-sm" onclick="prefillWelcome()" title="Pre-fill the LORACLE welcome message as a Channel 0 broadcast (does not auto-send)">Welcome &rarr; Public</button>
+        <span style="font-size:0.74em;color:var(--text-dim)">Pre-fills the greeter message as a Ch 0 broadcast \u2014 review and click Send.</span>
+      </div>
       <div id="msg-send-status" style="font-size:0.78em;color:var(--text-dim);margin-top:4px"></div>
     </div>
 
@@ -2177,6 +2181,35 @@ async function sendMeshMsg() {
     setTimeout(function() { statusEl.textContent = ''; }, 3000);
   } else {
     statusEl.textContent = 'Failed: ' + (d ? d.error : 'network error');
+  }
+}
+
+// Pre-fill the Send Message form with the auto-greeter's welcome text as a
+// Channel 0 broadcast. Does NOT auto-send — the user reviews and clicks Send.
+function prefillWelcome() {
+  var msg = (App.state && App.state.greeter && App.state.greeter.message) || '';
+  if (!msg) {
+    var statusEl = document.getElementById('msg-send-status');
+    if (statusEl) statusEl.textContent = 'Greeter message not loaded yet \u2014 try again in a moment.';
+    return;
+  }
+  var sel = document.getElementById('msg-send-to');
+  if (sel) sel.value = '';            // Broadcast
+  var ch = document.getElementById('msg-send-ch');
+  if (ch) ch.value = '0';              // Channel 0
+  var text = document.getElementById('msg-send-text');
+  if (text) {
+    text.value = msg;
+    text.focus();
+    // Move caret to end so the user can append/edit if they want
+    try { text.setSelectionRange(msg.length, msg.length); } catch(e) {}
+  }
+  var statusEl = document.getElementById('msg-send-status');
+  if (statusEl) {
+    statusEl.textContent = 'Welcome message ready \u2014 review and click Send to broadcast.';
+    setTimeout(function() {
+      if (statusEl.textContent.indexOf('Welcome message ready') === 0) statusEl.textContent = '';
+    }, 6000);
   }
 }
 
