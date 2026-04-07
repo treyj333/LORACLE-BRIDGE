@@ -602,7 +602,10 @@ def api_send_mesh():
             text, destinationId=dest, channelIndex=channel, wantAck=False,
         )
         direction = "broadcast" if is_broadcast else f"DM to {node_id}"
-        record_message("out", "dashboard", text, direction=direction)
+        # Note: record_message's first positional arg is also named "direction"
+        # (in/out). Pass the human label as a distinct kwarg so it lands in
+        # the message record without colliding.
+        record_message("out", "dashboard", text, dest_label=direction)
         return jsonify({"ok": True, "direction": direction})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
