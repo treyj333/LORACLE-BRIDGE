@@ -1255,8 +1255,8 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
       <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted)">
         Mode:
         <select class="ctrl-select" id="cov-mode" onchange="renderCoverage()" style="width:100px">
-          <option value="grid" selected>Grid</option>
-          <option value="heat">Heatmap</option>
+          <option value="grid">Grid</option>
+          <option value="heat" selected>Heatmap</option>
           <option value="both">Both</option>
         </select>
       </label>
@@ -2135,8 +2135,17 @@ function updateSendDropdown(knownNodes) {
   var sel = document.getElementById('msg-send-to');
   if (!sel) return;
   var cur = sel.value;
+  // Also merge in any node we currently have a position for — DM-able even
+  // if it never sent a text message and isn't in _known_nodes on the bridge.
+  var merged = {};
+  (knownNodes || []).forEach(function(n) { merged[n] = true; });
+  var positions = (App.state && App.state.node_positions) || {};
+  Object.keys(positions).forEach(function(n) { merged[n] = true; });
+  // If the currently-selected value isn't in either source (e.g. user typed
+  // one manually), keep it so we don't yank their selection mid-compose.
+  if (cur) merged[cur] = true;
   var opts = '<option value="">Broadcast</option>';
-  (knownNodes || []).forEach(function(n) {
+  Object.keys(merged).sort().forEach(function(n) {
     opts += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
   });
   sel.innerHTML = opts;
