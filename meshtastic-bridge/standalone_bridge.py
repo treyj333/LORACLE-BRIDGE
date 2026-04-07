@@ -49,6 +49,7 @@ from dashboard import (
 )
 from addons import load_addons
 from coverage_logger import CoverageLogger
+from greeter import GreeterService, DEFAULT_GREETING
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,6 +118,8 @@ class StandaloneBridge:
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
         addon_config: Optional[Dict[str, dict]] = None,
+        auto_greet: bool = True,
+        greet_message: Optional[str] = None,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -147,6 +150,16 @@ class StandaloneBridge:
             os.path.expanduser("~"), ".mesh-llm", "coverage.jsonl"
         )
         self.coverage = CoverageLogger(coverage_path)
+
+        # Greeter — proactively DM new nodes a brief welcome
+        greeter_path = os.path.join(
+            os.path.expanduser("~"), ".mesh-llm", "greeted_nodes.json"
+        )
+        self.greeter = GreeterService(
+            path=greeter_path,
+            message=greet_message or DEFAULT_GREETING,
+            enabled=auto_greet,
+        )
 
         # RAG
         self.rag_enabled = rag_enabled
@@ -306,6 +319,12 @@ class StandaloneBridge:
                 # connect, so positions can keep showing up for minutes.
                 if time.time() - self._last_nodedb_refresh >= NODEDB_REFRESH_INTERVAL_S:
                     self._load_nodedb_positions()
+                # Drain at most one queued greeting per pump tick (rate-limited
+                # internally to ~1 send per send_interval_s)
+                try:
+                    self.greeter.pump(self.interface)
+                except Exception as e:
+                    logger.debug(f"Greeter pump error: {e}")
                 time.sleep(5)
                 continue
             # Skip if another thread is already connecting (e.g. dashboard switch)
@@ -316,6 +335,13 @@ class StandaloneBridge:
             self._connect_radio()
             if self.interface:
                 self._check_firmware()
+                # Tell the greeter who we are so it never DMs ourselves
+                try:
+                    self_id = self._get_self_node_id()
+                    if self_id:
+                        self.greeter.set_self_id(self_id)
+                except Exception as e:
+                    logger.debug(f"Could not derive self node id: {e}")
                 self._load_nodedb_positions()
                 # BLE needs more time to stabilize after connecting
                 if self.connection_type == "ble":
@@ -597,6 +623,10 @@ class StandaloneBridge:
             # Track nodes
             self._known_nodes.add(sender)
             self._node_count = len(self._known_nodes)
+            try:
+                self.greeter.maybe_greet(sender)
+            except Exception as e:
+                logger.debug(f"Greeter maybe_greet error: {e}")
 
             ch_label = "DM" if is_dm else f"ch{channel}"
             logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
@@ -706,6 +736,10 @@ class StandaloneBridge:
             }
             if is_new:
                 logger.info(f"Position update (new): {sender} -> {lat:.5f}, {lon:.5f}")
+                try:
+                    self.greeter.maybe_greet(sender)
+                except Exception as e:
+                    logger.debug(f"Greeter maybe_greet error: {e}")
             else:
                 logger.debug(f"Position update: {sender} -> {lat:.5f}, {lon:.5f}")
 
@@ -730,13 +764,27 @@ class StandaloneBridge:
             nodes = getattr(self.interface, "nodes", None)
             if not nodes:
                 return
+            # First-ever startup safety net: silently mark every node already
+            # in the radio's nodeDB as "known" so we don't blast the entire
+            # mesh on initial deployment. Idempotent — only does work once.
+            try:
+                self.greeter.seed_from_nodedb(list(nodes.keys()))
+            except Exception as e:
+                logger.debug(f"Greeter seed error: {e}")
+
             new_count = 0
             for node_id, info in nodes.items():
+                key = str(node_id)
+                # Greet any node we discover from the nodeDB after the seed
+                try:
+                    self.greeter.maybe_greet(key)
+                except Exception as e:
+                    logger.debug(f"Greeter maybe_greet error: {e}")
+
                 parsed = self._extract_position(info.get("position", {}))
                 if parsed is None:
                     continue
                 lat, lon, alt = parsed
-                key = str(node_id)
                 is_new = key not in self._node_positions
                 self._node_positions[key] = {
                     "lat": lat,
@@ -755,6 +803,27 @@ class StandaloneBridge:
             self._last_nodedb_refresh = time.time()
         except Exception as e:
             logger.debug(f"Could not read nodeDB positions: {e}")
+
+    def _get_self_node_id(self) -> Optional[str]:
+        """Best-effort derive the local node id in '!hex' form. Returns None
+        if the meshtastic-python interface hasn't surfaced it yet.
+        """
+        if not self.interface:
+            return None
+        try:
+            my_info = getattr(self.interface, "myInfo", None)
+            num = None
+            if my_info is not None:
+                num = getattr(my_info, "my_node_num", None) or getattr(my_info, "myNodeNum", None)
+            if num is None:
+                local_node = getattr(self.interface, "localNode", None)
+                if local_node is not None:
+                    num = getattr(local_node, "nodeNum", None)
+            if num is None:
+                return None
+            return f"!{int(num):08x}"
+        except Exception:
+            return None
 
     def _processing_loop(self):
         """Process queued messages through Ollama and send responses."""
@@ -1245,6 +1314,24 @@ def parse_args():
         default=True,
         help="Enable all available addons",
     )
+    parser.add_argument(
+        "--auto-greet",
+        dest="auto_greet",
+        action="store_true",
+        default=True,
+        help="Auto-DM new mesh nodes a brief welcome (default: on)",
+    )
+    parser.add_argument(
+        "--no-auto-greet",
+        dest="auto_greet",
+        action="store_false",
+        help="Disable the auto-greet welcome DM",
+    )
+    parser.add_argument(
+        "--greet-message",
+        default=None,
+        help="Override the auto-greet message text (default: built-in)",
+    )
 
     return parser.parse_args()
 
@@ -1351,6 +1438,8 @@ def main():
         rag_dir=args.rag_dir,
         dashboard_port=args.dashboard_port,
         addon_config=addon_config if addon_config else None,
+        auto_greet=args.auto_greet,
+        greet_message=args.greet_message,
     )
 
     # Pull the better model in background after bridge starts

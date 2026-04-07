@@ -233,6 +233,14 @@ def api_state():
         state["node_positions_count"] = 0
         state["node_meta"] = {}
         state["nodedb_size"] = 0
+    # Greeter status (auto-greet new nodes feature)
+    if _bridge and hasattr(_bridge, "greeter"):
+        try:
+            state["greeter"] = _bridge.greeter.stats()
+        except Exception:
+            state["greeter"] = {}
+    else:
+        state["greeter"] = {}
     return jsonify(state)
 
 

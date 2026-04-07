@@ -296,16 +296,16 @@ Anyone on the mesh network can send these special commands (prefix with `!`):
 | `!ping` | Simple connectivity test — confirms the bridge is alive |
 | `!rag on/off` | Toggles knowledge base search on or off for your node |
 | `!docs` | Lists all ingested documents in the knowledge base |
-| **Dead Drop Commands** | *(requires `--enable-dead-drop`)* |
+| **Dead Drop Commands** | *(enabled by default)* |
 | `!drop-key <passphrase>` | Register your encryption key for Dead Drop |
 | `!drop <node> <message>` | Leave an encrypted message for another node |
 | `!pickup` | Retrieve your pending encrypted messages |
 | `!pending` | Check how many Dead Drop messages are waiting |
-| **Triage Commands** | *(requires `--enable-triage`)* |
+| **Triage Commands** | *(enabled by default)* |
 | `!triage <question>` | Query the offline medical reference (TCCC/field medicine) |
 | `!triage topics` | List available medical topics in the knowledge base |
 | `!triage status` | Show medical knowledge base statistics |
-| **Brief Commands** | *(requires `--enable-brief`)* |
+| **Brief Commands** | *(enabled by default)* |
 | `!brief` | Get the latest AI-generated situation report |
 | `!brief now` | Generate a fresh SITREP immediately |
 | `!brief history` | List available SITREPs by timestamp |
@@ -339,13 +339,13 @@ Knowledge Base (on by default):
   --docs                  List ingested documents
   --docs-stats            Show knowledge base statistics
 
-Addons:
-  --enable-dead-drop      Enable Dead Drop encrypted async messaging
-  --enable-triage         Enable Triage offline medical reference
+Addons (all enabled by default):
+  --enable-dead-drop      Enable Dead Drop (default: on)
+  --enable-triage         Enable Triage (default: on)
   --triage-dir <path>     Triage medical KB directory (default: ~/.mesh-llm/triage)
-  --enable-brief          Enable Brief AI-generated situation reports
+  --enable-brief          Enable Brief (default: on)
   --brief-interval <int>  SITREP generation interval in minutes (default: 60)
-  --enable-all-addons     Enable all available addons
+  --enable-all-addons     Enable all available addons (default: on)
 
 Other:
   --dashboard-port <int>  Web dashboard port (default: 8000)
@@ -378,15 +378,11 @@ Other:
 
 ## Addons — LORACLE Ecosystem
 
-The bridge supports pluggable addons that extend its capabilities. Each addon adds mesh commands, a dashboard tab, and API endpoints.
+The bridge supports pluggable addons that extend its capabilities. Each addon adds mesh commands, a dashboard tab, and API endpoints. All addons are enabled by default.
 
 ### LORACLE DEAD DROP — Encrypted Async Messaging
 
 Leave encrypted messages for mesh nodes that get picked up when they reconnect. Store-and-forward over LoRa.
-
-```bash
-./mesh-llm.sh --enable-dead-drop
-```
 
 - Nodes register encryption keys with `!drop-key <passphrase>`
 - Messages encrypted with Fernet (AES-128-CBC + HMAC) at rest on the bridge
@@ -397,10 +393,6 @@ Leave encrypted messages for mesh nodes that get picked up when they reconnect. 
 
 Offline TCCC (Tactical Combat Casualty Care) and field medicine reference. Queryable over mesh or from the dashboard.
 
-```bash
-./mesh-llm.sh --enable-triage
-```
-
 - Separate medical knowledge base (doesn't mix with general RAG)
 - Optimized for concise, actionable medical guidance
 - Ingest TCCC PDFs, wilderness medicine references, trauma protocols
@@ -409,10 +401,10 @@ Offline TCCC (Tactical Combat Casualty Care) and field medicine reference. Query
 
 ### LORACLE BRIEF — AI-Generated Situation Reports
 
-Watches mesh traffic and generates structured SITREPs (situation reports) using the local LLM.
+Watches mesh traffic and generates structured SITREPs (situation reports) using the local LLM. To customize the interval:
 
 ```bash
-./mesh-llm.sh --enable-brief --brief-interval 30
+./mesh-llm.sh --brief-interval 30
 ```
 
 - Aggregates all mesh traffic (messages, commands, alerts)
@@ -421,11 +413,78 @@ Watches mesh traffic and generates structured SITREPs (situation reports) using 
 - Export as text or PDF
 - Falls back to template-based reports if LLM is unavailable
 
-### Enable All Addons
+### LORACLE NAVIGATION — Bearing & Distance
 
-```bash
-./mesh-llm.sh --enable-all-addons
+Single-packet navigation helper. From a node with a GPS fix, send a destination coordinate and the bridge replies with the bearing and distance:
+
 ```
+!nav 34.0522,-118.2437
+```
+
+```
+NAV
+Hdg: 067° ENE
+Dist: 1.24 km / 0.77 mi
+From: 34.0500,-118.2500
+To:   34.0522,-118.2437
+GPS age: 2m
+```
+
+- Pure Python: Haversine + initial-bearing math, no LLM call, no internet
+- Coordinates only (no geocoder), so it stays fully offline
+- Reply fits in one LoRa packet — no chunking, no `!more`
+
+All addons load automatically — no flags needed. Just run `./mesh-llm.sh`.
+
+---
+
+## Spatial Features (web dashboard)
+
+Beyond addons, the dashboard exposes two map-based features built on the radio's GPS-aware traffic:
+
+### Live Node Map (Messages tab)
+- Bright pulsing markers for every node with a known GPS fix
+- Marker label shows a short node id and **hop count** (e.g. `ac12f3 · 2h`)
+- Click any node → popup with lat/lon, hop count, age, and a **DM this node** button that pre-fills the Send Message form so you can reply directly
+- Stale fixes (no update >10 min) flip to amber
+
+### Coverage Heatmap (Coverage tab)
+The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that has both signal info and a known position to `~/.mesh-llm/coverage.jsonl`. The Coverage tab visualizes that data:
+
+- **Heatmap** mode (default): Leaflet.heat with a high-contrast green→red gradient
+- **Grid** mode: solid 40 m × 40 m colored rectangles by best RSSI per cell — crisp at any zoom
+- **Both** mode: stacked layers
+- **Dead zones** toggle: highlights cells where nodes traveled but signal was poor or missing
+- Time window filter: last hour / 6h / 24h / all-time
+- Min-RSSI slider, persistent legend
+
+Coverage data starts populating as soon as the bridge is connected and packets are flowing. Useful for finding antenna sweet spots and identifying mesh dead spots before a patrol.
+
+---
+
+## Auto-Greeter
+
+When a brand-new mesh node first appears (via text packet, position broadcast, or nodeDB sync), the bridge sends them a one-time DM letting them know there's an offline AI assistant on the channel. The default greeting:
+
+```
+[LORACLE] Hi! I'm an AI assistant running fully offline on this mesh.
+DM me anything to ask — I'll reply in chunks. Send !help for commands.
+```
+
+Safety:
+- **One-shot per node, persisted forever** in `~/.mesh-llm/greeted_nodes.json` — restarts never re-greet
+- **Self-DM-proof** — never DMs the local node id
+- **Broadcast-proof** — never DMs `^all`, `!ffffffff`, or non-hex ids
+- **First-deployment safe** — on the very first launch with an empty greeted-list, every node already in the radio's nodeDB is silently marked as "known" so a fresh deploy doesn't blast the entire mesh
+- **Startup grace period**: no greetings during the first 90 s after the bridge process starts
+- **Rate-limited**: at most 1 greeting every 10 s, queued FIFO
+- **Single LoRa packet** — fits in one chunk
+
+CLI flags:
+- `--no-auto-greet` to disable
+- `--greet-message "Custom welcome text"` to override the default
+
+Greeter status (counts, queue length, grace remaining) is visible at `/api/state.greeter`.
 
 ---
 

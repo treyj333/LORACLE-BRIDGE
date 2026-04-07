@@ -4,6 +4,64 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-07] — Auto-Greeter for New Mesh Nodes
+
+- What changed:
+  - **New module `meshtastic-bridge/greeter.py`** — `GreeterService` class that proactively DMs each newly-discovered mesh node a one-time welcome message identifying the bridge as an offline AI assistant.
+  - **Persisted one-shot per node forever** — state stored in `~/.mesh-llm/greeted_nodes.json` (atomic write via `.tmp` rename), so restarts never re-greet anyone.
+  - **First-deployment safety net** — on the very first launch with an empty greeted-list, every node already in `interface.nodes` is silently marked as known so a fresh deploy doesn't blast the entire mesh.
+  - **Startup grace period** — `pump()` is a no-op for the first 90 s after process start, preventing the initial nodeDB flood from triggering sends.
+  - **Global rate limit** — at most 1 greeting per 10 s, queued FIFO. Failed sends re-queue once.
+  - **Self-DM and broadcast filters** — `_is_concrete_node` rejects empty/non-hex ids, `^all`, `!ffffffff`, and the local node id (set via `set_self_id` after connect derives it from `interface.myInfo.my_node_num`).
+  - **Wired into 3 first-sighting paths** in `standalone_bridge.py`: `_on_receive`, `_on_position` (only on `is_new`), and `_load_nodedb_positions` (which also calls `seed_from_nodedb` once for the first-deployment safety net).
+  - **Pump is hooked into the existing reconnect-loop tick** alongside the periodic nodeDB refresh, so no new threads.
+  - **CLI flags**: `--auto-greet` (default on), `--no-auto-greet`, `--greet-message "..."` to override the built-in text.
+  - **Dashboard exposure**: `/api/state.greeter` returns `{enabled, greeted_count, queued, sent_this_session, self_id, grace_remaining_s, ...}` for visibility without enabling DEBUG logging.
+  - **README updated** with an Auto-Greeter section under the bridge features.
+
+- Why:
+  - New users joining the mesh had no idea LORACLE was on the channel — they'd have to be told out-of-band or stumble onto `!help`. Proactive greeting closes that discovery gap.
+
+- Files added:
+  - `meshtastic-bridge/greeter.py`
+
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — instantiate greeter, CLI flags, hooks into 3 packet paths + connect-loop pump, `_get_self_node_id` helper
+  - `meshtastic-bridge/dashboard.py` — `/api/state.greeter` field
+  - `README.md` — Auto-Greeter section
+
+---
+
+## [2026-04-06] — Spatial Features: Navigation, Map Fixes, Coverage, DM Popup, Hops
+
+This is a catch-up entry for several commits that landed across early April but never got logged here. Recent commits: `692cb39`, `9292908`, `3aafd1f`.
+
+- What changed (combined):
+  - **Navigation addon** at `meshtastic-bridge/addons/navigation/` — registers `!nav` / `!navigate <lat>,<lon>`. Pure-Python Haversine + initial-bearing math, returns a single-packet template (`Hdg / Dist / From / To / GPS age`). No LLM call, no internet, no geocoder. CLI flag `--enable-navigation` (default on). Wired through the existing addon system the same way Triage / Brief / Dead Drop are.
+  - **Map bug fix — other nodes' positions now appear on the dashboard map.** Two real bugs fixed:
+    1. `_load_nodedb_positions` only handled `latitude`/`longitude` floats and silently dropped `latitudeI`/`longitudeI` int1e7 form (which is what some meshtastic-python paths emit). Pulled the logic into a shared `_extract_position` static helper used by both `_on_position` and `_load_nodedb_positions` so the two code paths can never diverge again.
+    2. `_load_nodedb_positions` only ran once at connect, before the meshtastic library had finished streaming the nodeDB. Now re-runs every 30 s from the existing reconnect loop via `_last_nodedb_refresh` + `NODEDB_REFRESH_INTERVAL_S`.
+    First-seen positions also log at INFO so the user can see the bridge picking up nodes without enabling DEBUG.
+  - **`/api/state` visibility**: added `node_positions_count` and `nodedb_size` so you can hit the endpoint in a browser and immediately see whether positions are arriving.
+  - **Coverage logger + Coverage tab**: new `meshtastic-bridge/coverage_logger.py` (`CoverageLogger`) appends `(ts, node, lat, lon, rssi, snr)` JSONL records to `~/.mesh-llm/coverage.jsonl` whenever a packet has both signal info and a known position. Throttle: 1 sample per node per 5 s / 10 m. Hooked into both `_on_receive` and `_on_position`. New dashboard tab renders the data via Leaflet.heat (heatmap mode, default) plus a Grid mode (40 m × 40 m solid colored rectangles by best RSSI), Both mode, dead-zone overlay, time-window filter, min-RSSI slider, and a persistent legend. New endpoints: `/api/coverage/samples`, `/api/coverage/stats`.
+  - **Hop tracking**: new `_node_meta` dict tracks `hopStart - hopLimit` per node from any incoming packet. Exposed via `/api/state.node_meta`.
+  - **Bigger / brighter node markers** on the Messages map: 28 px pulsing rings, glowing core, bright label below each marker (last 6 chars of node id + hop suffix like `· 2h`), amber stale state after 10 min. CSS keyframe `nodePing` added.
+  - **Actionable popups**: clicking a node now opens a popup with lat/lon/alt, hop count, age, and a **DM this node** button. New `dmNode(nodeId)` JS helper switches to the Messages tab if needed, injects the node into the Send Message dropdown if missing, sets it as the recipient, scrolls the form into view with a brief blue highlight flash, and focuses the text input.
+  - **Send dropdown bug fix**: `updateSendDropdown` was wiping any DM target that wasn't in `_known_nodes` on the next poll tick — position-only nodes silently reset to Broadcast. Now unions `known_nodes` + `node_positions` keys + the currently-selected value before regenerating options.
+  - **Kwarg-collision fix**: `/api/send-mesh` was calling `record_message("out", "dashboard", text, direction=direction)` — but `record_message`'s first positional parameter is also literally named `direction`, triggering "got multiple values for argument 'direction'" on every manual send. Renamed the human-label kwarg to `dest_label`.
+
+- Files added:
+  - `meshtastic-bridge/addons/navigation/__init__.py`
+  - `meshtastic-bridge/addons/navigation/addon.py`
+  - `meshtastic-bridge/coverage_logger.py`
+
+- Files modified:
+  - `meshtastic-bridge/addons/__init__.py` — registered `navigation` addon
+  - `meshtastic-bridge/standalone_bridge.py` — `_extract_position`, periodic nodeDB refresh, hop tracking, coverage logger, navigation CLI flag
+  - `meshtastic-bridge/dashboard.py` — Coverage tab, popup rewrite, dmNode helper, dropdown union fix, kwarg fix, /api/state additions
+
+---
+
 ## [2026-03-28] — Addon System + Dead Drop, Triage, Brief
 
 - What changed:
