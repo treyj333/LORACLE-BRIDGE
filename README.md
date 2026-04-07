@@ -457,8 +457,11 @@ The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that h
 - **Dead zones** toggle: highlights cells where nodes traveled but signal was poor or missing
 - Time window filter: last hour / 6h / 24h / all-time
 - Min-RSSI slider, persistent legend
+- **Auto-refreshes every ~10 s** while the Coverage tab is open — no need to click Refresh manually
+- **Disconnected banner** appears whenever the bridge has no radio attached, warning that the data on screen is from the last connected session and not live
+- **Clear log** button (red, in the toolbar) wipes `~/.mesh-llm/coverage.jsonl` and resets the in-memory throttle so the next sample logs immediately. Use this when you want to start fresh after moving locations or changing antennas
 
-Coverage data starts populating as soon as the bridge is connected and packets are flowing. Useful for finding antenna sweet spots and identifying mesh dead spots before a patrol.
+Coverage data starts populating as soon as the bridge is connected and packets are flowing. Samples are persisted to `~/.mesh-llm/coverage.jsonl` and survive bridge restarts — so opening the tab on a disconnected bridge will show data from the last session (the disconnected banner makes this explicit). Use **Clear log** to reset. Useful for finding antenna sweet spots and identifying mesh dead spots before a patrol.
 
 ---
 
