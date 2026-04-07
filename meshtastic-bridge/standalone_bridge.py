@@ -48,12 +48,18 @@ from dashboard import (
     register_addon_tab, register_addon_api_route,
 )
 from addons import load_addons
+from coverage_logger import CoverageLogger
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("standalone")
+
+# How often to rescan interface.nodes for newly-synced positions, in seconds.
+# Meshtastic-python populates interface.nodes asynchronously after connect, so
+# a single one-shot load right after _connect_radio() catches almost nothing.
+NODEDB_REFRESH_INTERVAL_S = 30
 
 # Suppress noisy meshtastic protobuf DEBUG spam, but keep warnings visible
 logging.getLogger("meshtastic.mesh_interface").setLevel(logging.WARNING)
@@ -133,6 +139,14 @@ class StandaloneBridge:
         self._node_last_active: Dict[str, float] = {}  # node_id -> last message timestamp
         self._overflow: Dict[str, str] = {}  # node_id -> remaining text for !more pager
         self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
+        self._node_meta: Dict[str, dict] = {}  # node_id -> {hops, hops_updated}
+        self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
+
+        # Coverage logger — append-only JSONL of (ts, node, lat, lon, rssi, snr) samples
+        coverage_path = os.path.join(
+            os.path.expanduser("~"), ".mesh-llm", "coverage.jsonl"
+        )
+        self.coverage = CoverageLogger(coverage_path)
 
         # RAG
         self.rag_enabled = rag_enabled
@@ -287,6 +301,11 @@ class StandaloneBridge:
                 time.sleep(2)
                 continue
             if self._is_interface_alive():
+                # Periodically rescan the nodeDB for newly-synced positions.
+                # The meshtastic library streams the nodeDB asynchronously after
+                # connect, so positions can keep showing up for minutes.
+                if time.time() - self._last_nodedb_refresh >= NODEDB_REFRESH_INTERVAL_S:
+                    self._load_nodedb_positions()
                 time.sleep(5)
                 continue
             # Skip if another thread is already connecting (e.g. dashboard switch)
@@ -542,6 +561,9 @@ class StandaloneBridge:
             text = packet.get("decoded", {}).get("text", "")
             channel = packet.get("channel", 0)
 
+            # Record hop metadata for every packet, even if we ignore the text
+            self._record_packet_meta(sender, packet)
+
             if not text or not text.strip():
                 return
 
@@ -580,6 +602,17 @@ class StandaloneBridge:
             logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
             record_message("in", sender, text.strip())
 
+            # Coverage sample — log signal strength against the sender's last
+            # known position, if we have one and the packet carries RSSI/SNR.
+            rssi = packet.get("rxRssi")
+            snr = packet.get("rxSnr")
+            if (rssi is not None or snr is not None):
+                pos = self._node_positions.get(sender)
+                if pos and pos.get("lat") is not None and pos.get("lon") is not None:
+                    self.coverage.record(
+                        sender, pos["lat"], pos["lon"], rssi=rssi, snr=snr
+                    )
+
             # Notify addon observers
             for addon in self._addons:
                 try:
@@ -592,60 +625,134 @@ class StandaloneBridge:
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
 
+    def _record_packet_meta(self, sender: str, packet: dict) -> None:
+        """Extract per-node metadata (hop count, etc.) from any incoming packet.
+
+        Meshtastic packets carry `hopStart` (original hop limit set by the
+        sender) and `hopLimit` (remaining hops when we received it). Actual
+        hops = hopStart - hopLimit. Not every packet has both fields, so we
+        leave existing data alone when either is missing.
+        """
+        if not sender:
+            return
+        try:
+            hop_start = packet.get("hopStart")
+            hop_limit = packet.get("hopLimit")
+            if hop_start is None or hop_limit is None:
+                return
+            hops = int(hop_start) - int(hop_limit)
+            if hops < 0 or hops > 30:
+                return  # garbage, ignore
+            entry = self._node_meta.setdefault(sender, {})
+            entry["hops"] = hops
+            entry["hops_updated"] = time.time()
+        except (TypeError, ValueError):
+            return
+
+    @staticmethod
+    def _extract_position(pos: dict) -> Optional[Tuple[float, float, float]]:
+        """Pull (lat, lon, alt) from a meshtastic position dict.
+
+        Handles both forms the meshtastic-python lib uses depending on version
+        and code path:
+          - degrees floats:  {"latitude": 34.05, "longitude": -118.24}
+          - 1e7 integers:    {"latitudeI": 340500000, "longitudeI": -1182400000}
+
+        Returns None if either coord is missing or both are zero (null island
+        sentinel many radios send before they get a real fix).
+        """
+        if not pos:
+            return None
+        lat = pos.get("latitude")
+        if lat is None:
+            lat = pos.get("latitudeI")
+        lon = pos.get("longitude")
+        if lon is None:
+            lon = pos.get("longitudeI")
+        if lat is None or lon is None:
+            return None
+        # latitudeI/longitudeI are 1e-7 degrees
+        if isinstance(lat, int) and abs(lat) > 900:
+            lat = lat / 1e7
+        if isinstance(lon, int) and abs(lon) > 1800:
+            lon = lon / 1e7
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return None
+        if lat == 0 and lon == 0:
+            return None
+        alt = pos.get("altitude", 0) or 0
+        return lat, lon, alt
+
     def _on_position(self, packet, interface):
         """Handle incoming position packet from the mesh."""
         try:
             sender = packet.get("fromId", "")
             if not sender:
                 return
-            pos = packet.get("decoded", {}).get("position", {})
-            lat = pos.get("latitude") or pos.get("latitudeI")
-            lon = pos.get("longitude") or pos.get("longitudeI")
-            if lat is None or lon is None:
+            self._record_packet_meta(sender, packet)
+            parsed = self._extract_position(packet.get("decoded", {}).get("position", {}))
+            if parsed is None:
                 return
-            # latitudeI/longitudeI are in 1e-7 degrees
-            if isinstance(lat, int) and abs(lat) > 900:
-                lat = lat / 1e7
-            if isinstance(lon, int) and abs(lon) > 1800:
-                lon = lon / 1e7
-            if lat == 0 and lon == 0:
-                return  # Skip zero coordinates
+            lat, lon, alt = parsed
+            is_new = sender not in self._node_positions
             self._node_positions[sender] = {
                 "lat": lat,
                 "lon": lon,
-                "alt": pos.get("altitude", 0),
+                "alt": alt,
                 "last_update": time.time(),
             }
-            logger.debug(f"Position update: {sender} -> {lat:.5f}, {lon:.5f}")
+            if is_new:
+                logger.info(f"Position update (new): {sender} -> {lat:.5f}, {lon:.5f}")
+            else:
+                logger.debug(f"Position update: {sender} -> {lat:.5f}, {lon:.5f}")
+
+            # Coverage sample — pull RSSI/SNR from the same packet if present
+            rssi = packet.get("rxRssi")
+            snr = packet.get("rxSnr")
+            if rssi is not None or snr is not None:
+                self.coverage.record(sender, lat, lon, rssi=rssi, snr=snr)
         except Exception as e:
             logger.debug(f"Error processing position: {e}")
 
     def _load_nodedb_positions(self):
-        """Read initial position data from the meshtastic nodeDB after connecting."""
+        """Re-scan the meshtastic nodeDB and merge any positions into _node_positions.
+
+        Safe to call repeatedly. The meshtastic library populates interface.nodes
+        asynchronously after connect, so we run this both at connect time AND
+        periodically from the reconnect loop (see NODEDB_REFRESH_INTERVAL_S).
+        """
         if not self.interface:
             return
         try:
             nodes = getattr(self.interface, "nodes", None)
             if not nodes:
                 return
-            count = 0
+            new_count = 0
             for node_id, info in nodes.items():
-                pos = info.get("position", {})
-                if not pos:
+                parsed = self._extract_position(info.get("position", {}))
+                if parsed is None:
                     continue
-                lat = pos.get("latitude", 0)
-                lon = pos.get("longitude", 0)
-                if lat == 0 and lon == 0:
-                    continue
-                self._node_positions[str(node_id)] = {
+                lat, lon, alt = parsed
+                key = str(node_id)
+                is_new = key not in self._node_positions
+                self._node_positions[key] = {
                     "lat": lat,
                     "lon": lon,
-                    "alt": pos.get("altitude", 0),
-                    "last_update": pos.get("time", time.time()),
+                    "alt": alt,
+                    "last_update": info.get("position", {}).get("time", time.time()),
                 }
-                count += 1
-            if count:
-                logger.info(f"Loaded {count} node positions from nodeDB")
+                if is_new:
+                    new_count += 1
+                    logger.info(f"Position from nodeDB (new): {key} -> {lat:.5f}, {lon:.5f}")
+            if new_count:
+                logger.info(
+                    f"NodeDB scan: +{new_count} new positions "
+                    f"(total tracked: {len(self._node_positions)}, nodeDB size: {len(nodes)})"
+                )
+            self._last_nodedb_refresh = time.time()
         except Exception as e:
             logger.debug(f"Could not read nodeDB positions: {e}")
 
@@ -1127,6 +1234,12 @@ def parse_args():
         help="Brief SITREP generation interval in minutes (default: 60)",
     )
     parser.add_argument(
+        "--enable-navigation",
+        action="store_true",
+        default=True,
+        help="Enable Navigation bearing/distance helper",
+    )
+    parser.add_argument(
         "--enable-all-addons",
         action="store_true",
         default=True,
@@ -1220,6 +1333,8 @@ def main():
         addon_config["brief"] = {
             "interval_minutes": args.brief_interval,
         }
+    if args.enable_all_addons or args.enable_navigation:
+        addon_config["navigation"] = {}
 
     bridge = StandaloneBridge(
         connection_type=connection_type,

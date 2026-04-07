@@ -14,6 +14,7 @@ ADDON_REGISTRY = {
     "dead_drop": "addons.dead_drop.addon",
     "brief": "addons.brief.addon",
     "triage": "addons.triage.addon",
+    "navigation": "addons.navigation.addon",
 }
 
 

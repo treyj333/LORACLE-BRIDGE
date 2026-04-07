@@ -221,9 +221,40 @@ def api_state():
     # Node positions for map
     if _bridge and hasattr(_bridge, "_node_positions"):
         state["node_positions"] = _bridge._node_positions
+        state["node_positions_count"] = len(_bridge._node_positions)
+        state["node_meta"] = getattr(_bridge, "_node_meta", {}) or {}
+        try:
+            nodedb = getattr(_bridge.interface, "nodes", None) if _bridge.interface else None
+            state["nodedb_size"] = len(nodedb) if nodedb else 0
+        except Exception:
+            state["nodedb_size"] = 0
     else:
         state["node_positions"] = {}
+        state["node_positions_count"] = 0
+        state["node_meta"] = {}
+        state["nodedb_size"] = 0
     return jsonify(state)
+
+
+@app.route("/api/coverage/stats")
+def api_coverage_stats():
+    """Return summary stats about the coverage log."""
+    if _bridge is None or not hasattr(_bridge, "coverage"):
+        return jsonify({"count": 0, "nodes": 0, "time_start": None, "time_end": None, "bbox": None})
+    return jsonify(_bridge.coverage.stats())
+
+
+@app.route("/api/coverage/samples")
+def api_coverage_samples():
+    """Return raw coverage samples. Optional ?limit=N (default 5000)."""
+    if _bridge is None or not hasattr(_bridge, "coverage"):
+        return jsonify({"samples": []})
+    try:
+        limit = int(request.args.get("limit", 5000))
+    except ValueError:
+        limit = 5000
+    samples = _bridge.coverage.read_all(limit=limit)
+    return jsonify({"samples": samples, "count": len(samples)})
 
 
 @app.route("/api/models", methods=["GET"])
@@ -639,6 +670,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <style>
 :root {
   --bg-primary: #181a16;
@@ -701,6 +733,57 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
 .conn-dot.on { background: var(--accent-green); box-shadow: var(--glow-green); animation: pulse 2s ease-in-out infinite; }
 .conn-dot.off { background: var(--accent-red); box-shadow: var(--glow-red); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes nodePing {
+  0%   { transform: scale(0.6); opacity: 0.9; }
+  80%  { transform: scale(2.4); opacity: 0.0; }
+  100% { transform: scale(2.4); opacity: 0.0; }
+}
+.node-marker {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  pointer-events: auto;
+}
+.node-marker .ring {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  border: 2px solid #00ff41;
+  box-shadow: 0 0 16px rgba(0, 255, 65, 0.9), 0 0 4px rgba(0, 255, 65, 1) inset;
+  animation: nodePing 2.2s ease-out infinite;
+}
+.node-marker .core {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 14px; height: 14px;
+  margin-left: -7px; margin-top: -7px;
+  border-radius: 50%;
+  background: #00ff41;
+  border: 3px solid #0a0f06;
+  box-shadow:
+    0 0 14px rgba(0, 255, 65, 1),
+    0 0 28px rgba(0, 255, 65, 0.6),
+    0 0 2px #000 inset;
+}
+.node-marker .label {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  font-weight: bold;
+  color: #00ff41;
+  background: rgba(10, 15, 6, 0.92);
+  border: 1px solid #00ff41;
+  padding: 2px 6px;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(0, 255, 65, 0.8);
+  box-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
+  letter-spacing: 0.5px;
+}
+.node-marker.stale .ring    { border-color: #d6c100; box-shadow: 0 0 12px rgba(214, 193, 0, 0.7); animation-duration: 4s; }
+.node-marker.stale .core    { background: #d6c100; box-shadow: 0 0 10px rgba(214, 193, 0, 0.9), 0 0 2px #000 inset; }
+.node-marker.stale .label   { color: #d6c100; border-color: #d6c100; text-shadow: 0 0 4px rgba(214, 193, 0, 0.8); }
 
 /* ─── Tabs ─── */
 #tab-nav {
@@ -982,6 +1065,7 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
 <nav id="tab-nav">
   <button class="tab-btn active" data-tab="dashboard">Inference</button>
   <button class="tab-btn" data-tab="messages">Messages</button>
+  <button class="tab-btn" data-tab="coverage">Coverage</button>
   <button class="tab-btn" data-tab="controls">Controls</button>
   <button class="tab-btn" data-tab="debug">Debug</button>
   <button class="tab-btn" data-tab="guide">Guide</button>
@@ -1157,6 +1241,64 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
           <tr><td colspan="6" class="empty">Waiting for messages...</td></tr>
         </tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ──── Coverage Tab ──── -->
+  <section id="tab-coverage" class="tab-panel">
+    <div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <span style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Mesh Coverage Heatmap</span>
+      <span id="cov-stats" style="font-size:0.78em;color:var(--text-dim)">No samples yet</span>
+    </div>
+
+    <div style="margin-bottom:10px;padding:10px;background:var(--bg-secondary);border:var(--border-width) solid var(--border);display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:0.82em">
+      <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted)">
+        Mode:
+        <select class="ctrl-select" id="cov-mode" onchange="renderCoverage()" style="width:100px">
+          <option value="grid" selected>Grid</option>
+          <option value="heat">Heatmap</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted)">
+        Window:
+        <select class="ctrl-select" id="cov-window" onchange="renderCoverage()" style="width:120px">
+          <option value="3600">Last hour</option>
+          <option value="21600">Last 6 hours</option>
+          <option value="86400" selected>Last 24 hours</option>
+          <option value="0">All time</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted)">
+        Min RSSI:
+        <input type="range" id="cov-rssi" min="-130" max="-30" value="-130" oninput="document.getElementById('cov-rssi-val').textContent=this.value+' dBm';renderCoverage()">
+        <span id="cov-rssi-val" style="font-family:inherit;color:var(--text-dim)">-130 dBm</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--text-muted)">
+        <input type="checkbox" id="cov-deadzones" onchange="renderCoverage()"> Dead zones
+      </label>
+      <button class="btn btn-sm" onclick="loadCoverage()">Refresh</button>
+    </div>
+
+    <div id="cov-map" style="position:relative;height:520px;border:var(--border-width) solid var(--border);background:var(--bg-secondary);box-shadow:var(--shadow-inset)">
+      <div id="cov-legend" style="position:absolute;bottom:10px;right:10px;z-index:500;
+           background:rgba(10,15,6,0.92);border:1px solid var(--border);padding:8px 10px;
+           font-family:'Share Tech Mono',monospace;font-size:0.72em;color:var(--text-muted);
+           box-shadow:0 0 10px rgba(0,255,65,0.2);pointer-events:none">
+        <div style="color:var(--accent-green);letter-spacing:1px;margin-bottom:5px">SIGNAL</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:16px;height:10px;background:#00ff41;display:inline-block;border:1px solid #0a0f06"></span> Strong  &ge;-60 dBm</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:16px;height:10px;background:#8aff00;display:inline-block;border:1px solid #0a0f06"></span> Good    -60..-80</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:16px;height:10px;background:#ffd500;display:inline-block;border:1px solid #0a0f06"></span> OK      -80..-95</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:16px;height:10px;background:#ff8a00;display:inline-block;border:1px solid #0a0f06"></span> Weak    -95..-110</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:16px;height:10px;background:#ff3030;display:inline-block;border:1px solid #0a0f06"></span> Faint   &lt;-110</div>
+        <div style="display:flex;align-items:center;gap:6px;margin:4px 0 0 0;border-top:1px solid var(--border);padding-top:4px"><span style="width:16px;height:10px;background:#ff0033;display:inline-block;border:2px solid #ff3030;opacity:0.7"></span> Dead zone</div>
+      </div>
+    </div>
+
+    <div style="margin-top:8px;font-size:0.74em;color:var(--text-dim);line-height:1.5">
+      Each sample is a (node, GPS, RSSI, SNR) tuple recorded when the bridge sees a packet from
+      a node with a known position. Hot spots = strong signal. Holes inside the traveled area = dead zones.
+      Samples are throttled to ~1 every 5 s / 10 m per node.
     </div>
   </section>
 
@@ -1523,6 +1665,7 @@ function switchTab(name) {
   App.currentTab = name;
   if (name === 'controls' && !App.controlsLoaded) loadControlsData();
   if (name === 'messages') { setTimeout(function() { initMap(); if (_meshMap) _meshMap.invalidateSize(); }, 100); }
+  if (name === 'coverage') { setTimeout(function() { initCovMap(); if (_covMap) _covMap.invalidateSize(); loadCoverage(); }, 100); }
   if (name === 'debug' && !App.debugLoaded) { App.debugLoaded = true; loadDebugData(); }
 }
 
@@ -1756,30 +1899,67 @@ function updateMap(positions) {
   if (!_meshMap || !positions) return;
   var bounds = [];
   var count = 0;
+  var nodeMeta = (App.state && App.state.node_meta) || {};
   Object.keys(positions).forEach(function(nodeId) {
     var p = positions[nodeId];
     if (!p.lat || !p.lon) return;
     count++;
     var latlng = [p.lat, p.lon];
     bounds.push(latlng);
+    // Short label: keep the last 4 chars of a !hex id, otherwise the whole thing truncated
+    var shortId = nodeId;
+    if (shortId.length > 10) shortId = shortId.slice(-6);
+    var meta = nodeMeta[nodeId] || {};
+    var hops = (typeof meta.hops === 'number') ? meta.hops : null;
+    var hopSuffix = '';
+    var hopText = 'Unknown hops';
+    if (hops !== null) {
+      if (hops === 0) { hopSuffix = ' \u00b7 direct'; hopText = 'Direct (0 hops)'; }
+      else if (hops === 1) { hopSuffix = ' \u00b7 1h'; hopText = '1 hop'; }
+      else { hopSuffix = ' \u00b7 ' + hops + 'h'; hopText = hops + ' hops'; }
+    }
+    var label = shortId + hopSuffix;
+    // Stale after 10 minutes
+    var ageSec = p.last_update ? (Date.now() / 1000 - p.last_update) : 0;
+    var staleCls = ageSec > 600 ? ' stale' : '';
+    var iconHtml =
+      '<div class="node-marker' + staleCls + '">' +
+      '  <div class="ring"></div>' +
+      '  <div class="core"></div>' +
+      '  <div class="label">' + escapeHtml(label) + '</div>' +
+      '</div>';
     if (_mapMarkers[nodeId]) {
       _mapMarkers[nodeId].setLatLng(latlng);
+      // Refresh the icon so stale + hop label updates as time passes
+      var el = _mapMarkers[nodeId].getElement();
+      if (el) {
+        var inner = el.querySelector('.node-marker');
+        if (inner) inner.className = 'node-marker' + staleCls;
+        var lbl = el.querySelector('.node-marker .label');
+        if (lbl) lbl.textContent = label;
+      }
     } else {
       var icon = L.divIcon({
-        className: '',
-        html: '<div style="background:var(--accent-green);width:12px;height:12px;border:2px solid #0a0f06;box-shadow:0 0 6px rgba(0,255,65,0.5)"></div>',
-        iconSize: [12, 12], iconAnchor: [6, 6]
+        className: 'node-marker-wrap',
+        html: iconHtml,
+        iconSize: [28, 28], iconAnchor: [14, 14]
       });
-      _mapMarkers[nodeId] = L.marker(latlng, {icon: icon}).addTo(_meshMap);
+      _mapMarkers[nodeId] = L.marker(latlng, {icon: icon, zIndexOffset: 1000}).addTo(_meshMap);
     }
     var age = p.last_update ? relativeTime(p.last_update) : '';
     var alt = p.alt ? ' | Alt: ' + Math.round(p.alt) + 'm' : '';
-    _mapMarkers[nodeId].bindPopup(
-      '<div style="font-family:monospace;font-size:12px;text-transform:none">' +
-      '<b>' + escapeHtml(nodeId) + '</b><br>' +
-      p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + alt + '<br>' +
-      '<span style="color:#888">' + age + '</span></div>'
-    );
+    // Escape nodeId for use inside an HTML onclick="..." attribute (allow only safe chars)
+    var safeNodeId = nodeId.replace(/[^a-zA-Z0-9!_\-]/g, '');
+    var popupHtml =
+      '<div style="font-family:monospace;font-size:12px;text-transform:none;min-width:180px">' +
+        '<div style="font-weight:bold;color:#00ff41;margin-bottom:4px">' + escapeHtml(nodeId) + '</div>' +
+        '<div>' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) + alt + '</div>' +
+        '<div style="color:#00ff41;margin-top:3px">Hops: ' + escapeHtml(hopText) + '</div>' +
+        '<div style="color:#888;margin-top:2px">' + escapeHtml(age) + '</div>' +
+        '<button class="btn btn-sm" style="margin-top:8px;width:100%" ' +
+          'onclick="dmNode(\'' + safeNodeId + '\')">DM this node</button>' +
+      '</div>';
+    _mapMarkers[nodeId].bindPopup(popupHtml);
   });
   // Remove stale markers
   Object.keys(_mapMarkers).forEach(function(id) {
@@ -1789,6 +1969,164 @@ function updateMap(positions) {
   if (bounds.length > 0 && !App._mapFitted) {
     _meshMap.fitBounds(bounds, {padding: [30, 30], maxZoom: 14});
     App._mapFitted = true;
+  }
+}
+
+// ─── Coverage Tab ───────────────────────────────────────────────────────────
+
+var _covMap = null;
+var _covHeatLayer = null;
+var _covDeadLayer = null;
+var _covSamples = [];
+
+function initCovMap() {
+  if (_covMap) return;
+  var el = document.getElementById('cov-map');
+  if (!el || typeof L === 'undefined') return;
+  _covMap = L.map('cov-map', {attributionControl: false}).setView([39.8, -98.5], 4);
+  L.tileLayer('/tiles/{z}/{x}/{y}.png', {maxZoom: 15, attribution: 'OSM'}).addTo(_covMap);
+}
+
+async function loadCoverage() {
+  try {
+    var sr = await fetch('/api/coverage/samples?limit=10000');
+    var sd = await sr.json();
+    _covSamples = sd.samples || [];
+    var tr = await fetch('/api/coverage/stats');
+    var td = await tr.json();
+    var statsEl = document.getElementById('cov-stats');
+    if (td.count > 0) {
+      statsEl.textContent = td.count + ' samples / ' + td.nodes + ' node(s)';
+    } else {
+      statsEl.textContent = 'No samples yet — bridge needs to receive packets from nodes with GPS';
+    }
+    renderCoverage();
+  } catch(e) {
+    document.getElementById('cov-stats').textContent = 'Error loading coverage: ' + e;
+  }
+}
+
+// Shared color ramp for grid + heatmap + legend. Input: RSSI in dBm.
+// Higher (less negative) = stronger. Missing RSSI is treated as "Faint".
+function covColorForRssi(rssi) {
+  if (rssi == null) return '#ff3030';         // unknown -> faint
+  if (rssi >= -60)  return '#00ff41';         // strong
+  if (rssi >= -80)  return '#8aff00';         // good
+  if (rssi >= -95)  return '#ffd500';         // ok
+  if (rssi >= -110) return '#ff8a00';         // weak
+  return '#ff3030';                            // faint
+}
+
+var _covGridLayer = null;
+var _covGridCell = null; // last seen cellDeg so we can drop on refresh
+
+function renderCoverage() {
+  if (!_covMap) return;
+  var mode = document.getElementById('cov-mode').value;  // 'grid' | 'heat' | 'both'
+  var windowSec = parseInt(document.getElementById('cov-window').value);
+  var minRssi = parseInt(document.getElementById('cov-rssi').value);
+  var showDead = document.getElementById('cov-deadzones').checked;
+  var now = Date.now() / 1000;
+
+  // Filter samples by time window + min-RSSI threshold
+  var filtered = _covSamples.filter(function(s) {
+    if (windowSec > 0 && (now - s.ts) > windowSec) return false;
+    if (s.rssi != null && s.rssi < minRssi) return false;
+    return true;
+  });
+
+  // Bin into ~40m x 40m cells: key "latBin,lonBin" -> {lat, lon, bestRssi, count}
+  var cellDeg = 0.00036; // ~40 m at mid-latitudes
+  var cells = {};
+  filtered.forEach(function(s) {
+    var latBin = Math.round(s.lat / cellDeg);
+    var lonBin = Math.round(s.lon / cellDeg);
+    var key = latBin + ',' + lonBin;
+    var c = cells[key];
+    if (!c) {
+      cells[key] = { latBin: latBin, lonBin: lonBin, bestRssi: s.rssi, count: 1 };
+    } else {
+      c.count += 1;
+      // Track the strongest signal seen in this cell
+      if (s.rssi != null && (c.bestRssi == null || s.rssi > c.bestRssi)) c.bestRssi = s.rssi;
+    }
+  });
+
+  // ── Clear any previous layers ─────────────────────────────────────────
+  if (_covGridLayer) { _covMap.removeLayer(_covGridLayer); _covGridLayer = null; }
+  if (_covHeatLayer) { _covMap.removeLayer(_covHeatLayer); _covHeatLayer = null; }
+  if (_covDeadLayer) { _covMap.removeLayer(_covDeadLayer); _covDeadLayer = null; }
+
+  // ── Grid render path ──────────────────────────────────────────────────
+  if (mode === 'grid' || mode === 'both') {
+    _covGridLayer = L.layerGroup();
+    Object.keys(cells).forEach(function(k) {
+      var c = cells[k];
+      var latMin = c.latBin * cellDeg - cellDeg / 2;
+      var latMax = c.latBin * cellDeg + cellDeg / 2;
+      var lonMin = c.lonBin * cellDeg - cellDeg / 2;
+      var lonMax = c.lonBin * cellDeg + cellDeg / 2;
+      var color = covColorForRssi(c.bestRssi);
+      // Single-sample cells rendered lighter; multi-sample cells solid
+      var fillOpacity = (c.count >= 3) ? 0.72 : (c.count === 2 ? 0.58 : 0.42);
+      L.rectangle([[latMin, lonMin], [latMax, lonMax]], {
+        color: color,
+        weight: 1,
+        opacity: 0.85,
+        fillColor: color,
+        fillOpacity: fillOpacity
+      }).addTo(_covGridLayer);
+    });
+    _covGridLayer.addTo(_covMap);
+  }
+
+  // ── Heatmap render path ───────────────────────────────────────────────
+  if ((mode === 'heat' || mode === 'both') && filtered.length > 0 && typeof L.heatLayer === 'function') {
+    var heatPoints = filtered.map(function(s) {
+      var intensity = 0.5;
+      if (s.rssi != null) {
+        // Clamp RSSI [-130..-30] -> [0..1]
+        intensity = Math.max(0, Math.min(1, (s.rssi - (-130)) / 100));
+      }
+      return [s.lat, s.lon, intensity];
+    });
+    _covHeatLayer = L.heatLayer(heatPoints, {
+      radius: 55, blur: 35, maxZoom: 15, minOpacity: 0.55,
+      gradient: {
+        0.0: '#7a0000', 0.2: '#ff3030', 0.4: '#ff8a00',
+        0.6: '#ffd500', 0.8: '#8aff00', 1.0: '#00ff41'
+      }
+    }).addTo(_covMap);
+  }
+
+  // ── Dead zones (same cell hash, much bigger visuals) ──────────────────
+  if (showDead) {
+    var deadCells = [];
+    Object.keys(cells).forEach(function(k) {
+      var c = cells[k];
+      var isDead = (c.bestRssi == null || c.bestRssi < -110);
+      if (isDead) {
+        var lat = c.latBin * cellDeg;
+        var lon = c.lonBin * cellDeg;
+        deadCells.push([lat, lon]);
+      }
+    });
+    if (deadCells.length > 0) {
+      _covDeadLayer = L.layerGroup();
+      deadCells.forEach(function(latlng) {
+        L.circle(latlng, {
+          radius: 80, color: '#ff3030', weight: 2,
+          fillColor: '#ff0033', fillOpacity: 0.45
+        }).addTo(_covDeadLayer);
+      });
+      _covDeadLayer.addTo(_covMap);
+    }
+  }
+
+  // ── Always re-fit on render when there is data ────────────────────────
+  if (filtered.length > 0) {
+    var bounds = filtered.map(function(s) { return [s.lat, s.lon]; });
+    try { _covMap.fitBounds(bounds, {padding: [40, 40], maxZoom: 16}); } catch(e) {}
   }
 }
 
@@ -1819,6 +2157,51 @@ async function sendMeshMsg() {
     setTimeout(function() { statusEl.textContent = ''; }, 3000);
   } else {
     statusEl.textContent = 'Failed: ' + (d ? d.error : 'network error');
+  }
+}
+
+// Pre-fill the Send Message form targeted at a specific node and scroll it
+// into view. Called from the map popup's "DM this node" button.
+function dmNode(nodeId) {
+  if (!nodeId) return;
+  if (App.currentTab !== 'messages') switchTab('messages');
+  var sel = document.getElementById('msg-send-to');
+  if (sel) {
+    // Make sure the node is an option (it may be a position-only node that
+    // never sent a text message and therefore isn't in known_nodes yet)
+    var found = false;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === nodeId) { found = true; break; }
+    }
+    if (!found) {
+      var opt = document.createElement('option');
+      opt.value = nodeId;
+      opt.textContent = nodeId;
+      sel.appendChild(opt);
+    }
+    sel.value = nodeId;
+  }
+  // Close any open popup so the form is visible
+  if (_meshMap && _meshMap.closePopup) _meshMap.closePopup();
+  var form = document.getElementById('msg-send-text');
+  if (form) {
+    // Find the enclosing Send Message card (2 parents up from the input)
+    var card = form.closest('div[style*="accent-blue"]') || form.parentElement.parentElement;
+    if (card && card.scrollIntoView) {
+      card.scrollIntoView({behavior: 'smooth', block: 'center'});
+      // Brief highlight flash so it's obvious where we jumped to
+      var origShadow = card.style.boxShadow;
+      card.style.boxShadow = '0 0 0 2px var(--accent-blue), 0 0 18px rgba(77,166,255,0.6)';
+      setTimeout(function() { card.style.boxShadow = origShadow; }, 1100);
+    }
+    setTimeout(function() { form.focus(); }, 350);
+  }
+  var statusEl = document.getElementById('msg-send-status');
+  if (statusEl) {
+    statusEl.textContent = 'DM target: ' + nodeId;
+    setTimeout(function() {
+      if (statusEl.textContent.indexOf('DM target:') === 0) statusEl.textContent = '';
+    }, 4000);
   }
 }
 
