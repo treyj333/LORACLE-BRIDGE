@@ -83,6 +83,28 @@ class CoverageLogger:
                 logger.warning(f"Could not append coverage sample: {e}")
                 return False
 
+    def clear(self) -> int:
+        """Truncate the coverage log file. Returns the number of samples removed."""
+        with self._lock:
+            removed = 0
+            try:
+                if os.path.exists(self.path):
+                    # Count first so we can report it back
+                    try:
+                        with open(self.path, "r") as f:
+                            removed = sum(1 for line in f if line.strip())
+                    except Exception:
+                        removed = 0
+                    # Truncate
+                    open(self.path, "w").close()
+                # Also clear the in-memory throttle cache so next sample is logged
+                self._last.clear()
+                logger.info(f"Coverage log cleared ({removed} samples removed)")
+                return removed
+            except Exception as e:
+                logger.warning(f"Could not clear coverage log: {e}")
+                return 0
+
     def read_all(self, limit: Optional[int] = None) -> List[dict]:
         """Read all samples from the JSONL file. Optionally cap to last N."""
         if not os.path.exists(self.path):

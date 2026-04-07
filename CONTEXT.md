@@ -4,6 +4,23 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-07] — Coverage Tab: Auto-Refresh, Disconnected Banner, Clear Log
+
+- What changed:
+  - **Auto-refresh** the Coverage tab while it's open. The poll loop now calls `loadCoverage()` every ~10 s when `App.currentTab === 'coverage'`, tracked via a new `App.lastCovRefresh` timestamp. Previously the coverage data only refreshed on tab open or manual Refresh click — stale samples accumulated in `_covSamples` while users watched.
+  - **Disconnected banner** on the Coverage tab. New `<div id="cov-banner">` element + `updateCovBanner(state)` JS function that show an amber "Bridge disconnected — coverage data shown is from the last connected session" warning whenever `state.connected === false`. Updated on every poll tick so it appears/disappears as the radio link drops and recovers.
+  - **Clear log button** on the Coverage tab toolbar (red border styling to flag it as destructive). Calls a new `POST /api/coverage/clear` endpoint that truncates `~/.mesh-llm/coverage.jsonl` and resets the in-memory throttle cache so the next sample is logged immediately.
+  - **`CoverageLogger.clear()`** method added to `coverage_logger.py`: counts samples first (so the API can report removed count), truncates the file, and clears `self._last` so the throttle doesn't carry over.
+
+- Why:
+  - User reported "I don't have a node connected but I see a heatmap" — confused by stale samples persisting across sessions and the lack of any indication that the data was historical. The auto-refresh keeps the view current while connected, the banner explicitly tells the user when data is stale, and the Clear button gives them a way to start fresh without manually deleting the JSONL file.
+
+- Files modified:
+  - `meshtastic-bridge/coverage_logger.py` — `clear()` method
+  - `meshtastic-bridge/dashboard.py` — `/api/coverage/clear` endpoint, banner HTML, Clear button, `updateCovBanner` + `clearCoverage` JS, poll-loop auto-refresh, `App.lastCovRefresh` state
+
+---
+
 ## [2026-04-07] — Public-Channel Talk + Manual Broadcast Welcome
 
 - What changed:

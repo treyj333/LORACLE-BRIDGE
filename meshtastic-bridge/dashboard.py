@@ -252,6 +252,15 @@ def api_coverage_stats():
     return jsonify(_bridge.coverage.stats())
 
 
+@app.route("/api/coverage/clear", methods=["POST"])
+def api_coverage_clear():
+    """Truncate the coverage log file. Returns the number of samples removed."""
+    if _bridge is None or not hasattr(_bridge, "coverage"):
+        return jsonify({"ok": False, "error": "Bridge not initialized"}), 503
+    removed = _bridge.coverage.clear()
+    return jsonify({"ok": True, "removed": removed})
+
+
 @app.route("/api/coverage/samples")
 def api_coverage_samples():
     """Return raw coverage samples. Optional ?limit=N (default 5000)."""
@@ -1293,6 +1302,11 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
         <input type="checkbox" id="cov-deadzones" onchange="renderCoverage()"> Dead zones
       </label>
       <button class="btn btn-sm" onclick="loadCoverage()">Refresh</button>
+      <button class="btn btn-sm" onclick="clearCoverage()" title="Permanently delete the coverage log file (~/.mesh-llm/coverage.jsonl)" style="border-color:var(--accent-red);color:var(--accent-red)">Clear log</button>
+    </div>
+
+    <div id="cov-banner" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(214,193,0,0.12);border:1px solid #d6c100;color:#d6c100;font-size:0.82em;font-family:'Share Tech Mono',monospace">
+      <span id="cov-banner-text">Bridge disconnected \u2014 coverage data shown is from the last connected session.</span>
     </div>
 
     <div id="cov-map" style="position:relative;height:520px;border:var(--border-width) solid var(--border);background:var(--bg-secondary);box-shadow:var(--shadow-inset)">
@@ -1612,6 +1626,7 @@ const App = {
   logFilter: 'all',
   controlsLoaded: false,
   debugLoaded: false,
+  lastCovRefresh: 0,
 };
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -1720,6 +1735,17 @@ async function poll() {
       updateMessages(d);
       updateMap(d.node_positions);
       updateSendDropdown(d.known_nodes);
+    }
+
+    // Coverage tab — auto-refresh samples every ~10s while open, plus
+    // refresh the disconnected banner immediately on every poll tick
+    if (App.currentTab === 'coverage') {
+      updateCovBanner(d);
+      var nowMs = Date.now();
+      if (nowMs - App.lastCovRefresh > 10000) {
+        App.lastCovRefresh = nowMs;
+        loadCoverage();
+      }
     }
 
     // Debug: fetch logs
@@ -2000,6 +2026,39 @@ function initCovMap() {
   if (!el || typeof L === 'undefined') return;
   _covMap = L.map('cov-map', {attributionControl: false}).setView([39.8, -98.5], 4);
   L.tileLayer('/tiles/{z}/{x}/{y}.png', {maxZoom: 15, attribution: 'OSM'}).addTo(_covMap);
+}
+
+function updateCovBanner(d) {
+  var banner = document.getElementById('cov-banner');
+  var txt = document.getElementById('cov-banner-text');
+  if (!banner || !txt) return;
+  if (!d || !d.connected) {
+    banner.style.display = '';
+    txt.textContent = 'Bridge disconnected \u2014 coverage data shown is from the last connected session.';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+async function clearCoverage() {
+  if (!confirm('Permanently delete the coverage log file? This cannot be undone.')) return;
+  try {
+    var r = await fetch('/api/coverage/clear', {method: 'POST'});
+    var d = await r.json();
+    var statsEl = document.getElementById('cov-stats');
+    if (d && d.ok) {
+      _covSamples = [];
+      App.lastCovRefresh = 0;
+      if (statsEl) statsEl.textContent = 'Cleared (' + d.removed + ' samples removed)';
+      renderCoverage();
+      setTimeout(loadCoverage, 800);
+    } else {
+      if (statsEl) statsEl.textContent = 'Clear failed: ' + (d && d.error ? d.error : 'unknown error');
+    }
+  } catch(e) {
+    var statsEl = document.getElementById('cov-stats');
+    if (statsEl) statsEl.textContent = 'Clear failed: ' + e;
+  }
 }
 
 async function loadCoverage() {
