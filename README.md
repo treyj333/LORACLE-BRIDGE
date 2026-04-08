@@ -493,6 +493,20 @@ Greeter status (counts, queue length, grace remaining, current message) is visib
 
 The dashboard's Messages tab has a **Welcome → Public** button next to the Send button. Click it and the Send Message form pre-fills with the current greeter text, the recipient drops to **Broadcast**, and the channel is set to **Ch 0**. Review the text, then click **Send** to broadcast it. It does **not** auto-send — accidental clicks won't spam the channel.
 
+### Ask LORACLE from the Dashboard
+
+The Send Message card on the Messages tab has a **Mode** selector with two options:
+
+- **Raw send** (default) — whatever you type is broadcast or DM'd as-is over the mesh, exactly like before. LORACLE does **not** see it (the bridge's own radio doesn't hear its own transmissions), so don't use this mode to ask questions.
+- **Ask LORACLE** — the text becomes a question to the local LLM. The answer is shown in the message log *and* (optionally) transmitted over the mesh.
+
+In Ask mode the recipient dropdown gains a **Local only (don't transmit)** option at the top:
+- **Local only** — the answer appears only in the dashboard. Nothing goes out on the radio.
+- **Broadcast** — the answer is broadcast on the selected channel (e.g. Ch 0) so everyone on the channel gets it.
+- **A specific node** — the answer is DM'd to that node (useful for relaying a Q&A to one person). Long answers still go through the existing `!more` pager, so the target can page through the continuation.
+
+Commands (`!nav`, `!help`, `!triage`, `!brief`, etc.) work from Ask mode too — they're dispatched through the same handler the mesh path uses. Ollama history for dashboard chats lives in an isolated `"!dashboard"` namespace so it never mixes with real-node conversations.
+
 ---
 
 ## Public Channel Mode

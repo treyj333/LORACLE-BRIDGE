@@ -628,6 +628,130 @@ def api_send_mesh():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    """Ask LORACLE a question directly from the dashboard.
+
+    Bypasses the radio: the question is injected straight into the existing
+    command-dispatch / Ollama pipeline, and the answer is returned to the
+    dashboard. If ``dest`` is not ``"local"``, the answer is also broadcast
+    over the mesh via the existing ``_send_response`` chunk/pager path.
+
+    Body: ``{text, dest, channel}`` where ``dest`` is ``"local"``,
+    ``"broadcast"``, or a concrete ``!hex`` node id.
+    """
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not hasattr(_bridge, "ollama") or _bridge.ollama is None:
+        return jsonify({"error": "Ollama not initialized"}), 503
+
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Empty message"}), 400
+    dest = (data.get("dest") or "local").strip()
+    try:
+        channel = int(data.get("channel", 0))
+    except (TypeError, ValueError):
+        channel = 0
+
+    # Sentinel id for Ollama history namespacing — never touches real node history.
+    dash_id = "!dashboard"
+
+    # Log the question in the dashboard message log
+    record_message("in", "dashboard", text, dest_label="ask")
+
+    # 1. Command dispatch first (!nav, !help, !triage, ...)
+    answer = None
+    elapsed = 0.0
+    try:
+        if text.startswith("!"):
+            try:
+                cmd_response = _bridge._handle_command(dash_id, text)
+            except Exception as e:
+                logger.warning(f"Ask: command dispatch error: {e}")
+                cmd_response = None
+            if cmd_response is not None:
+                answer = cmd_response
+
+        # 2. Regular LLM query (with optional RAG context)
+        if answer is None:
+            context_messages = None
+            try:
+                if (
+                    getattr(_bridge, "rag_enabled", False)
+                    and getattr(_bridge, "rag_engine", None) is not None
+                ):
+                    context_messages = _bridge.rag_engine.build_context_messages(text)
+            except Exception as e:
+                logger.debug(f"Ask: RAG context build failed: {e}")
+                context_messages = None
+            start = time.time()
+            answer = _bridge.ollama.chat(
+                dash_id, text, context_messages=context_messages
+            )
+            elapsed = time.time() - start
+    except Exception as e:
+        logger.error(f"Ask: LLM call failed: {e}")
+        return jsonify({"ok": False, "error": f"LLM error: {e}"}), 500
+
+    if not answer or not str(answer).strip():
+        return jsonify({"ok": False, "error": "Empty answer from LLM"}), 500
+
+    # 3. Optionally rebroadcast over the mesh
+    transmitted = False
+    tx_error = None
+    dest_label = "local"
+    dest_lower = dest.lower()
+
+    if dest_lower == "local":
+        dest_label = "local"
+    else:
+        # Must have a live interface to transmit
+        if not _bridge.interface or not _bridge._is_interface_alive():
+            tx_error = "Radio not connected — answer returned locally only"
+        else:
+            try:
+                if dest_lower == "broadcast":
+                    _bridge._send_response(
+                        dash_id, str(answer), channel=channel, is_dm=False
+                    )
+                    dest_label = f"broadcast ch{channel}"
+                    transmitted = True
+                else:
+                    # Assume a concrete node id (existing dropdown validates this)
+                    _bridge._send_response(
+                        dest, str(answer), channel=channel, is_dm=True
+                    )
+                    dest_label = f"DM to {dest}"
+                    transmitted = True
+            except Exception as e:
+                tx_error = str(e)
+                logger.error(f"Ask: rebroadcast failed: {e}")
+
+    # Log the answer in the dashboard message log
+    record_message(
+        "out",
+        "dashboard",
+        str(answer),
+        chunks=1,
+        llm_time=elapsed,
+        dest_label=dest_label,
+    )
+
+    payload = {
+        "ok": True,
+        "question": text,
+        "answer": str(answer),
+        "transmitted": transmitted,
+        "dest_label": dest_label,
+        "llm_time": round(elapsed, 2),
+    }
+    if tx_error:
+        payload["tx_error"] = tx_error
+    return jsonify(payload)
+
+
 @app.route("/api/rag/ingest-file", methods=["POST"])
 def api_rag_ingest_file():
     """Accept a file upload and ingest into the main RAG knowledge base."""
@@ -1221,9 +1345,18 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
 
     <!-- ── Send Message ── -->
     <div style="margin-bottom:16px;padding:12px;background:var(--bg-secondary);border:var(--border-width) solid var(--border);border-top:3px solid var(--accent-blue)">
-      <div style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px;margin-bottom:8px">Send Message</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+        <div id="msg-send-title" style="font-size:0.82em;color:var(--text-muted);letter-spacing:1px">Send Message</div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:0.78em;color:var(--text-muted)">
+          Mode:
+          <select class="ctrl-select" id="msg-mode" onchange="updateSendMode()" style="width:128px">
+            <option value="raw" selected>Raw send</option>
+            <option value="ask">Ask LORACLE</option>
+          </select>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <select class="ctrl-select" id="msg-send-to" style="width:140px;flex-shrink:0">
+        <select class="ctrl-select" id="msg-send-to" style="width:170px;flex-shrink:0">
           <option value="">Broadcast</option>
         </select>
         <select class="ctrl-select" id="msg-send-ch" style="width:70px;flex-shrink:0">
@@ -1236,9 +1369,10 @@ input, select, textarea { font-family: var(--font-sans); text-transform: none; }
       <div style="display:flex;gap:8px">
         <input type="text" id="msg-send-text" placeholder="Type a message..."
           style="flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:8px 10px;font-size:0.9em"
-          onkeydown="if(event.key==='Enter')sendMeshMsg()">
-        <button class="btn" onclick="sendMeshMsg()">Send</button>
+          onkeydown="if(event.key==='Enter')handleSendKey()">
+        <button class="btn" id="msg-send-btn" onclick="handleSendClick()">Send</button>
       </div>
+      <div id="msg-mode-hint" style="font-size:0.74em;color:var(--text-dim);margin-top:6px">Raw send \u2014 broadcasts text as-is over the mesh. Does NOT query LORACLE.</div>
       <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
         <button class="btn btn-sm" onclick="prefillWelcome()" title="Pre-fill the LORACLE welcome message as a Channel 0 broadcast (does not auto-send)">Welcome &rarr; Public</button>
         <span style="font-size:0.74em;color:var(--text-dim)">Pre-fills the greeter message as a Ch 0 broadcast \u2014 review and click Send.</span>
@@ -2218,8 +2352,14 @@ function updateSendDropdown(knownNodes) {
   // If the currently-selected value isn't in either source (e.g. user typed
   // one manually), keep it so we don't yank their selection mid-compose.
   if (cur) merged[cur] = true;
-  var opts = '<option value="">Broadcast</option>';
+  var opts = '';
+  // Preserve the "Local only" sentinel when Ask LORACLE mode is active
+  if (currentSendMode && currentSendMode() === 'ask') {
+    opts += '<option value="local">Local only (don\u2019t transmit)</option>';
+  }
+  opts += '<option value="">Broadcast</option>';
   Object.keys(merged).sort().forEach(function(n) {
+    if (n === 'local') return;  // never list the sentinel as a concrete node
     opts += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>';
   });
   sel.innerHTML = opts;
@@ -2230,6 +2370,8 @@ async function sendMeshMsg() {
   var text = document.getElementById('msg-send-text').value.trim();
   if (!text) return;
   var nodeId = document.getElementById('msg-send-to').value;
+  // Ignore the Ask-mode-only "local" sentinel if someone switches back to Raw
+  if (nodeId === 'local') nodeId = '';
   var channel = parseInt(document.getElementById('msg-send-ch').value);
   var statusEl = document.getElementById('msg-send-status');
   statusEl.textContent = 'Sending...';
@@ -2240,6 +2382,103 @@ async function sendMeshMsg() {
     setTimeout(function() { statusEl.textContent = ''; }, 3000);
   } else {
     statusEl.textContent = 'Failed: ' + (d ? d.error : 'network error');
+  }
+}
+
+// Ask LORACLE directly: run the question through the local LLM pipeline and
+// (optionally) rebroadcast the answer over the mesh. Driven by the Send
+// Message form when Mode is set to "Ask LORACLE".
+async function askLoracle() {
+  var text = document.getElementById('msg-send-text').value.trim();
+  if (!text) return;
+  var destRaw = document.getElementById('msg-send-to').value;
+  var channel = parseInt(document.getElementById('msg-send-ch').value);
+  var statusEl = document.getElementById('msg-send-status');
+  var btn = document.getElementById('msg-send-btn');
+
+  // Map the recipient dropdown value to the /api/ask `dest` field
+  var dest;
+  if (destRaw === 'local') dest = 'local';
+  else if (!destRaw || destRaw === 'broadcast') dest = 'broadcast';
+  else dest = destRaw;
+
+  // Brief lock so repeated Enter keys don't fire the LLM multiple times
+  if (btn) btn.disabled = true;
+  statusEl.textContent = 'Thinking...';
+
+  try {
+    var d = await callApi('POST', '/api/ask', {text: text, dest: dest, channel: channel});
+    if (d && d.ok) {
+      var label = d.dest_label || 'local';
+      var txMsg = d.transmitted ? ('answered + ' + label) : ('answered (' + label + ')');
+      if (d.tx_error) txMsg += ' — TX error: ' + d.tx_error;
+      statusEl.textContent = txMsg;
+      document.getElementById('msg-send-text').value = '';
+      // The answer lands in the Messages tab log automatically via record_message
+      setTimeout(function() { statusEl.textContent = ''; }, 6000);
+    } else {
+      statusEl.textContent = 'Failed: ' + (d ? (d.error || 'unknown') : 'network error');
+    }
+  } catch (e) {
+    statusEl.textContent = 'Failed: ' + e;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Unified Enter / click dispatch based on the current mode
+function currentSendMode() {
+  var sel = document.getElementById('msg-mode');
+  return (sel && sel.value) || 'raw';
+}
+function handleSendKey() {
+  if (currentSendMode() === 'ask') askLoracle();
+  else sendMeshMsg();
+}
+function handleSendClick() {
+  if (currentSendMode() === 'ask') askLoracle();
+  else sendMeshMsg();
+}
+
+// Update the form chrome when the mode changes
+function updateSendMode() {
+  var mode = currentSendMode();
+  var title = document.getElementById('msg-send-title');
+  var input = document.getElementById('msg-send-text');
+  var btn = document.getElementById('msg-send-btn');
+  var hint = document.getElementById('msg-mode-hint');
+  var sel = document.getElementById('msg-send-to');
+
+  // Ensure / remove the "Local only" sentinel option depending on mode
+  if (sel) {
+    var hasLocal = false;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === 'local') { hasLocal = true; break; }
+    }
+    if (mode === 'ask' && !hasLocal) {
+      var opt = document.createElement('option');
+      opt.value = 'local';
+      opt.textContent = 'Local only (don\u2019t transmit)';
+      sel.insertBefore(opt, sel.firstChild);
+      sel.value = 'local';  // default to local when entering Ask mode
+    } else if (mode !== 'ask' && hasLocal) {
+      for (var j = 0; j < sel.options.length; j++) {
+        if (sel.options[j].value === 'local') { sel.remove(j); break; }
+      }
+      if (sel.value === 'local' || !sel.value) sel.value = '';
+    }
+  }
+
+  if (mode === 'ask') {
+    if (title) title.textContent = 'Ask LORACLE';
+    if (input) input.placeholder = 'Ask LORACLE anything\u2026';
+    if (btn) btn.textContent = 'Ask';
+    if (hint) hint.textContent = 'LORACLE answers here. Pick a recipient to also transmit the answer over the mesh.';
+  } else {
+    if (title) title.textContent = 'Send Message';
+    if (input) input.placeholder = 'Type a message\u2026';
+    if (btn) btn.textContent = 'Send';
+    if (hint) hint.textContent = 'Raw send \u2014 broadcasts text as-is over the mesh. Does NOT query LORACLE.';
   }
 }
 

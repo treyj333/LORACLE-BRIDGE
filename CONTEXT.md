@@ -4,6 +4,44 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-07] — Ask LORACLE from the Dashboard (Local Chat + Optional Rebroadcast)
+
+- What changed:
+  - **New `POST /api/ask` endpoint** in `dashboard.py`. Takes `{text, dest, channel}`, runs the text through `_bridge._handle_command("!dashboard", text)` first (so `!nav`, `!help`, etc. work), falls back to `_bridge.ollama.chat("!dashboard", text, context_messages=rag)` for regular questions, and returns the answer + a `transmitted` flag. Optionally rebroadcasts the answer via `_bridge._send_response()` (broadcast on a channel OR DM to a specific node).
+  - **Uses a sentinel node id `"!dashboard"`** so Ollama history for dashboard chats is isolated from real-node conversation histories.
+  - **New "Mode" selector on the Send Message card** — `Raw send` (existing behavior) vs `Ask LORACLE`. Default is Raw send, preserving all existing flows including the Welcome → Public pre-fill button.
+  - **In Ask mode**: card title flips to "Ask LORACLE", placeholder changes to "Ask LORACLE anything…", Send button relabels to "Ask", a hint explains the mode, and the recipient dropdown gets a new sentinel `Local only (don't transmit)` option at the top.
+  - **Recipient semantics in Ask mode**: `Local only` → answer shown in the dashboard message log, nothing goes out on the radio. `Broadcast` → answer is transmitted on the selected channel via `_send_response(is_dm=False)`. A specific `!hex` node → answer is DM'd to that node via `_send_response(is_dm=True)`, with `!more` pager continuation keyed to the target's id.
+  - **Unified Enter / click dispatch**: new `handleSendKey` / `handleSendClick` JS wrappers check `currentSendMode()` and dispatch to either `sendMeshMsg` (Raw) or `askLoracle` (Ask).
+  - **`updateSendDropdown` hardened** to preserve the `Local only` sentinel through poll-driven rebuilds while Ask mode is active, and to never list the sentinel as a concrete node.
+  - **Send button is briefly locked** during an Ask request so repeated Enter presses don't fire multiple LLM calls in parallel.
+  - **Messages tab log shows both the question and the answer** via the existing `record_message("in"/"out", "dashboard", ...)` path, with `dest_label` reflecting the transmission choice (`local`, `broadcast ch0`, `DM to !abc...`).
+  - **Fixes the user's "typed in dashboard, got no response" confusion**: the Send Message form was always a raw passthrough to `interface.sendText()`; since the local radio doesn't hear its own transmissions, `_on_receive` never fired and the LLM never saw the question. Ask mode gives the dashboard a proper loopback.
+
+- Why:
+  - The operator couldn't query their own LORACLE from the dashboard without using a second Meshtastic node to DM from. Raw send looked like it should work ("I typed 'Loracle, do I need a ham license?' and got nothing") but it just broadcast plain text onto the mesh with no LLM dispatch. Ask mode is the proper entry point — talk to LORACLE directly, optionally share the answer with specific nodes or the public channel so the whole mesh benefits from one Q&A.
+
+- Reused code (no new plumbing):
+  - `_bridge._handle_command(node_id, text)` for `!` commands — same path `_processing_loop` uses.
+  - `_bridge.rag_engine.build_context_messages(text)` for RAG context, when enabled.
+  - `_bridge.ollama.chat(node_id, text, context_messages=...)` for regular questions.
+  - `_bridge._send_response(node_id, content, channel=, is_dm=)` for mesh transmission — handles chunking, `!more` pager state, retries, interface health checks.
+  - `record_message("in"/"out", "dashboard", text, dest_label=)` for the Messages tab log (the `dest_label` collision with the function's first positional arg was fixed previously in commit `3aafd1f`).
+  - Existing Send Message form HTML, recipient dropdown (unioned from `known_nodes` + `node_positions` + current selection), channel selector, and message log rendering.
+
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — new `/api/ask` endpoint, Mode selector + hint UI in the Send Message card, `askLoracle` + `handleSendKey` + `handleSendClick` + `updateSendMode` + `currentSendMode` JS, sentinel-aware rewrite of `updateSendDropdown`.
+
+- Verified (REPL + Flask test client with a stub bridge):
+  - Empty text → 400
+  - `!help` → command dispatch path (not Ollama), local only, no TX
+  - Regular question + `dest=local` → Ollama path, no TX
+  - Regular question + `dest=broadcast` + `channel=0` → `_send_response` sends to `^all` on ch 0
+  - Regular question + `dest=!abc12345` → `_send_response` DMs the target
+  - Index HTML contains the new Mode selector, Ask LORACLE option, `askLoracle` / `handleSendClick` / `updateSendMode` functions
+
+---
+
 ## [2026-04-07] — Coverage Tab: Auto-Refresh, Disconnected Banner, Clear Log
 
 - What changed:
