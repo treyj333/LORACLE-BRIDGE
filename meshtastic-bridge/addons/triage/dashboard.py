@@ -3,6 +3,7 @@
 import os
 
 from flask import jsonify, request
+from werkzeug.utils import secure_filename
 
 
 def get_tab_config() -> dict:
@@ -94,11 +95,14 @@ def get_api_routes(addon):
         if not f.filename:
             return jsonify({"error": "No filename"}), 400
         import tempfile
-        tmp_path = os.path.join(tempfile.gettempdir(), f.filename)
+        safe_name = secure_filename(f.filename)
+        if not safe_name:
+            return jsonify({"error": "Invalid filename"}), 400
+        tmp_path = os.path.join(tempfile.gettempdir(), safe_name)
         try:
             f.save(tmp_path)
             result = addon.rag_engine.ingest_file(tmp_path)
-            return jsonify({"ok": True, "filename": result.get("filename", f.filename),
+            return jsonify({"ok": True, "filename": result.get("filename", safe_name),
                             "chunks": result.get("chunks", 0)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

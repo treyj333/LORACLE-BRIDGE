@@ -193,5 +193,35 @@ class TestOllamaClient(unittest.TestCase):
         self.assertIn("unavailable", result.lower())
 
 
+class TestHistoryPublicAPI(unittest.TestCase):
+    """Tests for the public history management API (Phase 3)."""
+
+    def setUp(self):
+        self.client = OllamaClient(base_url="http://localhost:11434", model="test")
+
+    def test_clear_all_history(self):
+        """clear_all_history should remove all node histories."""
+        # Seed some history entries
+        self.client._history["node1"].append({"role": "user", "content": "hi"})
+        self.client._history["node2"].append({"role": "user", "content": "hello"})
+        self.assertEqual(len(self.client._history), 2)
+
+        count = self.client.clear_all_history()
+        self.assertEqual(count, 2)
+        self.assertEqual(len(self.client._history), 0)
+
+    def test_clear_all_history_empty(self):
+        """clear_all_history on empty history should return 0."""
+        count = self.client.clear_all_history()
+        self.assertEqual(count, 0)
+
+    def test_get_history_node_ids(self):
+        """get_history_node_ids returns list of active node ids."""
+        self.client._history["!abc"].append({"role": "user", "content": "test"})
+        self.client._history["!def"].append({"role": "user", "content": "test"})
+        ids = self.client.get_history_node_ids()
+        self.assertEqual(sorted(ids), ["!abc", "!def"])
+
+
 if __name__ == "__main__":
     unittest.main()

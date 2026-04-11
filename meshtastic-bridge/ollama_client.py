@@ -383,6 +383,17 @@ class OllamaClient:
             self._history[node_id].clear()
             logger.info(f"Cleared history for {node_id}")
 
+    def clear_all_history(self) -> int:
+        """Clear conversation history for all nodes. Returns count cleared."""
+        count = len(self._history)
+        self._history.clear()
+        logger.info(f"Cleared history for {count} node(s)")
+        return count
+
+    def get_history_node_ids(self) -> list:
+        """Return list of node IDs that have active conversation history."""
+        return list(self._history.keys())
+
     def embed(self, texts: List[str], model: str = "nomic-embed-text") -> List[List[float]]:
         """Generate embeddings via Ollama /api/embed endpoint.
 

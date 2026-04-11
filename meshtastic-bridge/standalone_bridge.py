@@ -78,6 +78,14 @@ _dedup_cache = {}  # type: Dict[Tuple[str, str], float]
 DEDUP_TTL = 300  # 5 minutes
 CONTEXT_TTL = 3600  # 1 hour — auto-clear conversation context after inactivity
 RATE_LIMIT_SECS = 5  # Min seconds between messages from same node
+MAX_TRACKED_NODES = 2000  # Cap on _node_positions/_node_meta to prevent memory leak
+OVERFLOW_TTL = 3600  # 1 hour — auto-clear unclaimed !more pages
+
+
+def get_dedup_cache_size() -> int:
+    """Return the current size of the deduplication cache (public API for dashboard)."""
+    return len(_dedup_cache)
+
 
 # Trigger words — public channel messages must contain one of these to get a response
 _AI_TRIGGERS = {"agent", "ai", "oracle", "loracle", "bridge", "help", "hey"}
@@ -145,7 +153,7 @@ class StandaloneBridge:
         self._node_count = 0
         self._known_nodes = set()  # type: Set[str]
         self._node_last_active: Dict[str, float] = {}  # node_id -> last message timestamp
-        self._overflow: Dict[str, str] = {}  # node_id -> remaining text for !more pager
+        self._overflow: Dict[str, tuple] = {}  # node_id -> (remaining_text, timestamp)
         self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
         self._node_meta: Dict[str, dict] = {}  # node_id -> {hops, hops_updated}
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
@@ -289,8 +297,8 @@ class StandaloneBridge:
                 hw_model_val = getattr(self.interface.metadata, "hw_model", None)
                 if hw_model_val is not None:
                     hw_model = str(hw_model_val)
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.debug(f"Could not read firmware metadata: {e}")
 
         logger.info(f"Meshtastic library: {lib_ver} | Firmware: {fw_ver} | HW: {hw_model}")
 
@@ -311,8 +319,8 @@ class StandaloneBridge:
                     "This may cause protobuf parsing errors. "
                     "Consider updating your radio firmware or Python library to match."
                 )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"Version check failed: {e}")
 
     def _radio_connection_loop(self):
         """Background loop: connect to radio, reconnect if it drops."""
@@ -527,8 +535,8 @@ class StandaloneBridge:
         if self.interface:
             try:
                 self.interface.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing interface during switch: {e}")
             self.interface = None
 
         # Update connection params
@@ -582,8 +590,8 @@ class StandaloneBridge:
             if os.path.exists(path):
                 with open(path) as f:
                     return json.load(f)
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            logger.debug(f"Could not load BLE config: {e}")
         return None
 
     def _on_receive(self, packet, interface):
@@ -759,6 +767,20 @@ class StandaloneBridge:
         alt = pos.get("altitude", 0) or 0
         return lat, lon, alt
 
+    def _store_node_position(self, node_id: str, lat: float, lon: float, alt: float,
+                              ts: float = None):
+        """Store a node position, evicting the oldest entry if at capacity."""
+        self._node_positions[node_id] = {
+            "lat": lat, "lon": lon, "alt": alt, "last_update": ts if ts is not None else time.time(),
+        }
+        if len(self._node_positions) > MAX_TRACKED_NODES:
+            oldest = min(
+                self._node_positions,
+                key=lambda k: self._node_positions[k].get("last_update", 0),
+            )
+            del self._node_positions[oldest]
+            self._node_meta.pop(oldest, None)
+
     def _on_position(self, packet, interface):
         """Handle incoming position packet from the mesh."""
         try:
@@ -771,12 +793,7 @@ class StandaloneBridge:
                 return
             lat, lon, alt = parsed
             is_new = sender not in self._node_positions
-            self._node_positions[sender] = {
-                "lat": lat,
-                "lon": lon,
-                "alt": alt,
-                "last_update": time.time(),
-            }
+            self._store_node_position(sender, lat, lon, alt)
             if is_new:
                 logger.info(f"Position update (new): {sender} -> {lat:.5f}, {lon:.5f}")
                 try:
@@ -829,12 +846,8 @@ class StandaloneBridge:
                     continue
                 lat, lon, alt = parsed
                 is_new = key not in self._node_positions
-                self._node_positions[key] = {
-                    "lat": lat,
-                    "lon": lon,
-                    "alt": alt,
-                    "last_update": info.get("position", {}).get("time", time.time()),
-                }
+                pos_ts = info.get("position", {}).get("time", time.time())
+                self._store_node_position(key, lat, lon, alt, ts=pos_ts)
                 if is_new:
                     new_count += 1
                     logger.info(f"Position from nodeDB (new): {key} -> {lat:.5f}, {lon:.5f}")
@@ -865,7 +878,8 @@ class StandaloneBridge:
             if num is None:
                 return None
             return f"!{int(num):08x}"
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.debug(f"Could not derive self node id: {e}")
             return None
 
     def _processing_loop(self):
@@ -991,9 +1005,10 @@ class StandaloneBridge:
         return "pong"
 
     def _cmd_more(self, node_id: str, arg: str) -> str:
-        remaining = self._overflow.get(node_id, "")
-        if not remaining:
+        entry = self._overflow.get(node_id)
+        if not entry:
             return "No more content."
+        remaining, _ts = entry
         del self._overflow[node_id]
         return remaining
 
@@ -1061,7 +1076,8 @@ class StandaloneBridge:
             # Verify localNode is accessible (used by _sendPacket for hop_limit)
             _ = self.interface.localNode
             return True
-        except Exception:
+        except (AttributeError, OSError) as e:
+            logger.debug(f"Interface health check failed: {e}")
             return False
 
     def _reconnect_radio(self):
@@ -1071,8 +1087,8 @@ class StandaloneBridge:
         if self.interface:
             try:
                 self.interface.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing interface during reconnect: {e}")
             self.interface = None
         self._connect_radio()
 
@@ -1145,7 +1161,7 @@ class StandaloneBridge:
 
             message = truncated.rstrip() + MORE_HINT
             remaining = content[len(truncated):].lstrip()
-            self._overflow[node_id] = remaining
+            self._overflow[node_id] = (remaining, time.time())
             logger.info(
                 f"Response paged: sending {len(message)} bytes, "
                 f"{len(remaining)} chars remaining for !more"
@@ -1196,13 +1212,22 @@ class StandaloneBridge:
         logger.error(f"All send retries exhausted for {node_id}")
 
     def _dedup_cleanup_loop(self):
-        """Clean up expired deduplication cache entries."""
+        """Clean up expired dedup cache entries and stale overflow pages."""
         while self._running:
             time.sleep(60)
             now = time.time()
             expired = [k for k, v in _dedup_cache.items() if now - v > DEDUP_TTL]
             for k in expired:
                 del _dedup_cache[k]
+            # Evict stale !more overflow entries
+            stale_overflow = [
+                nid for nid, (_, ts) in self._overflow.items()
+                if now - ts > OVERFLOW_TTL
+            ]
+            for nid in stale_overflow:
+                del self._overflow[nid]
+            if stale_overflow:
+                logger.debug(f"Evicted {len(stale_overflow)} stale overflow entries")
 
     def _context_cleanup_loop(self):
         """Auto-clear conversation context for nodes idle longer than CONTEXT_TTL."""
@@ -1232,8 +1257,8 @@ class StandaloneBridge:
         if self.interface:
             try:
                 self.interface.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error closing interface during shutdown: {e}")
         logger.info("Bridge shut down")
 
 

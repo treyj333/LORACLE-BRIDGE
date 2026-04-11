@@ -14,6 +14,7 @@ from collections import deque
 
 import requests as requests_lib
 from flask import Flask, jsonify, Response, request
+from werkzeug.utils import secure_filename
 
 logger = logging.getLogger("dashboard")
 
@@ -267,7 +268,7 @@ def api_coverage_samples():
     if _bridge is None or not hasattr(_bridge, "coverage"):
         return jsonify({"samples": []})
     try:
-        limit = int(request.args.get("limit", 5000))
+        limit = min(int(request.args.get("limit", 5000)), 10000)
     except ValueError:
         limit = 5000
     samples = _bridge.coverage.read_all(limit=limit)
@@ -308,10 +309,8 @@ def api_clear_history():
         _bridge.ollama.clear_history(node_id)
         return jsonify({"ok": True, "cleared": 1})
     # Clear all
-    keys = list(_bridge.ollama._history.keys())
-    for k in keys:
-        _bridge.ollama._history[k].clear()
-    return jsonify({"ok": True, "cleared": len(keys)})
+    count = _bridge.ollama.clear_all_history()
+    return jsonify({"ok": True, "cleared": count})
 
 
 @app.route("/api/rag/toggle", methods=["POST"])
@@ -509,7 +508,7 @@ def api_chat():
 @app.route("/api/logs", methods=["GET"])
 def api_logs():
     level = request.args.get("level", None)
-    limit = int(request.args.get("limit", 200))
+    limit = min(int(request.args.get("limit", 200)), 10000)
     records = _log_handler.get_records(level=level, limit=limit)
     return jsonify({"logs": records})
 
@@ -529,8 +528,8 @@ def api_debug():
             pass
     # Try to get dedup cache size
     try:
-        from standalone_bridge import _dedup_cache
-        info["dedup_cache_size"] = len(_dedup_cache)
+        from standalone_bridge import get_dedup_cache_size
+        info["dedup_cache_size"] = get_dedup_cache_size()
     except Exception:
         pass
     return jsonify(info)
@@ -610,7 +609,10 @@ def api_send_mesh():
     if not text:
         return jsonify({"error": "Empty message"}), 400
     node_id = data.get("node_id", "").strip()
-    channel = int(data.get("channel", 0))
+    try:
+        channel = max(0, min(int(data.get("channel", 0)), 7))
+    except (TypeError, ValueError):
+        channel = 0
     try:
         from meshtastic import BROADCAST_ADDR
         is_broadcast = (not node_id or node_id.lower() == "broadcast")
@@ -651,7 +653,7 @@ def api_ask():
         return jsonify({"error": "Empty message"}), 400
     dest = (data.get("dest") or "local").strip()
     try:
-        channel = int(data.get("channel", 0))
+        channel = max(0, min(int(data.get("channel", 0)), 7))
     except (TypeError, ValueError):
         channel = 0
 
@@ -765,11 +767,14 @@ def api_rag_ingest_file():
     if not f.filename:
         return jsonify({"error": "No filename"}), 400
     import tempfile
-    tmp_path = os.path.join(tempfile.gettempdir(), f.filename)
+    safe_name = secure_filename(f.filename)
+    if not safe_name:
+        return jsonify({"error": "Invalid filename"}), 400
+    tmp_path = os.path.join(tempfile.gettempdir(), safe_name)
     try:
         f.save(tmp_path)
         result = _bridge.rag_engine.ingest_file(tmp_path)
-        return jsonify({"ok": True, "filename": result.get("filename", f.filename),
+        return jsonify({"ok": True, "filename": result.get("filename", safe_name),
                         "chunks": result.get("chunks", 0)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -811,11 +816,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LORACLE BRIDGE</title>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<script src="/static/leaflet/leaflet.js"></script>
+<script src="/static/leaflet/leaflet-heat.js"></script>
 <style>
+@font-face {
+  font-family: 'Share Tech Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/ShareTechMono-Regular.ttf') format('truetype');
+}
 :root {
   --bg-primary: #181a16;
   --bg-secondary: #1f211c;
