@@ -215,11 +215,17 @@ def api_state():
     state["avg_llm_time"] = round(_metrics["total_llm_time"] / calls, 1) if calls > 0 else 0
     state["avg_chunks"] = round(_metrics["total_chunks_sent"] / calls, 1) if calls > 0 else 0
     state["total_llm_calls"] = calls
-    # Node positions for map
+    # Node positions for map — read live from bridge, not from stale _state
     if _bridge and hasattr(_bridge, "_node_positions"):
         state["node_positions"] = _bridge._node_positions
         state["node_positions_count"] = len(_bridge._node_positions)
         state["node_meta"] = getattr(_bridge, "_node_meta", {}) or {}
+        # Merge known_nodes from _known_nodes set + node_positions keys
+        # so nodes discovered via nodeDB/position show up immediately
+        all_nodes = set(getattr(_bridge, "_known_nodes", set()))
+        all_nodes.update(_bridge._node_positions.keys())
+        state["known_nodes"] = sorted(all_nodes)
+        state["node_count"] = len(all_nodes)
         try:
             nodedb = getattr(_bridge.interface, "nodes", None) if _bridge.interface else None
             state["nodedb_size"] = len(nodedb) if nodedb else 0
@@ -2299,7 +2305,12 @@ async function poll() {
 function updateStats(d) {
   document.getElementById('stat-msgs').textContent = d.message_count;
   document.getElementById('stat-msgs-sub').textContent = d.total_llm_calls > 0 ? d.total_llm_calls + ' LLM calls' : '';
-  document.getElementById('stat-nodes').textContent = d.node_count;
+  // Node count: merge known_nodes + node_positions for accurate live count
+  var allNodes = {};
+  (d.known_nodes || []).forEach(function(n) { allNodes[n] = true; });
+  Object.keys(d.node_positions || {}).forEach(function(n) { allNodes[n] = true; });
+  var nodeCount = Object.keys(allNodes).length;
+  document.getElementById('stat-nodes').textContent = nodeCount;
   document.getElementById('stat-nodes-sub').textContent = d.nodedb_size > 0 ? d.nodedb_size + ' in nodedb' : '';
   document.getElementById('stat-reply').textContent = d.avg_llm_time > 0 ? d.avg_llm_time + 's' : '--';
   document.getElementById('stat-reply-sub').textContent = d.avg_chunks > 0 ? d.avg_chunks + ' chunks avg' : '';
@@ -2318,7 +2329,11 @@ var _mhPeerPositions = [
 ];
 
 function updateMeshHeader(d) {
-  var peerCount = d.node_count || 0;
+  // Count all nodes: known_nodes + node_positions keys
+  var allNodes = {};
+  (d.known_nodes || []).forEach(function(n) { allNodes[n] = true; });
+  Object.keys(d.node_positions || {}).forEach(function(n) { allNodes[n] = true; });
+  var peerCount = Object.keys(allNodes).length;
   var header = document.getElementById('mesh-header');
   var noPeers = document.getElementById('no-peers');
   if (peerCount === 0) {
@@ -2384,10 +2399,13 @@ function updateMeshMap(d) {
   var nodeMeta = d.node_meta || {};
   var cx = 300, cy = 130;
 
-  // Update corner labels with my node GPS if available
-  // (never invent coordinates)
+  // Merge known_nodes + node_positions keys so all discovered nodes show
+  var allNodeIds = {};
+  knownNodes.forEach(function(n) { allNodeIds[n] = true; });
+  Object.keys(positions).forEach(function(n) { allNodeIds[n] = true; });
+  var nodeList = Object.keys(allNodeIds);
 
-  knownNodes.forEach(function(nodeId) {
+  nodeList.forEach(function(nodeId) {
     var h = hashNodeId(nodeId);
     // Generate stable position: distribute around center, avoid center cluster
     var angle = (h % 360) * Math.PI / 180;
