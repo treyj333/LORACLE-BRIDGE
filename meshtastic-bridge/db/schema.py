@@ -1,0 +1,100 @@
+"""SQLite schema and initialization for LORACLE Bridge."""
+
+import json
+import logging
+import os
+import sqlite3
+import time
+
+logger = logging.getLogger("db.schema")
+
+SCHEMA_VERSION = 1
+
+_TABLES = """
+CREATE TABLE IF NOT EXISTS contacts (
+  id TEXT PRIMARY KEY,
+  protocol TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  short_name TEXT NOT NULL,
+  long_name TEXT,
+  last_rssi INTEGER,
+  last_snr REAL,
+  last_hops INTEGER,
+  first_seen REAL NOT NULL,
+  last_heard REAL,
+  has_position INTEGER DEFAULT 0,
+  ai_enabled INTEGER,
+  is_channel INTEGER DEFAULT 0,
+  channel_idx INTEGER,
+  channel_name TEXT,
+  unread_count INTEGER DEFAULT 0,
+  last_read_at REAL,
+  created_at REAL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_last_heard ON contacts(last_heard DESC);
+CREATE INDEX IF NOT EXISTS idx_contacts_protocol ON contacts(protocol);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  contact_id TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  author TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp REAL NOT NULL,
+  protocol TEXT NOT NULL,
+  hops_traveled INTEGER,
+  rx_rssi INTEGER,
+  rx_snr REAL,
+  is_channel_msg INTEGER DEFAULT 0,
+  originating_channel_id TEXT,
+  delivery_status TEXT DEFAULT 'sent',
+  FOREIGN KEY (contact_id) REFERENCES contacts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_contact_ts ON messages(contact_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at REAL DEFAULT (strftime('%s','now'))
+);
+"""
+
+
+def init_db(path: str) -> sqlite3.Connection:
+    """Create or open the database and ensure schema exists."""
+    if path != ":memory:":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    db = sqlite3.connect(path, check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    db.executescript(_TABLES)
+    db.commit()
+    logger.info(f"Database ready: {path}")
+    return db
+
+
+def migrate_from_json(db: sqlite3.Connection, json_path: str) -> None:
+    """One-time migration of settings.json into the settings table."""
+    if not os.path.exists(json_path):
+        return
+    try:
+        with open(json_path) as f:
+            data = json.load(f)
+        migrated = 0
+        for key, value in data.items():
+            db.execute(
+                "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+                (key, json.dumps(value), time.time()),
+            )
+            migrated += 1
+        db.commit()
+        # Rename to .bak
+        bak_path = json_path + ".bak"
+        os.rename(json_path, bak_path)
+        logger.info(f"Migrated {migrated} settings from {json_path} → SQLite (backup: {bak_path})")
+    except Exception as e:
+        logger.warning(f"Settings migration failed (preserved original): {e}")

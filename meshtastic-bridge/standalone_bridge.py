@@ -55,15 +55,19 @@ from greeter import GreeterService, DEFAULT_GREETING
 from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
 from radio.manager import RadioManager
 from radio.meshtastic_backend import MeshtasticBackend
+from db import init_db, migrate_from_json, ContactStore, MessageStore, SettingsStore
 
-# ── Settings persistence ────────────────────────────────────────────────────
+# ── Paths ──────────────────────────────────────────────────────────────────
 
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".mesh-llm", "settings.json")
+_MESH_LLM_DIR = os.path.join(os.path.expanduser("~"), ".mesh-llm")
+SETTINGS_PATH = os.path.join(_MESH_LLM_DIR, "settings.json")
+DB_PATH = os.path.join(_MESH_LLM_DIR, "loracle.db")
 
 
 def load_settings() -> dict:
-    """Load persisted settings (AI replies toggle, second radio config)."""
+    """Load persisted settings. Tries SQLite first, falls back to JSON."""
     defaults = {"ai_replies": True, "second_radio": None}
+    # Try JSON fallback (pre-migration)
     try:
         with open(SETTINGS_PATH) as f:
             saved = json.load(f)
@@ -180,6 +184,15 @@ class StandaloneBridge:
         self._request_queue: queue.Queue = queue.Queue()
         self._start_time = time.time()
         self._ai_replies_enabled = ai_replies_enabled
+
+        # ── SQLite persistence ────────────────────────────────────────────
+        self._db = init_db(DB_PATH)
+        migrate_from_json(self._db, SETTINGS_PATH)
+        self._contact_store = ContactStore(self._db)
+        self._message_store = MessageStore(self._db)
+        self._settings_store = SettingsStore(self._db)
+        # Run retention pruning at startup
+        self._message_store.prune()
 
         # ── RadioManager (multi-protocol abstraction) ─────────────────────
         self._radio_manager = RadioManager()
@@ -741,6 +754,33 @@ class StandaloneBridge:
             logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
             record_message("in", sender, text.strip())
 
+            # Persist to SQLite
+            try:
+                rssi_val = packet.get("rxRssi")
+                snr_val = packet.get("rxSnr")
+                hop_start = packet.get("hopStart")
+                hop_limit = packet.get("hopLimit")
+                hops = None
+                if hop_start is not None and hop_limit is not None:
+                    h = int(hop_start) - int(hop_limit)
+                    if 0 <= h <= 30:
+                        hops = h
+                self._contact_store.upsert(
+                    contact_id=sender, protocol="meshtastic",
+                    backend_id=sender, short_name=sender[-6:] if len(sender) > 6 else sender,
+                    rssi=rssi_val, snr=snr_val, hops=hops,
+                    is_channel=not is_dm, channel_idx=channel if not is_dm else None,
+                )
+                self._message_store.insert(
+                    contact_id=sender, direction="in", author="human",
+                    text=text.strip(), protocol="meshtastic",
+                    hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
+                    is_channel_msg=not is_dm,
+                )
+                self._contact_store.increment_unread(sender)
+            except Exception as e:
+                logger.debug(f"DB persist error: {e}")
+
             # Coverage sample — log signal strength against the sender's last
             # known position, if we have one and the packet carries RSSI/SNR.
             rssi = packet.get("rxRssi")
@@ -988,6 +1028,14 @@ class StandaloneBridge:
 
                 # Send response
                 record_message("out", node_id, response, chunks=1, llm_time=elapsed)
+                try:
+                    author = "ai" if elapsed > 0 else "human"
+                    self._message_store.insert(
+                        contact_id=node_id, direction="out", author=author,
+                        text=response, protocol="meshtastic",
+                    )
+                except Exception as e:
+                    logger.debug(f"DB persist (out) error: {e}")
                 update_state(
                     message_count=self._message_count,
                     node_count=self._node_count,
@@ -1270,7 +1318,8 @@ class StandaloneBridge:
         logger.error(f"All send retries exhausted for {node_id}")
 
     def _dedup_cleanup_loop(self):
-        """Clean up expired dedup cache entries and stale overflow pages."""
+        """Clean up expired dedup cache entries, stale overflow, and prune messages."""
+        last_prune = time.time()
         while self._running:
             time.sleep(60)
             now = time.time()
@@ -1286,6 +1335,13 @@ class StandaloneBridge:
                 del self._overflow[nid]
             if stale_overflow:
                 logger.debug(f"Evicted {len(stale_overflow)} stale overflow entries")
+            # Prune message DB every hour
+            if now - last_prune > 3600:
+                last_prune = now
+                try:
+                    self._message_store.prune()
+                except Exception as e:
+                    logger.debug(f"Message prune error: {e}")
 
     def _context_cleanup_loop(self):
         """Auto-clear conversation context for nodes idle longer than CONTEXT_TTL."""

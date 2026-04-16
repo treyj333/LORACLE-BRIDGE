@@ -41,6 +41,12 @@ def _make_mock_bridge():
         {"id": "mt-serial-0", "protocol": "mt", "transport": "serial", "connected": True}
     ])
     bridge._ai_replies_enabled = True
+    bridge._contact_store = MagicMock()
+    bridge._contact_store.total_unread = MagicMock(return_value=0)
+    bridge._contact_store.list_with_preview = MagicMock(return_value=[])
+    bridge._contact_store.count = MagicMock(return_value=0)
+    bridge._message_store = MagicMock()
+    bridge._message_store.count_total = MagicMock(return_value=0)
     return bridge
 
 

@@ -254,6 +254,14 @@ def api_state():
         state["backends"] = []
     # AI replies toggle
     state["ai_replies_enabled"] = getattr(_bridge, "_ai_replies_enabled", True) if _bridge else True
+    # Total unread from DB
+    if _bridge and hasattr(_bridge, "_contact_store"):
+        try:
+            state["total_unread"] = _bridge._contact_store.total_unread()
+        except Exception:
+            state["total_unread"] = 0
+    else:
+        state["total_unread"] = 0
     return jsonify(state)
 
 
@@ -641,6 +649,146 @@ def api_ai_replies_set():
     except Exception:
         pass
     return jsonify({"ok": True, "enabled": _bridge._ai_replies_enabled})
+
+
+# ─── Thread / Contact endpoints ─────────────────────────────────────────────
+
+@app.route("/api/threads", methods=["GET"])
+def api_threads():
+    """List all contacts with summary info for the messenger sidebar."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"threads": []})
+    try:
+        threads = _bridge._contact_store.list_with_preview()
+        return jsonify({"threads": threads})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/threads/<path:thread_id>", methods=["GET"])
+def api_thread_detail(thread_id):
+    """Get contact details + recent messages."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    contact = _bridge._contact_store.get(thread_id)
+    if contact is None:
+        return jsonify({"error": "Contact not found"}), 404
+    messages = _bridge._message_store.get_thread(thread_id, limit=50)
+    return jsonify({"contact": contact, "messages": messages})
+
+
+@app.route("/api/threads/<path:thread_id>/messages", methods=["GET"])
+def api_thread_messages(thread_id):
+    """Paginated message history."""
+    if _bridge is None or not hasattr(_bridge, "_message_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    limit = min(int(request.args.get("limit", 50)), 500)
+    offset = int(request.args.get("offset", 0))
+    messages = _bridge._message_store.get_thread(thread_id, limit=limit, offset=offset)
+    total = _bridge._message_store.count_by_contact(thread_id)
+    return jsonify({
+        "messages": messages,
+        "has_more": offset + limit < total,
+        "total": total,
+    })
+
+
+@app.route("/api/threads/<path:thread_id>/open", methods=["POST"])
+def api_thread_open(thread_id):
+    """Mark thread as viewed — resets unread count."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    _bridge._contact_store.reset_unread(thread_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/threads/<path:thread_id>/close", methods=["POST"])
+def api_thread_close(thread_id):
+    """Thread no longer in view."""
+    return jsonify({"ok": True})
+
+
+@app.route("/api/threads/<path:thread_id>/send", methods=["POST"])
+def api_thread_send(thread_id):
+    """Send a manual message to a contact."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "Empty message"}), 400
+    contact = _bridge._contact_store.get(thread_id)
+    if contact is None:
+        return jsonify({"error": "Contact not found"}), 404
+    try:
+        _bridge._radio_manager.send(thread_id, text, is_dm=True)
+        msg_id = _bridge._message_store.insert(
+            contact_id=thread_id, direction="out", author="human",
+            text=text, protocol=contact["protocol"],
+        )
+        record_message("out", thread_id, text)
+        return jsonify({"ok": True, "msg_id": msg_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/threads/<path:thread_id>/ai-toggle", methods=["POST"])
+def api_thread_ai_toggle(thread_id):
+    """Cycle ai_enabled: NULL→0→1→NULL."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    new_val = _bridge._contact_store.cycle_ai_enabled(thread_id)
+    effective = _bridge._contact_store.get_effective_ai(
+        thread_id, _bridge._ai_replies_enabled
+    )
+    return jsonify({"ok": True, "ai_enabled": new_val, "effective": effective})
+
+
+@app.route("/api/events", methods=["GET"])
+def api_events():
+    """Server-sent events stream (stub — heartbeat only for now)."""
+    def generate():
+        while True:
+            yield f"data: {json.dumps({'type': 'heartbeat', 'ts': time.time()})}\n\n"
+            time.sleep(5)
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/db/stats", methods=["GET"])
+def api_db_stats():
+    """Database statistics."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"contacts": 0, "messages": 0, "db_size_bytes": 0})
+    import os as _os
+    try:
+        db_path = _os.path.join(_os.path.expanduser("~"), ".mesh-llm", "loracle.db")
+        size = _os.path.getsize(db_path) if _os.path.exists(db_path) else 0
+    except Exception:
+        size = 0
+    return jsonify({
+        "contacts": _bridge._contact_store.count(),
+        "messages": _bridge._message_store.count_total(),
+        "db_size_bytes": size,
+    })
+
+
+@app.route("/api/db/prune", methods=["POST"])
+def api_db_prune():
+    """Run message retention pruning."""
+    if _bridge is None or not hasattr(_bridge, "_message_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    pruned = _bridge._message_store.prune()
+    return jsonify({"ok": True, "pruned": pruned})
+
+
+@app.route("/api/db/clear-messages", methods=["POST"])
+def api_db_clear_messages():
+    """Delete all messages (keeps contacts)."""
+    if _bridge is None or not hasattr(_bridge, "_message_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    deleted = _bridge._message_store.delete_all()
+    return jsonify({"ok": True, "deleted": deleted})
 
 
 @app.route("/api/send-mesh", methods=["POST"])
