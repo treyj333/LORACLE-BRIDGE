@@ -612,6 +612,16 @@ class StandaloneBridge:
                 logger.debug(f"Error closing interface during switch: {e}")
             self.interface = None
 
+        # Also update the primary backend if it exists
+        if hasattr(self, '_primary_backend'):
+            try:
+                self._primary_backend.switch_connection(
+                    connection_type,
+                    address=address, host=host, port=port,
+                )
+            except Exception as e:
+                logger.debug(f"Backend switch error: {e}")
+
         # Update connection params
         self.connection_type = connection_type
         if connection_type == "ble":
@@ -639,7 +649,7 @@ class StandaloneBridge:
             update_state(connection_address=addr)
             return {"ok": True}
         else:
-            return {"ok": False, "error": "Connection failed — will retry in background"}
+            return {"ok": False, "error": "Connection started — will retry in background"}
 
     @staticmethod
     def _ble_config_path() -> str:

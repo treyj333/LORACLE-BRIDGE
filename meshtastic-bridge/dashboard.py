@@ -4688,17 +4688,19 @@ function connectModalPickDevice(el, address, name) {
   document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
   el.classList.add('selected');
   // Connect
-  document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '...';
+  var statusEl = document.getElementById('connect-modal-status');
+  statusEl.textContent = 'Connecting to ' + (name || address) + '... (BLE can take 10-20s)';
   document.getElementById('connect-modal-btn').disabled = true;
   var payload = {type: 'ble', address: address};
   callApi('POST', '/api/connection/switch', payload).then(function(d) {
     document.getElementById('connect-modal-btn').disabled = false;
     if (d && d.ok) {
-      document.getElementById('connect-modal-status').textContent = 'Connected to ' + (name || address) + '!';
+      statusEl.textContent = 'Connected to ' + (name || address) + '!';
       _connectModalDismissed = true;
       setTimeout(hideConnectModal, 800);
     } else {
-      document.getElementById('connect-modal-status').textContent = 'Connecting in background...';
+      statusEl.textContent = 'Connecting to ' + (name || address) + '... retrying in background. Modal will close when connected.';
+      // The poll loop will auto-hide the modal when connection succeeds
     }
   });
 }
