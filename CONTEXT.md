@@ -4,6 +4,56 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16] — Session 2a: MeshCore Backend + RadioBackend Abstraction
+
+- What changed:
+  - **New `radio/` module** with 7 files providing a protocol-agnostic abstraction layer:
+    - `events.py` — `Protocol` enum (MT/MC), `Transport` enum, `UnifiedNode` and `UnifiedMessage` dataclasses with globally-unique IDs (`"mt:!a3f2b8c1"`, `"mc:abcdef012345"`)
+    - `backend.py` — abstract `RadioBackend` interface (threading-based): `connect()`, `disconnect()`, `send_direct_message()`, `send_broadcast()`, `start_listening(callback)`, `get_nodes()`, `get_self_info()`
+    - `meshtastic_backend.py` — `MeshtasticBackend`: extracts Meshtastic-specific code (serial/TCP/BLE connection, pubsub, packet→UnifiedMessage conversion, nodeDB refresh, BLE scanning) from `standalone_bridge.py`
+    - `meshcore_backend.py` — `MeshCoreBackend`: wraps async `meshcore` library in background thread, subscribes to `CONTACT_MSG_RECV`/`CHANNEL_MSG_RECV`, converts events to UnifiedMessage. RSSI/SNR not available (set to None).
+    - `manager.py` — `RadioManager`: holds multiple backends, shared `queue.Queue` for incoming messages, routes outgoing sends by protocol prefix in node ID, provides `get_all_nodes()`/`get_backends_info()`
+    - `detector.py` — `detect_protocol()`: probes serial/TCP/BLE connections to determine Meshtastic vs MeshCore
+  - **Refactored `standalone_bridge.py`**: added `_radio_manager` (RadioManager) and `_primary_backend` (MeshtasticBackend) fields, new `_node_sync_loop` thread, new `_ai_replies_enabled` flag, new CLI flags (`--protocol`, `--second-radio`, `--ai-replies`), settings persistence (`~/.mesh-llm/settings.json`)
+  - **Updated `greeter.py`**: `pump()` now accepts `send_fn` callback as alternative to raw `interface`
+  - **Updated `dashboard.py`**: new `GET/POST /api/radios` and `GET/POST /api/ai-replies` endpoints, `/api/state` includes `backends` list and `ai_replies_enabled`, message feed shows MT/MC protocol badge, status banner shows backend protocol info, stat strip has "Radios" cell, CONFIG tab has new RADIOS and AI REPLIES sections, onboarding step 2 mentions MeshCore
+  - **Updated `requirements.txt`**: added `meshcore>=2.2.1`
+  - **19 new tests** in `test_radio_backends.py` covering UnifiedNode, UnifiedMessage, RadioManager routing/queue/lifecycle, Protocol/Transport enums
+  - **Architecture**: threading-based (not async) to match existing patterns. MeshCore's asyncio runs in isolated background thread with `asyncio.run_coroutine_threadsafe()` for cross-thread calls.
+- Architecture decision: **Threading-based RadioBackend interface** (not async as originally spec'd) because the entire existing bridge uses pubsub callbacks + queue.Queue + daemon threads. Converting to async would be a major rewrite beyond Session 2a scope.
+- Files changed:
+  - `meshtastic-bridge/radio/__init__.py`, `events.py`, `backend.py`, `meshtastic_backend.py`, `meshcore_backend.py`, `detector.py`, `manager.py` — new
+  - `meshtastic-bridge/standalone_bridge.py` — refactored (RadioManager integration)
+  - `meshtastic-bridge/dashboard.py` — new endpoints, badges, CONFIG sections
+  - `meshtastic-bridge/greeter.py` — pump() signature
+  - `meshtastic-bridge/requirements.txt` — meshcore
+  - `meshtastic-bridge/tests/test_radio_backends.py` — new (19 tests)
+  - `meshtastic-bridge/tests/test_dashboard_api.py` — mock bridge updated
+
+---
+
+## [2026-04-16] — Session 1: Retro UI Revamp — 2-Tab Shell, Mesh Header, Onboarding Modal
+
+- What changed:
+  - **Complete frontend rewrite** of `dashboard.py`'s `DASHBOARD_HTML` string. Replaced 6-tab cyberpunk theme (Inference/Messages/Coverage/Controls/Debug/Guide) with a 2-tab retro-modern design (LIVE/CONFIG).
+  - **New design system**: IBM Plex Mono font, warm paper palette (light theme #ebe6dc / dark theme #121110), hairline dividers, no cards/gradients/shadows. CSS custom properties with `--lo-` prefix. WCAG AA contrast enforced.
+  - **LIVE tab** merges Dashboard + Messages + Debug + Coverage: animated SVG mesh header (oracle sonar pulse + teal peer nodes + dashed packet animations), 4-cell stat strip, schematic SVG mesh map (nodes positioned by ID hash with RSSI/hop labels), unified message feed (grid rows with direction arrows, filter chips, search), composer bar (direct LLM chat via `/api/chat`), collapsible system log viewer, collapsible coverage heatmap.
+  - **CONFIG tab** replaces Controls: collapsible `<details>` sections for Connection, Model, Response, Knowledge Base, History, Geographic Map (Leaflet), Appearance (light/dark toggle), About. Addon tabs (Dead Drop, Brief, Triage) now inject as collapsible sections via modified `_inject_addon_tabs()`.
+  - **Onboarding modal**: 5-step tour with SVG animations (reuses mesh header primitives), arrow key navigation, localStorage persistence. Auto-shows on first visit, re-launchable from CONFIG > Appearance.
+  - **Help popover**: `?` button in title bar with quick troubleshooting reference. Replaces deleted Guide tab.
+  - **Theme system**: light/dark themes with CSS custom properties and localStorage persistence. System preference detection via `prefers-color-scheme`.
+  - **Backward compatibility**: CSS variable aliases (`--text-primary`, `--border`, `--accent-red`, etc.) preserve addon styling. `showToast()` and `escapeHtml()` function signatures unchanged.
+  - **prefers-reduced-motion**: all SVG animations disabled when reduce motion is preferred.
+  - **IBM Plex Mono** font files added to `static/fonts/` (Regular 400, Medium 500).
+  - **No backend changes**: all 30 API endpoints unchanged. Only `_inject_addon_tabs()` modified (injects collapsible CONFIG sections instead of separate tabs).
+- Files changed:
+  - `meshtastic-bridge/dashboard.py` — `_inject_addon_tabs()` + full `DASHBOARD_HTML` rewrite
+  - `meshtastic-bridge/static/fonts/IBMPlexMono-Regular.ttf` — new
+  - `meshtastic-bridge/static/fonts/IBMPlexMono-Medium.ttf` — new
+  - `README.md` — tab name references updated
+
+---
+
 ## [2026-04-07] — Ask LORACLE from the Dashboard (Local Chat + Optional Rebroadcast)
 
 - What changed:

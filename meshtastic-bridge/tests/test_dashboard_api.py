@@ -36,6 +36,11 @@ def _make_mock_bridge():
     bridge.interface.nodes = {}
     bridge.greeter = MagicMock()
     bridge.greeter.stats = MagicMock(return_value={"enabled": True, "greeted_count": 0})
+    bridge._radio_manager = MagicMock()
+    bridge._radio_manager.get_backends_info = MagicMock(return_value=[
+        {"id": "mt-serial-0", "protocol": "mt", "transport": "serial", "connected": True}
+    ])
+    bridge._ai_replies_enabled = True
     return bridge
 
 

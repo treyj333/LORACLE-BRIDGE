@@ -1,14 +1,16 @@
 """LORACLE BRIDGE — Offline AI Over Mesh Radio.
 
-Connects directly to a Meshtastic radio and Ollama.
-Receives text messages over the mesh, processes them through a local LLM,
-and sends chunked responses back over LoRa.
+Connects to one or more radios (Meshtastic and/or MeshCore) via the
+RadioBackend abstraction layer, routes incoming messages through a local
+LLM (Ollama), and sends responses back over the correct radio.
 
 Usage:
     python standalone_bridge.py
     python standalone_bridge.py --ble                              # Bluetooth LE
     python standalone_bridge.py --model mistral --serial /dev/cu.usbserial-0001
     python standalone_bridge.py --tcp 192.168.1.100:4403
+    python standalone_bridge.py --protocol meshcore --serial /dev/cu.usbserial-0002
+    python standalone_bridge.py --second-radio meshcore:serial:/dev/ttyUSB1
     python standalone_bridge.py --list-models
 """
 
@@ -50,6 +52,32 @@ from dashboard import (
 from addons import load_addons
 from coverage_logger import CoverageLogger
 from greeter import GreeterService, DEFAULT_GREETING
+from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
+from radio.manager import RadioManager
+from radio.meshtastic_backend import MeshtasticBackend
+
+# ── Settings persistence ────────────────────────────────────────────────────
+
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".mesh-llm", "settings.json")
+
+
+def load_settings() -> dict:
+    """Load persisted settings (AI replies toggle, second radio config)."""
+    defaults = {"ai_replies": True, "second_radio": None}
+    try:
+        with open(SETTINGS_PATH) as f:
+            saved = json.load(f)
+        defaults.update(saved)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return defaults
+
+
+def save_settings(settings: dict):
+    """Persist settings to ~/.mesh-llm/settings.json."""
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,6 +161,8 @@ class StandaloneBridge:
         auto_greet: bool = True,
         greet_message: Optional[str] = None,
         public_talk: bool = True,
+        protocol: str = "auto",
+        ai_replies_enabled: bool = True,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -141,7 +171,7 @@ class StandaloneBridge:
         self.ble_address = ble_address
         self.dashboard_port = dashboard_port
         self.compression_enabled = compression_enabled
-        self.interface = None
+        self.interface = None  # kept for backward compat (dashboard/addon access)
         self._running = False
         self._connection_paused = False
         self._reconnect_delay = 1
@@ -149,6 +179,17 @@ class StandaloneBridge:
         self._connecting = False
         self._request_queue: queue.Queue = queue.Queue()
         self._start_time = time.time()
+        self._ai_replies_enabled = ai_replies_enabled
+
+        # ── RadioManager (multi-protocol abstraction) ─────────────────────
+        self._radio_manager = RadioManager()
+        self._primary_backend = MeshtasticBackend(
+            connection_type=connection_type,
+            serial_port=serial_port,
+            tcp_host=tcp_host,
+            tcp_port=tcp_port,
+            ble_address=ble_address,
+        )
         self._message_count = 0
         self._node_count = 0
         self._known_nodes = set()  # type: Set[str]
@@ -252,7 +293,12 @@ class StandaloneBridge:
 
         logger.info(f"Ollama connected: {self.ollama.base_url} (model: {self.ollama.model})")
 
-        # Register message handlers
+        # Register message handlers (kept for backward compat — the
+        # MeshtasticBackend also subscribes via start_listening, but
+        # the bridge still needs its own _on_receive for application-
+        # level filtering that was previously interleaved with packet
+        # parsing.  The backend now converts packets to UnifiedMessage;
+        # application filtering happens in _processing_loop.)
         pub.subscribe(self._on_receive, "meshtastic.receive.text")
         pub.subscribe(self._on_position, "meshtastic.receive.position")
 
@@ -263,8 +309,20 @@ class StandaloneBridge:
         threading.Thread(target=self._dedup_cleanup_loop, daemon=True).start()
         threading.Thread(target=self._context_cleanup_loop, daemon=True).start()
 
-        # Connect to radio in background — bridge runs even without radio
+        # Connect radio(s) via RadioManager
+        try:
+            self._radio_manager.add_backend(self._primary_backend)
+            logger.info(
+                f"Primary radio: {self._primary_backend.protocol.value} · "
+                f"{self._primary_backend.transport.value} · "
+                f"{self._primary_backend.get_connection_address()}"
+            )
+        except Exception as e:
+            logger.warning(f"Primary radio backend failed: {e}")
+        # Also keep the legacy connection loop for the existing pubsub path
         threading.Thread(target=self._radio_connection_loop, daemon=True).start()
+        # Node sync loop — periodically pull positions from backends
+        threading.Thread(target=self._node_sync_loop, daemon=True).start()
 
         # Start addons
         for addon in self._addons:
@@ -1245,6 +1303,27 @@ class StandaloneBridge:
                     self._rag_disabled_nodes.discard(nid)
                 logger.info(f"Auto-cleared context for {nid} (idle >{CONTEXT_TTL//60}m)")
 
+    def _node_sync_loop(self):
+        """Periodically merge node positions from all backends."""
+        while self._running:
+            time.sleep(NODEDB_REFRESH_INTERVAL_S)
+            try:
+                positions = self._radio_manager.get_all_node_positions()
+                for uid, pos in positions.items():
+                    if uid not in self._node_positions:
+                        self._node_positions[uid] = pos
+                    else:
+                        # Update if newer
+                        existing_ts = self._node_positions[uid].get("last_update", 0)
+                        new_ts = pos.get("last_update", 0)
+                        if new_ts > existing_ts:
+                            self._node_positions[uid] = pos
+                meta = self._radio_manager.get_all_node_meta()
+                for uid, m in meta.items():
+                    self._node_meta[uid] = m
+            except Exception as e:
+                logger.debug(f"Node sync error: {e}")
+
     def _cleanup(self):
         """Clean up resources."""
         # Stop addons
@@ -1253,6 +1332,12 @@ class StandaloneBridge:
                 addon.on_stop()
             except Exception as e:
                 logger.warning(f"Addon {addon.name} on_stop error: {e}")
+
+        # Stop all radio backends
+        try:
+            self._radio_manager.stop_all()
+        except Exception as e:
+            logger.debug(f"Error stopping radio backends: {e}")
 
         if self.interface:
             try:
@@ -1414,6 +1499,29 @@ def parse_args():
         help="Disable public-channel replies — DM only",
     )
 
+    # ── Protocol / multi-radio flags ─────────────────────────────────────
+    parser.add_argument(
+        "--protocol",
+        choices=["auto", "meshtastic", "meshcore"],
+        default="auto",
+        help="Primary radio protocol (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--second-radio",
+        metavar="PROTOCOL:TRANSPORT:PARAMS",
+        default=None,
+        help=(
+            "Connect a second radio. Format: protocol:transport:params. "
+            "Examples: meshcore:serial:/dev/ttyUSB1, meshtastic:tcp:192.168.1.50:4403"
+        ),
+    )
+    parser.add_argument(
+        "--ai-replies",
+        choices=["on", "off"],
+        default=None,
+        help="Global AI auto-reply toggle (default: on). When off, logs messages but stays quiet.",
+    )
+
     return parser.parse_args()
 
 
@@ -1504,6 +1612,12 @@ def main():
     if args.enable_all_addons or args.enable_navigation:
         addon_config["navigation"] = {}
 
+    # AI replies toggle (CLI > settings file > default)
+    settings = load_settings()
+    ai_replies = settings.get("ai_replies", True)
+    if args.ai_replies is not None:
+        ai_replies = args.ai_replies == "on"
+
     bridge = StandaloneBridge(
         connection_type=connection_type,
         serial_port=serial_port,
@@ -1522,6 +1636,8 @@ def main():
         auto_greet=args.auto_greet,
         greet_message=args.greet_message,
         public_talk=args.public_talk,
+        protocol=args.protocol,
+        ai_replies_enabled=ai_replies,
     )
 
     # Pull the better model in background after bridge starts
