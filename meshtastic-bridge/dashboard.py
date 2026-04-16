@@ -1624,7 +1624,7 @@ input[type="checkbox"] {
         <defs>
           <style>
             .mh-link { stroke: var(--lo-accent-2); stroke-width: 1; fill: none; opacity: 0.5; }
-            .mh-oracle { fill: var(--lo-accent); }
+            .mh-mynode { fill: var(--lo-accent); }
             .mh-peer { fill: var(--lo-accent-2); }
             .mh-packet { stroke: var(--lo-accent-2); stroke-width: 1.5; stroke-dasharray: 4 10; fill: none; }
             .mh-packet-out { stroke: var(--lo-accent); }
@@ -1632,13 +1632,13 @@ input[type="checkbox"] {
         </defs>
         <!-- Links drawn by JS -->
         <g id="mh-links"></g>
-        <!-- Sonar pulse on oracle -->
+        <!-- Sonar pulse on my node -->
         <circle cx="350" cy="34" r="5" fill="none" stroke="var(--lo-accent)" stroke-width="1" opacity="0.9">
           <animate attributeName="r" values="5;26" dur="2.8s" repeatCount="indefinite"/>
           <animate attributeName="opacity" values="0.9;0" dur="2.8s" repeatCount="indefinite"/>
         </circle>
-        <!-- Oracle node -->
-        <circle cx="350" cy="34" r="5" class="mh-oracle"/>
+        <!-- My node -->
+        <circle cx="350" cy="34" r="5" class="mh-mynode"/>
         <!-- Peer nodes drawn by JS -->
         <g id="mh-peers"></g>
       </svg>
@@ -1684,13 +1684,13 @@ input[type="checkbox"] {
       <!-- Corner labels -->
       <text x="8" y="16" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="8" letter-spacing="0.1em" id="mm-corner-nw">N -- W --</text>
       <text x="592" y="254" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="8" letter-spacing="0.1em" text-anchor="end" id="mm-corner-se">S -- E --</text>
-      <!-- Oracle center node -->
+      <!-- My node center -->
       <circle cx="300" cy="130" r="5" fill="none" stroke="var(--lo-accent)" stroke-width="1" opacity="0.7">
         <animate attributeName="r" values="5;20" dur="2.8s" repeatCount="indefinite"/>
         <animate attributeName="opacity" values="0.7;0" dur="2.8s" repeatCount="indefinite"/>
       </circle>
       <circle cx="300" cy="130" r="5" fill="var(--lo-accent)"/>
-      <text x="300" y="118" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="8" text-anchor="middle" letter-spacing="0.1em">ORACLE</text>
+      <text x="300" y="118" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="8" text-anchor="middle" letter-spacing="0.1em">MY NODE</text>
       <!-- Peer nodes drawn by JS -->
       <g id="mm-links"></g>
       <g id="mm-nodes"></g>
@@ -2061,7 +2061,7 @@ input[type="checkbox"] {
         <text x="60" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">HOP 1</text>
         <text x="150" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">HOP 2</text>
         <text x="240" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">HOP 3</text>
-        <text x="310" y="80" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="7">ORACLE</text>
+        <text x="310" y="80" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="7">MY NODE</text>
       </svg>
       <h3>MESSAGES HOP</h3>
       <p>Messages hop through the mesh until they reach you. Each node relays to the next.</p>
@@ -2075,10 +2075,10 @@ input[type="checkbox"] {
         <line x1="125" y1="60" x2="235" y2="60" stroke="var(--lo-accent-2)" stroke-width="1" stroke-dasharray="4,6"/>
         <text x="180" y="52" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="6">LORA</text>
         <rect x="240" y="35" width="90" height="50" rx="2" fill="none" stroke="var(--lo-accent)" stroke-width="1"/>
-        <text x="285" y="55" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="7">ORACLE</text>
+        <text x="285" y="55" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="7">MY NODE</text>
         <text x="285" y="68" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="6">thinking...</text>
       </svg>
-      <h3>ASK THE ORACLE</h3>
+      <h3>ASK LORACLE</h3>
       <p>Anyone in range types a question. You reply with AI, powered by your local LLM.</p>
     </div>
 
@@ -2104,7 +2104,7 @@ input[type="checkbox"] {
         <text x="180" y="60" text-anchor="middle" dominant-baseline="central" fill="var(--lo-bg)" font-family="var(--font-mono)" font-size="5" font-weight="500">LO</text>
       </svg>
       <h3>YOU'RE LIVE</h3>
-      <p id="ob-live-stats">Your oracle is active. Peers can reach you now.</p>
+      <p id="ob-live-stats">Your node is active. Peers can reach you now.</p>
     </div>
 
     <div class="lo-ob-nav">
@@ -2384,7 +2384,7 @@ function updateMeshMap(d) {
   var nodeMeta = d.node_meta || {};
   var cx = 300, cy = 130;
 
-  // Update corner labels with oracle GPS if available
+  // Update corner labels with my node GPS if available
   // (never invent coordinates)
 
   knownNodes.forEach(function(nodeId) {
