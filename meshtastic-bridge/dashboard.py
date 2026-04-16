@@ -2504,10 +2504,10 @@ input[type="checkbox"] {
   <!-- Message Feed -->
   <div class="lo-feed-header">
     <span class="lo-label">Messages</span>
-    <button class="lo-chip active" data-filter="all" onclick="setFilter('all',this)">ALL</button>
-    <button class="lo-chip" data-filter="in" onclick="setFilter('in',this)">IN</button>
-    <button class="lo-chip" data-filter="out" onclick="setFilter('out',this)">OUT</button>
-    <input type="text" class="lo-search" id="msg-search" placeholder="Filter..." oninput="App.messageSearch=this.value">
+    <button class="lo-chip active" data-filter="all" onclick="setFilter('all',this)">ALL <span id="filter-count-all" style="opacity:0.6"></span></button>
+    <button class="lo-chip" data-filter="in" onclick="setFilter('in',this)">&larr; IN <span id="filter-count-in" style="opacity:0.6"></span></button>
+    <button class="lo-chip" data-filter="out" onclick="setFilter('out',this)">&rarr; OUT <span id="filter-count-out" style="opacity:0.6"></span></button>
+    <input type="text" class="lo-search" id="msg-search" placeholder="Search messages by node or text..." oninput="App.messageSearch=this.value">
   </div>
   <div class="lo-feed" id="msg-feed">
     <div class="lo-feed-empty">WAITING FOR MESSAGES</div>
@@ -3321,8 +3321,18 @@ function updateMeshHeader(d) {
   linksG.innerHTML = '';
   peersG.innerHTML = '';
 
+  // Use actual node data for labels
+  var nodeIds = Object.keys(allNodes).slice(0, 4);
+  var nodeMeta = d.node_meta || {};
+
   for (var i = 0; i < shown; i++) {
     var p = _mhPeerPositions[i];
+    var nid = nodeIds[i] || '';
+    var meta = nodeMeta[nid] || {};
+    var hops = (typeof meta.hops === 'number') ? meta.hops : null;
+    var hopLabel = hops === 0 ? 'direct' : hops !== null ? hops + 'h' : '';
+    var shortId = nid.length > 6 ? nid.slice(-4) : nid;
+
     // Link line
     var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
     line.setAttribute('x1', '350'); line.setAttribute('y1', '34');
@@ -3346,6 +3356,18 @@ function updateMeshHeader(d) {
     anim.setAttribute('repeatCount', 'indefinite');
     circle.appendChild(anim);
     peersG.appendChild(circle);
+    // Hop label under peer node
+    if (hopLabel || shortId) {
+      var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', p.x); label.setAttribute('y', p.y + 12);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('fill', 'var(--lo-dim)');
+      label.setAttribute('font-family', 'var(--font-mono)');
+      label.setAttribute('font-size', '7');
+      label.setAttribute('letter-spacing', '0.05em');
+      label.textContent = shortId + (hopLabel ? ' \u00b7 ' + hopLabel : '');
+      peersG.appendChild(label);
+    }
   }
 }
 
@@ -3486,7 +3508,18 @@ function setFilter(f, btn) {
 }
 
 function updateMessageFeed(d) {
-  var msgs = d.messages || [];
+  var allMsgs = d.messages || [];
+  // Update filter count badges
+  var inCount = allMsgs.filter(function(m) { return m.dir === 'in'; }).length;
+  var outCount = allMsgs.filter(function(m) { return m.dir === 'out'; }).length;
+  var countAll = document.getElementById('filter-count-all');
+  var countIn = document.getElementById('filter-count-in');
+  var countOut = document.getElementById('filter-count-out');
+  if (countAll) countAll.textContent = allMsgs.length > 0 ? '(' + allMsgs.length + ')' : '';
+  if (countIn) countIn.textContent = inCount > 0 ? '(' + inCount + ')' : '';
+  if (countOut) countOut.textContent = outCount > 0 ? '(' + outCount + ')' : '';
+
+  var msgs = allMsgs;
   if (App.messageFilter !== 'all') msgs = msgs.filter(function(m) { return m.dir === App.messageFilter; });
   if (App.messageSearch) {
     var q = App.messageSearch.toLowerCase();
@@ -4465,6 +4498,9 @@ function renderSidebar() {
     var name = c.long_name ? (c.short_name + ' \u00b7 ' + c.long_name) : c.short_name;
     var preview = c.last_message_text ? escapeHtml(c.last_message_text).substring(0, 40) : '';
     var timeStr = c.last_heard ? relativeTime(c.last_heard) : '';
+    var hopsStr = '';
+    if (c.last_hops === 0) hopsStr = 'direct';
+    else if (c.last_hops !== null && c.last_hops !== undefined) hopsStr = c.last_hops + ' hop' + (c.last_hops > 1 ? 's' : '');
     var selected = _selectedThread === c.id ? ' selected' : '';
     var unread = (c.unread_count > 0) ?
       '<div class="lo-unread-badge">' + (c.unread_count > 99 ? '99+' : c.unread_count) + '</div>' : '';
@@ -4472,9 +4508,10 @@ function renderSidebar() {
       '<div class="lo-avatar">' + avatarChars + '<div class="lo-proto ' + proto + '"></div></div>' +
       '<div class="lo-contact-info">' +
         '<div class="lo-contact-name">' + escapeHtml(name) + '</div>' +
-        '<div class="lo-contact-preview">' + preview + '</div>' +
+        '<div class="lo-contact-preview">' + (preview || (hopsStr ? hopsStr : 'no messages yet')) + '</div>' +
       '</div>' +
       '<div class="lo-contact-meta">' + unread +
+        (hopsStr ? '<div style="font-size:9px;color:var(--lo-accent-2)">' + hopsStr + '</div>' : '') +
         '<div class="lo-contact-time">' + timeStr + '</div>' +
       '</div></div>';
   }).join('');

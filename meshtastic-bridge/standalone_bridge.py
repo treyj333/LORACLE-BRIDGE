@@ -969,6 +969,25 @@ class StandaloneBridge:
                 except Exception as e:
                     logger.debug(f"Greeter maybe_greet error: {e}")
 
+                # Auto-populate contact in DB so it appears in messenger sidebar
+                try:
+                    user_info = info.get("user", {})
+                    long_name = user_info.get("longName")
+                    short_name = user_info.get("shortName") or (key[-6:] if len(key) > 6 else key)
+                    hops = None
+                    meta = self._node_meta.get(key)
+                    if meta and "hops" in meta:
+                        hops = meta["hops"]
+                    self._contact_store.upsert(
+                        contact_id=key, protocol="meshtastic",
+                        backend_id=key, short_name=short_name,
+                        long_name=long_name, hops=hops,
+                    )
+                except Exception as e:
+                    logger.debug(f"Contact upsert from nodeDB error: {e}")
+
+                self._known_nodes.add(key)
+
                 parsed = self._extract_position(info.get("position", {}))
                 if parsed is None:
                     continue
