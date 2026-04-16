@@ -989,6 +989,36 @@ def api_pack_reingest(pack_id):
     return jsonify(result)
 
 
+@app.route("/api/factory-reset", methods=["POST"])
+def api_factory_reset():
+    """Delete all settings, messages, contacts, coverage — preserve CONTEXT FILES."""
+    import shutil
+    mesh_dir = os.path.join(os.path.expanduser("~"), ".mesh-llm")
+    deleted = []
+    # Files to delete
+    for fname in ["loracle.db", "settings.json", "settings.json.bak",
+                  "greeted_nodes.json", "ble_last_device.json", "coverage.jsonl"]:
+        fpath = os.path.join(mesh_dir, fname)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+            deleted.append(fname)
+    # Directories to delete (packs downloads, briefs, dead_drop)
+    for dname in ["packs", "briefs"]:
+        dpath = os.path.join(mesh_dir, dname)
+        if os.path.isdir(dpath):
+            shutil.rmtree(dpath, ignore_errors=True)
+            deleted.append(dname + "/")
+    # DB files (dead_drop.db, brief.db)
+    for dbf in ["dead_drop.db", "brief.db"]:
+        dbpath = os.path.join(mesh_dir, dbf)
+        if os.path.exists(dbpath):
+            os.remove(dbpath)
+            deleted.append(dbf)
+    logger.info(f"Factory reset: deleted {deleted}")
+    return jsonify({"ok": True, "deleted": deleted,
+                    "message": "Factory reset complete. Restart the bridge to apply."})
+
+
 @app.route("/api/send-mesh", methods=["POST"])
 def api_send_mesh():
     """Send a manual message to the mesh from the dashboard."""
@@ -2833,6 +2863,15 @@ input[type="checkbox"] {
           <button class="btn btn-sm" onclick="cfgClearAllMessages()" style="color:#c0392b;border-color:#c0392b">CLEAR ALL MESSAGES</button>
         </div>
       </div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--lo-divider)">
+        <div class="lo-form-row">
+          <span class="lo-form-label">FACTORY RESET</span>
+          <div>
+            <button class="btn btn-sm" onclick="cfgFactoryReset()" style="color:#c0392b;border-color:#c0392b">RESET ALL SETTINGS</button>
+            <div style="font-size:9px;color:var(--lo-faint);margin-top:4px">Erases all messages, contacts, settings, coverage data, and greeted nodes. Your CONTEXT FILES/ documents are preserved.</div>
+          </div>
+        </div>
+      </div>
     </div>
   </details>
 
@@ -4114,6 +4153,16 @@ function testClassifier(query) {
     var d = await callApi('POST', '/api/routing/classify', { query: query });
     if (d) el.textContent = 'Would route to: [' + d.tier.toUpperCase() + '] \u00b7 model: ' + d.model;
   }, 200);
+}
+
+async function cfgFactoryReset() {
+  if (!confirm('FACTORY RESET\n\nThis will erase ALL messages, contacts, settings, coverage data, and greeted nodes.\n\nYour CONTEXT FILES/ documents will NOT be deleted.\n\nYou will need to restart the bridge after reset.\n\nContinue?')) return;
+  if (!confirm('Are you sure? This cannot be undone.')) return;
+  var d = await callApi('POST', '/api/factory-reset');
+  if (d && d.ok) {
+    showToast('Factory reset complete. Restart the bridge to apply.');
+    cfgLoadDbStats();
+  }
 }
 
 async function cfgPruneNow() {
