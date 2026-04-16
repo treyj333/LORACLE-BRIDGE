@@ -1703,6 +1703,14 @@ input[type="checkbox"] {
     </svg>
   </div>
 
+  <!-- Geographic Node Map -->
+  <div style="border-bottom:1px solid var(--lo-divider-strong)">
+    <div style="display:flex;align-items:center;padding:10px 0 6px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--lo-dim)">
+      NODE MAP <span style="margin-left:auto" id="geo-node-count"></span>
+    </div>
+    <div id="geo-map" class="lo-geo-map"></div>
+  </div>
+
   <!-- Message Feed -->
   <div class="lo-feed-header">
     <span class="lo-label">Messages</span>
@@ -1954,14 +1962,6 @@ input[type="checkbox"] {
         <span class="lo-form-label">CONVERSATIONS</span>
         <button class="btn" onclick="clearHistory()">CLEAR ALL HISTORY</button>
       </div>
-    </div>
-  </details>
-
-  <!-- Geographic Map -->
-  <details class="lo-section" id="cfg-geo-section">
-    <summary class="lo-section-head">GEOGRAPHIC MAP <span style="margin-left:auto;font-size:10px" id="geo-node-count"></span></summary>
-    <div class="lo-section-body">
-      <div id="geo-map" class="lo-geo-map"></div>
     </div>
   </details>
 
@@ -2278,6 +2278,9 @@ async function poll() {
       updateMeshMap(d);
       updateMessageFeed(d);
       updateLogTicker();
+      // Geographic node map — init once, update every poll
+      if (!_geoInitDone) { _geoInitDone = true; setTimeout(function() { initGeoMap(); }, 200); }
+      if (_geoMap) updateGeoMap();
 
       // Coverage auto-refresh
       var covEl = document.getElementById('live-coverage');
@@ -3059,12 +3062,7 @@ async function loadLastBleDevice() {
 
 var _geoMap = null;
 var _geoMarkers = {};
-
-document.getElementById('cfg-geo-section').addEventListener('toggle', function() {
-  if (this.open) {
-    setTimeout(function() { initGeoMap(); if (_geoMap) _geoMap.invalidateSize(); updateGeoMap(); }, 100);
-  }
-});
+var _geoInitDone = false;
 
 function initGeoMap() {
   if (_geoMap) return;
