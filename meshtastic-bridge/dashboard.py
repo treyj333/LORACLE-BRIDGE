@@ -1019,6 +1019,19 @@ def api_factory_reset():
                     "message": "Factory reset complete. Restart the bridge to apply."})
 
 
+@app.route("/api/nodes/refresh", methods=["POST"])
+def api_nodes_refresh():
+    """Trigger an immediate nodeDB rescan to discover new nodes."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    try:
+        _bridge._load_nodedb_positions()
+        nodes = list(getattr(_bridge, "_known_nodes", set()))
+        return jsonify({"ok": True, "node_count": len(nodes)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/send-mesh", methods=["POST"])
 def api_send_mesh():
     """Send a manual message to the mesh from the dashboard."""
@@ -1508,6 +1521,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div><span class="lo-hud-val" id="hud-msgs">0</span> MESSAGES</div>
     <div><span class="lo-hud-val" id="hud-model">--</span> MODEL</div>
     <div><span class="lo-hud-val" id="hud-uptime">0s</span> UPTIME</div>
+    <div style="margin-top:8px"><button class="btn btn-sm" onclick="refreshNodes()" id="hud-refresh-btn" style="pointer-events:auto">SCAN MESH</button></div>
   </div>
 
   <!-- Hop ring legend -->
@@ -2263,6 +2277,20 @@ async function poll() {
     document.getElementById('hud-model').textContent = d.model || '--';
     document.getElementById('hud-uptime').textContent = formatUptime(d.uptime || 0);
 
+    // Update CONFIG connection status if visible
+    if (App.view === 'config') {
+      var cfgDot = document.getElementById('cfg-conn-dot');
+      var cfgSt = document.getElementById('cfg-conn-status');
+      var cfgDet = document.getElementById('cfg-conn-detail');
+      var cfgDisc = document.getElementById('cfg-disconn-btn');
+      if (cfgDot) { cfgDot.className = connected ? 'lo-dot on' : 'lo-dot'; }
+      if (cfgSt) { cfgSt.textContent = connected ? 'Connected' : 'Disconnected'; }
+      if (cfgDet) { cfgDet.textContent = connected ? ((d.connection_type || '').toUpperCase() + (d.connection_address ? ' \u2014 ' + d.connection_address : '')) : ''; }
+      if (cfgDisc) { cfgDisc.style.display = connected ? '' : 'none'; }
+      var cfgUp = document.getElementById('cfg-uptime');
+      if (cfgUp) cfgUp.textContent = formatUptime(d.uptime || 0);
+    }
+
     // Rebuild graph
     if (App.view !== 'config') {
       buildGraph(d);
@@ -2433,6 +2461,16 @@ async function cfgShowPack(id) { var d = await callApi('GET', '/api/packs/' + en
 async function cfgInstPack(id) { showToast('Installing...'); await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/install'); setTimeout(function() { cfgLoadPacks(); cfgShowPack(id); }, 5000); }
 async function cfgUninstPack(id) { if (!confirm('Uninstall this pack?')) return; await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/uninstall'); showToast('Uninstalled'); cfgLoadPacks(); document.getElementById('cfg-pack-detail').style.display = 'none'; }
 async function cfgReinstPack(id) { var d = await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/reingest'); if (d && d.ok) showToast('Re-ingested: ' + d.total_chunks + ' chunks'); }
+
+// ─── Node Refresh ──────────────────────────────────────────────────────────
+
+async function refreshNodes() {
+  var btn = document.getElementById('hud-refresh-btn');
+  btn.disabled = true; btn.textContent = 'SCANNING...';
+  var d = await callApi('POST', '/api/nodes/refresh');
+  btn.disabled = false; btn.textContent = 'SCAN MESH';
+  if (d && d.ok) showToast('Found ' + d.node_count + ' nodes');
+}
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 

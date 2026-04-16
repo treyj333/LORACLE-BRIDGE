@@ -139,16 +139,31 @@ The bridge includes a full-featured web control panel that starts automatically.
 http://localhost:8000
 ```
 
-### Dashboard Tabs
+### The Network Canvas
 
-| Tab | What It Does |
-|-----|-------------|
-| **LIVE** | Animated mesh header, stat strip (messages, nodes, reply time, docs), schematic mesh map with peer nodes, unified message feed with direction filters and search, composer bar for direct LLM chat, collapsible system log viewer, and coverage heatmap section |
-| **CONFIG** | Connection management (USB/TCP/BLE), model switching, system prompt, response settings, RAG knowledge base (toggle, URL ingest, file upload, document list), history, geographic Leaflet map, appearance (light/dark theme), about, and addon sections (Dead Drop, Triage, Brief) |
+LORACLE's interface is a **living force-directed mesh visualization**. Every node is a dot, every connection is a line, every packet is a pulse. The mesh breathes — nodes gently pulse, and the layout reorganizes as topology changes.
 
-### Composer Bar
+| Element | What It Is |
+|---------|-----------|
+| **Orange dot (center)** | Your radio — "MY NODE" |
+| **Teal dots** | Peer nodes on the mesh |
+| **Hexagons** | Public channels — click to broadcast |
+| **Concentric rings** | Hop distance (1H, 2H, 3H) — closer = fewer hops |
+| **Line thickness** | Signal strength — thick = strong, dotted = weak |
 
-The LIVE tab includes a **composer bar** at the bottom where you can type messages and get AI responses directly — no radio needed. This is useful for testing the LLM, tuning the system prompt, and verifying the knowledge base works before deploying over the mesh.
+**Click any node** to open its detail panel: see signal info, hop count, and send messages directly. Toggle AI auto-reply per node from the panel header.
+
+### Views
+
+| View | What It Shows |
+|------|-------------|
+| **MESH** | Default — the live force-directed mesh canvas with all nodes and links |
+| **TRAFFIC** | Same canvas, emphasis on active packet flow |
+| **CONFIG** | Full settings: connection, model, routing, RAG, knowledge packs, appearance |
+
+### HUD Overlay
+
+The top-left corner shows live stats (nodes, messages, model, uptime) and a **SCAN MESH** button to discover new nodes. The bottom strip shows a packet activity ribbon.
 
 The dashboard updates every 2 seconds. To change the port:
 
