@@ -824,6 +824,72 @@ def api_db_clear_messages():
     return jsonify({"ok": True, "deleted": deleted})
 
 
+@app.route("/api/routing/config", methods=["GET"])
+def api_routing_config():
+    """Get routing configuration."""
+    if _bridge is None or not hasattr(_bridge, "_settings_store"):
+        return jsonify({"auto_enabled": True, "show_tier_tag": True, "tiers": {}})
+    try:
+        from routing.tiers import load_tiers, ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY, Tier
+        ss = _bridge._settings_store
+        tiers = load_tiers(ss)
+        return jsonify({
+            "auto_enabled": ss.get(ROUTING_AUTO_KEY, True),
+            "show_tier_tag": ss.get(ROUTING_SHOW_TAG_KEY, True),
+            "tiers": {t.value: {"model": c.model, "enabled": c.enabled} for t, c in tiers.items()},
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/routing/config", methods=["POST"])
+def api_routing_config_set():
+    """Update routing configuration."""
+    if _bridge is None or not hasattr(_bridge, "_settings_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    ss = _bridge._settings_store
+    try:
+        from routing.tiers import ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY, Tier, TierConfig, save_tiers, load_tiers
+        if "auto_enabled" in data:
+            ss.set(ROUTING_AUTO_KEY, bool(data["auto_enabled"]))
+        if "show_tier_tag" in data:
+            ss.set(ROUTING_SHOW_TAG_KEY, bool(data["show_tier_tag"]))
+        if "tiers" in data:
+            current = load_tiers(ss)
+            for tier_key, tier_data in data["tiers"].items():
+                tier = Tier(tier_key)
+                if "model" in tier_data:
+                    current[tier] = TierConfig(tier, tier_data["model"], current[tier].enabled)
+                if "enabled" in tier_data:
+                    current[tier] = TierConfig(tier, current[tier].model, bool(tier_data["enabled"]))
+            save_tiers(ss, current)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/routing/classify", methods=["POST"])
+def api_routing_classify():
+    """Test the classifier on a query (no LLM call)."""
+    data = request.get_json(silent=True) or {}
+    query = data.get("query", "")
+    if not query:
+        return jsonify({"tier": "std"})
+    try:
+        from routing.classifier import classify
+        from routing.tiers import load_tiers, Tier
+        tier = classify(query)
+        model = "?"
+        if _bridge and hasattr(_bridge, "_settings_store"):
+            tiers = load_tiers(_bridge._settings_store)
+            if tier in tiers:
+                model = tiers[tier].model
+        return jsonify({"tier": tier.value, "model": model})
+    except Exception as e:
+        return jsonify({"tier": "std", "error": str(e)})
+
+
 @app.route("/api/send-mesh", methods=["POST"])
 def api_send_mesh():
     """Send a manual message to the mesh from the dashboard."""
@@ -2436,6 +2502,59 @@ input[type="checkbox"] {
     </div>
   </details>
 
+  <!-- Model Routing -->
+  <details class="lo-section">
+    <summary class="lo-section-head">MODEL ROUTING</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">AUTO-ROUTING</span>
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="cfg-routing-auto" checked onchange="cfgSetRouting('auto', this.checked)"> Enabled
+        </label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <span style="font-size:10px;color:var(--lo-faint)">LORACLE picks tiny/standard/big per query. Off = uses standard for everything.</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">SHOW TIER TAG</span>
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="cfg-routing-tag" checked onchange="cfgSetRouting('tag', this.checked)"> Show [TINY]/[STD]/[BIG] on AI messages
+        </label>
+      </div>
+      <div style="margin-top:12px;border-top:1px solid var(--lo-divider);padding-top:12px">
+        <div class="lo-form-row">
+          <span class="lo-form-label">TIER: TINY</span>
+          <input type="text" id="cfg-tier-tiny-model" value="gemma3:4b" style="max-width:160px">
+          <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-tiny-enabled" checked> On</label>
+        </div>
+        <div class="lo-form-row">
+          <span class="lo-form-label">TIER: STANDARD</span>
+          <input type="text" id="cfg-tier-std-model" value="qwen3:8b" style="max-width:160px">
+          <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-std-enabled" checked> On</label>
+        </div>
+        <div class="lo-form-row">
+          <span class="lo-form-label">TIER: BIG</span>
+          <input type="text" id="cfg-tier-big-model" value="phi4:14b" style="max-width:160px">
+          <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-big-enabled"> On</label>
+        </div>
+        <div class="lo-form-row">
+          <span class="lo-form-label"></span>
+          <button class="btn btn-sm" onclick="cfgSaveTiers()">SAVE TIERS</button>
+        </div>
+      </div>
+      <div style="margin-top:12px;border-top:1px solid var(--lo-divider);padding-top:12px">
+        <div class="lo-form-row">
+          <span class="lo-form-label">TEST CLASSIFIER</span>
+          <div class="lo-form-control">
+            <input type="text" id="cfg-classifier-test" placeholder="type a query to see which tier..." oninput="testClassifier(this.value)">
+            <div id="cfg-classifier-result" style="font-size:10px;color:var(--lo-dim);margin-top:4px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </details>
+
   <!-- Response -->
   <details class="lo-section">
     <summary class="lo-section-head">RESPONSE</summary>
@@ -3165,8 +3284,9 @@ function updateMessageFeed(d) {
       '<span class="lo-msg-time">' + formatTime(m.ts) + '</span>' +
       '<span class="lo-msg-arrow ' + arrowClass + '">' + arrow + '</span>' +
       '<span class="lo-msg-badge">' + badge + '</span>' +
-      '<span class="lo-msg-body"><span class="lo-msg-node">!' + escapeHtml(shortNode) + ' \u00b7 </span>' + escapeHtml(m.text) + '</span>' +
-      '</div>';
+      '<span class="lo-msg-body"><span class="lo-msg-node">!' + escapeHtml(shortNode) + ' \u00b7 </span>' + escapeHtml(m.text) +
+      (m.tier && m.dir === 'out' ? ' <span class="lo-msg-badge" style="border-color:var(--lo-dim)">' + m.tier.toUpperCase() + '</span>' : '') +
+      '</span></div>';
   });
   feed.innerHTML = html;
 
@@ -3471,6 +3591,7 @@ async function loadConfigData() {
   }
   cfgLoadRagDocs();
   cfgLoadDbStats();
+  cfgLoadRouting();
   loadLastBleDevice();
 }
 
@@ -3585,6 +3706,59 @@ async function clearHistory() {
   if (!confirm('Clear all conversation history? This cannot be undone.')) return;
   var d = await callApi('POST', '/api/clear-history', {});
   if (d && d.ok) showToast('Cleared history for ' + d.cleared + ' node(s)');
+}
+
+// ─── Model Routing Config ──────────────────────────────────────────────────
+
+async function cfgLoadRouting() {
+  try {
+    var d = await callApi('GET', '/api/routing/config');
+    if (!d) return;
+    document.getElementById('cfg-routing-auto').checked = d.auto_enabled !== false;
+    document.getElementById('cfg-routing-tag').checked = d.show_tier_tag !== false;
+    if (d.tiers) {
+      if (d.tiers.tiny) {
+        document.getElementById('cfg-tier-tiny-model').value = d.tiers.tiny.model || '';
+        document.getElementById('cfg-tier-tiny-enabled').checked = d.tiers.tiny.enabled;
+      }
+      if (d.tiers.std) {
+        document.getElementById('cfg-tier-std-model').value = d.tiers.std.model || '';
+        document.getElementById('cfg-tier-std-enabled').checked = d.tiers.std.enabled;
+      }
+      if (d.tiers.big) {
+        document.getElementById('cfg-tier-big-model').value = d.tiers.big.model || '';
+        document.getElementById('cfg-tier-big-enabled').checked = d.tiers.big.enabled;
+      }
+    }
+  } catch(e) {}
+}
+
+async function cfgSetRouting(key, value) {
+  var payload = {};
+  if (key === 'auto') payload.auto_enabled = value;
+  if (key === 'tag') payload.show_tier_tag = value;
+  await callApi('POST', '/api/routing/config', payload);
+}
+
+async function cfgSaveTiers() {
+  var tiers = {
+    tiny: { model: document.getElementById('cfg-tier-tiny-model').value, enabled: document.getElementById('cfg-tier-tiny-enabled').checked },
+    std: { model: document.getElementById('cfg-tier-std-model').value, enabled: document.getElementById('cfg-tier-std-enabled').checked },
+    big: { model: document.getElementById('cfg-tier-big-model').value, enabled: document.getElementById('cfg-tier-big-enabled').checked },
+  };
+  var d = await callApi('POST', '/api/routing/config', { tiers: tiers });
+  if (d && d.ok) showToast('Tiers saved');
+}
+
+var _classifierDebounce = null;
+function testClassifier(query) {
+  clearTimeout(_classifierDebounce);
+  var el = document.getElementById('cfg-classifier-result');
+  if (!query.trim()) { el.textContent = ''; return; }
+  _classifierDebounce = setTimeout(async function() {
+    var d = await callApi('POST', '/api/routing/classify', { query: query });
+    if (d) el.textContent = 'Would route to: [' + d.tier.toUpperCase() + '] \u00b7 model: ' + d.model;
+  }, 200);
 }
 
 async function cfgPruneNow() {
@@ -4046,6 +4220,7 @@ function renderThread() {
       var arrowClass = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
       var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
       var aiBadge = m.author === 'ai' ? '<span class="lo-tmsg-ai-badge">AI</span>' : '';
+      var tierTag = (m.tier && m.author === 'ai') ? '<span class="lo-tmsg-ai-badge" style="border-color:var(--lo-dim)">' + m.tier.toUpperCase() + '</span>' : '';
       var channelHint = '';
       if (m.originating_channel_id) {
         channelHint = '<div style="font-size:9px;color:var(--lo-faint);margin-bottom:2px">\u2196 replying to channel message</div>';
@@ -4053,7 +4228,7 @@ function renderThread() {
       return '<div class="lo-tmsg">' +
         '<span class="lo-tmsg-time">' + formatTime(m.timestamp) + '</span>' +
         '<span class="lo-tmsg-arrow ' + arrowClass + '">' + arrow + '</span>' +
-        '<span class="lo-tmsg-body">' + channelHint + escapeHtml(m.text) + aiBadge + '</span>' +
+        '<span class="lo-tmsg-body">' + channelHint + escapeHtml(m.text) + aiBadge + tierTag + '</span>' +
         '</div>';
     }).join('');
     el.scrollTop = el.scrollHeight;

@@ -55,6 +55,8 @@ from greeter import GreeterService, DEFAULT_GREETING
 from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
 from radio.manager import RadioManager
 from radio.meshtastic_backend import MeshtasticBackend
+from routing import Tier, parse_prefix, route, USAGE_HINT, ModelNotConfiguredError
+from routing.tiers import load_tiers, save_tiers, ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY
 from db import init_db, migrate_from_json, ContactStore, MessageStore, SettingsStore
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -1028,6 +1030,7 @@ class StandaloneBridge:
                 # Check for commands (always process, regardless of AI toggle)
                 response = self._handle_command(node_id, text)
                 elapsed = 0
+                chosen_tier = Tier.STANDARD  # default for commands
 
                 if response is None:
                     # Check AI toggle — if off, log but don't reply
@@ -1035,34 +1038,73 @@ class StandaloneBridge:
                         logger.info(f"AI disabled for {node_id}, skipping reply")
                         continue
 
-                    # Regular message — send to Ollama
-                    logger.info(f"Processing query from {node_id}...")
+                    # ── Model routing ─────────────────────────────────────
+                    # Parse !tiny/!std/!big prefix
+                    override_tier, routed_text = parse_prefix(text)
+                    if override_tier is not None and not routed_text:
+                        # Prefix only, no query → usage hint
+                        response = USAGE_HINT
+                        chosen_tier = override_tier
+                        elapsed = 0
+                    else:
+                        query_text = routed_text if override_tier else text
+                        chosen_tier = Tier.STANDARD
+                        chosen_model = self.ollama.model
 
-                    # Send acknowledgment as DM to sender (even for channel msgs)
-                    self._send_raw(node_id, "Thinking...", channel=0, is_dm=True)
-
-                    # RAG: search for relevant context
-                    context_messages = None
-                    if (
-                        self.rag_enabled
-                        and self.rag_engine
-                        and node_id not in self._rag_disabled_nodes
-                    ):
                         try:
-                            context_messages = self.rag_engine.build_context_messages(text)
-                            if context_messages:
-                                logger.info(
-                                    f"RAG: injecting {len(context_messages)} context chunk(s)"
-                                )
+                            tiers = load_tiers(self._settings_store)
+                            auto_routing = self._settings_store.get(ROUTING_AUTO_KEY, True)
+                            installed = self.ollama.list_models()
+                            chosen_tier, chosen_model = route(
+                                query_text, tiers, installed,
+                                override=override_tier,
+                                auto_routing=bool(auto_routing),
+                            )
+                        except ModelNotConfiguredError as e:
+                            response = str(e)
+                            self._send_response(node_id, response, channel=0, is_dm=True)
+                            record_message("out", node_id, response)
+                            continue
                         except Exception as e:
-                            logger.warning(f"RAG search failed: {e}")
+                            logger.warning(f"Routing error, using default model: {e}")
 
-                    start = time.time()
-                    response = self.ollama.chat(
-                        node_id, text, context_messages=context_messages
-                    )
-                    elapsed = time.time() - start
-                    logger.info(f"Ollama responded in {elapsed:.1f}s ({len(response)} chars)")
+                        logger.info(f"Processing query from {node_id} [{chosen_tier.value.upper()}] → {chosen_model}")
+
+                        # Send acknowledgment as DM to sender
+                        self._send_raw(node_id, "Thinking...", channel=0, is_dm=True)
+
+                        # RAG: tier-aware context size
+                        context_messages = None
+                        max_rag_chunks = 3  # default
+                        if chosen_tier == Tier.TINY:
+                            max_rag_chunks = 0  # skip RAG for tiny
+                        elif chosen_tier == Tier.BIG:
+                            max_rag_chunks = 6  # more context for big
+                        if (
+                            max_rag_chunks > 0
+                            and self.rag_enabled
+                            and self.rag_engine
+                            and node_id not in self._rag_disabled_nodes
+                        ):
+                            try:
+                                context_messages = self.rag_engine.build_context_messages(
+                                    query_text, top_k=max_rag_chunks
+                                )
+                                if context_messages:
+                                    logger.info(
+                                        f"RAG: injecting {len(context_messages)} context chunk(s)"
+                                    )
+                            except Exception as e:
+                                logger.warning(f"RAG search failed: {e}")
+
+                        start = time.time()
+                        response = self.ollama.chat(
+                            node_id, query_text,
+                            context_messages=context_messages,
+                            model_override=chosen_model,
+                        )
+                        elapsed = time.time() - start
+                        logger.info(f"Ollama [{chosen_tier.value.upper()}] responded in {elapsed:.1f}s ({len(response)} chars)")
 
                 # Determine where to store + send the reply
                 reply_contact_id = node_id  # default: sender's DM thread
@@ -1075,7 +1117,9 @@ class StandaloneBridge:
                     logger.info(f"Channel AI redirect: replying to {node_id} as DM (from ch{channel})")
 
                 # Send response as DM to sender (never to channel)
-                record_message("out", node_id, response, chunks=1, llm_time=elapsed)
+                tier_tag = chosen_tier.value if elapsed > 0 else None
+                record_message("out", node_id, response, chunks=1, llm_time=elapsed,
+                               tier=tier_tag)
                 try:
                     author = "ai" if elapsed > 0 else "human"
                     self._message_store.insert(

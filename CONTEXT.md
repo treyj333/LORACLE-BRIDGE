@@ -4,6 +4,28 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16] — Session 3: Auto Model Routing
+
+- What changed:
+  - **New `routing/` module** — three-tier auto model routing:
+    - `tiers.py`: Tier enum (TINY/STANDARD/BIG), TierConfig dataclass, RAM-based defaults (<8GB: big disabled, 8-16GB: big disabled, 16GB+: all enabled), load/save to settings table
+    - `classifier.py`: hybrid length + keyword classifier (v1.0). Rules: trivial <=20 chars → TINY, BIG keywords (explain, triage, debug, etc.) → BIG, TINY patterns (what is, who is, etc.) → TINY, >160 chars → BIG, multi-question → BIG, default → STANDARD. Pure function, <1ms runtime.
+    - `router.py`: resolves query + optional override to (tier, model). Validates tier enabled + model installed. Raises ModelDisabledError / ModelNotInstalledError with user-facing <=180 char error messages.
+  - **CLI prefix overrides**: `!tiny <query>`, `!std <query>`, `!big <query>` force a tier. Case-insensitive, prefix stripped before Ollama call. Prefix-only sends usage hint.
+  - **Tier-aware RAG**: TINY skips RAG (fast answers), STANDARD uses 3 chunks, BIG uses 6 chunks.
+  - **Per-call model override** in `ollama_client.py`: `chat()` accepts `model_override` parameter.
+  - **Dashboard**: tier tags `[TINY]/[STD]/[BIG]` on AI messages in both messenger and dashboard feed. New MODEL ROUTING config section with auto-routing toggle, show-tag toggle, per-tier model/enabled inputs, save button, and live classifier test tool.
+  - **API endpoints**: `GET/POST /api/routing/config`, `POST /api/routing/classify` (test classifier without LLM call)
+  - **16 new tests**: classifier corpus (42 queries, >=80% accuracy), prefix parsing, router validation, speed benchmark
+- Files changed:
+  - `meshtastic-bridge/routing/` — new module (4 files)
+  - `meshtastic-bridge/ollama_client.py` — model_override on chat()
+  - `meshtastic-bridge/standalone_bridge.py` — routing integration in processing loop
+  - `meshtastic-bridge/dashboard.py` — tier tags, MODEL ROUTING config, classifier test, routing API
+  - `meshtastic-bridge/tests/test_classifier.py` — 16 tests
+
+---
+
 ## [2026-04-16] — Session 2b: Full Messenger UI + SQLite Persistence
 
 - What changed:
