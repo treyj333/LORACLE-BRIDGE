@@ -275,6 +275,7 @@ class OllamaClient:
         message: str,
         context_messages: Optional[List[Dict]] = None,
         system_prompt_override: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> str:  # noqa: C901
         """Send a message to Ollama and return the response.
 
@@ -287,6 +288,8 @@ class OllamaClient:
                 between system prompt and history.
             system_prompt_override: If provided, use this instead of the
                 default system prompt (used by addons like Triage).
+            model_override: If provided, use this model instead of
+                self.model for this call only (for tier routing).
         """
         # Auto-clear stale conversation context (>1 hour idle)
         now = time.time()
@@ -311,7 +314,7 @@ class OllamaClient:
             resp = self._session.post(
                 f"{self.base_url}/api/chat",
                 json={
-                    "model": self.model,
+                    "model": model_override or self.model,
                     "messages": messages,
                     "stream": False,
                 },
