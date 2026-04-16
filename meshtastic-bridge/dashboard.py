@@ -1545,7 +1545,177 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
 <!-- ── CONFIG View ─────────────────────────────────────────────────────────── -->
 <div class="lo-config" id="config-view">
-<!-- CONFIG content injected from existing sections -->
+
+  <!-- Connection -->
+  <details class="lo-section" open>
+    <summary class="lo-section-head">CONNECTION</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">STATUS</span>
+        <span style="display:flex;align-items:center;gap:6px">
+          <span class="lo-dot" id="cfg-conn-dot"></span>
+          <span id="cfg-conn-status">Disconnected</span>
+        </span>
+        <span class="lo-form-hint" id="cfg-conn-detail"></span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">TYPE</span>
+        <select id="cfg-conn-type" style="max-width:160px"><option value="serial">Serial (USB)</option><option value="tcp">TCP</option><option value="ble">BLE</option></select>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">ADDRESS</span>
+        <input type="text" id="cfg-conn-addr" placeholder="auto-detect">
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary" onclick="cfgConnect()">CONNECT</button>
+          <button class="btn" id="cfg-disconn-btn" onclick="cfgDisconnect()" style="display:none">DISCONNECT</button>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- AI Replies -->
+  <details class="lo-section">
+    <summary class="lo-section-head">AI REPLIES</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">AUTO-REPLY</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-ai-replies" checked onchange="cfgToggleAiReplies(this.checked)"> Enabled</label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <span style="font-size:10px;color:var(--lo-faint)">When on, LORACLE answers incoming messages. When off, it logs but stays quiet.</span>
+      </div>
+    </div>
+  </details>
+
+  <!-- Model -->
+  <details class="lo-section">
+    <summary class="lo-section-head">MODEL</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">CURRENT</span>
+        <span id="cfg-model-cur" style="color:var(--lo-ink)">--</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">SWITCH TO</span>
+        <select id="cfg-model-sel" style="max-width:240px"></select>
+        <button class="btn btn-sm" onclick="cfgSwitchModel()">APPLY</button>
+        <button class="btn btn-sm" onclick="cfgRefreshModels()">REFRESH</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- Model Routing -->
+  <details class="lo-section">
+    <summary class="lo-section-head">MODEL ROUTING</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">AUTO-ROUTING</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-routing-auto" checked onchange="cfgSetRouting('auto',this.checked)"> Enabled</label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">SHOW TIER TAG</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-routing-tag" checked onchange="cfgSetRouting('tag',this.checked)"> On AI messages</label>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid var(--lo-divider);padding-top:10px">
+        <div class="lo-form-row"><span class="lo-form-label">TIER: TINY</span><input type="text" id="cfg-tier-tiny" value="gemma3:4b" style="max-width:160px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-tiny-on" checked> On</label></div>
+        <div class="lo-form-row"><span class="lo-form-label">TIER: STANDARD</span><input type="text" id="cfg-tier-std" value="qwen3:8b" style="max-width:160px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-std-on" checked> On</label></div>
+        <div class="lo-form-row"><span class="lo-form-label">TIER: BIG</span><input type="text" id="cfg-tier-big" value="phi4:14b" style="max-width:160px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="cfg-tier-big-on"> On</label></div>
+        <div class="lo-form-row"><span class="lo-form-label"></span><button class="btn btn-sm" onclick="cfgSaveTiers()">SAVE TIERS</button></div>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid var(--lo-divider);padding-top:10px">
+        <div class="lo-form-row">
+          <span class="lo-form-label">TEST CLASSIFIER</span>
+          <div class="lo-form-control"><input type="text" id="cfg-test-q" placeholder="type a query to test..." oninput="cfgTestClassifier(this.value)"><div id="cfg-test-result" style="font-size:10px;color:var(--lo-dim);margin-top:4px"></div></div>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <!-- Response -->
+  <details class="lo-section">
+    <summary class="lo-section-head">RESPONSE</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">MAX LENGTH</span>
+        <input type="range" id="cfg-max-len" min="50" max="1000" value="200" oninput="document.getElementById('cfg-max-len-val').textContent=this.value" style="flex:1">
+        <span class="lo-form-hint" id="cfg-max-len-val">200</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">COMPRESSION</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-compression"> Enabled</label>
+      </div>
+      <div class="lo-form-row" style="align-items:flex-start">
+        <span class="lo-form-label">SYSTEM PROMPT</span>
+        <div class="lo-form-control">
+          <textarea id="cfg-prompt" rows="4"></textarea>
+          <div style="display:flex;justify-content:space-between;margin-top:4px">
+            <span style="font-size:10px;color:var(--lo-faint)" id="cfg-prompt-count"></span>
+            <button class="btn btn-sm" onclick="cfgSavePrompt()">SAVE PROMPT</button>
+          </div>
+        </div>
+      </div>
+      <div class="lo-form-row"><span class="lo-form-label"></span><button class="btn" onclick="cfgApplySettings()">APPLY SETTINGS</button></div>
+    </div>
+  </details>
+
+  <!-- Knowledge Base -->
+  <details class="lo-section">
+    <summary class="lo-section-head">KNOWLEDGE BASE</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row"><span class="lo-form-label">RAG</span><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-rag-toggle" onchange="cfgToggleRag(this.checked)"> Enabled</label><span class="lo-form-hint" id="cfg-rag-stats"></span></div>
+      <div class="lo-form-row"><span class="lo-form-label">ADD URL</span><div class="lo-form-control"><div style="display:flex;gap:4px"><input type="url" id="cfg-url-input" placeholder="https://..."><button class="btn btn-sm" onclick="cfgIngestUrl()">INGEST</button></div><div id="cfg-url-status" style="font-size:10px;margin-top:4px"></div></div></div>
+      <div class="lo-form-row"><span class="lo-form-label">UPLOAD FILE</span><input type="file" id="cfg-file-upload" onchange="cfgUploadFile()" style="font-size:11px"></div>
+      <div class="lo-form-row" style="align-items:flex-start"><span class="lo-form-label">DOCUMENTS</span><div class="lo-form-control" id="cfg-rag-docs"><span style="color:var(--lo-faint)">Loading...</span></div></div>
+    </div>
+  </details>
+
+  <!-- Knowledge Packs -->
+  <details class="lo-section">
+    <summary class="lo-section-head">KNOWLEDGE PACKS</summary>
+    <div class="lo-section-body">
+      <div id="cfg-packs-list"><span style="color:var(--lo-faint);font-size:10px">Loading...</span></div>
+      <div id="cfg-pack-detail" style="display:none;margin-top:12px;padding:12px 0;border-top:1px solid var(--lo-divider)"><div id="cfg-pack-detail-content"></div></div>
+    </div>
+  </details>
+
+  <!-- Data & Storage -->
+  <details class="lo-section">
+    <summary class="lo-section-head">DATA & STORAGE</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row"><span class="lo-form-label">DATABASE</span><span style="color:var(--lo-dim);font-size:10px">~/.mesh-llm/loracle.db</span></div>
+      <div class="lo-form-row"><span class="lo-form-label">STATS</span><span id="cfg-db-stats" style="color:var(--lo-dim);font-size:10px">Loading...</span></div>
+      <div class="lo-form-row"><span class="lo-form-label">RETENTION</span><span style="color:var(--lo-faint);font-size:10px">Last 500 messages OR 90 days per contact</span></div>
+      <div class="lo-form-row"><span class="lo-form-label"></span><div style="display:flex;gap:6px"><button class="btn btn-sm" onclick="cfgPruneNow()">PRUNE NOW</button><button class="btn btn-sm" onclick="cfgClearAllMessages()" style="color:#c0392b;border-color:#c0392b">CLEAR ALL MESSAGES</button></div></div>
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--lo-divider)">
+        <div class="lo-form-row"><span class="lo-form-label">FACTORY RESET</span><div><button class="btn btn-sm" onclick="cfgFactoryReset()" style="color:#c0392b;border-color:#c0392b">RESET ALL SETTINGS</button><div style="font-size:9px;color:var(--lo-faint);margin-top:4px">Erases all data. CONTEXT FILES/ preserved.</div></div></div>
+      </div>
+    </div>
+  </details>
+
+  <!-- Appearance -->
+  <details class="lo-section">
+    <summary class="lo-section-head">APPEARANCE</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row"><span class="lo-form-label">THEME</span><select id="cfg-theme" onchange="setTheme(this.value)" style="max-width:120px"><option value="light">Light</option><option value="dark">Dark</option></select></div>
+      <div class="lo-form-row"><span class="lo-form-label">ONBOARDING</span><button class="btn btn-sm" onclick="showOnboarding()">LAUNCH TOUR</button></div>
+    </div>
+  </details>
+
+  <!-- About -->
+  <details class="lo-section">
+    <summary class="lo-section-head">ABOUT</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row"><span class="lo-form-label">VERSION</span><span style="color:var(--lo-ink)">LORACLE Bridge v1.0</span></div>
+      <div class="lo-form-row"><span class="lo-form-label">UPTIME</span><span id="cfg-uptime" style="color:var(--lo-ink)">--</span></div>
+    </div>
+  </details>
+
+  <!-- ADDON_SECTIONS -->
+
 </div>
 
 <!-- ── Connect Modal ──────────────────────────────────────────────────────── -->
@@ -2218,17 +2388,51 @@ if (localStorage.getItem('loracle-onboarded') !== 'true') setTimeout(showOnboard
 // ─── Config Data Loading (reuse existing endpoints) ────────────────────────
 
 async function loadConfigData() {
-  // Placeholder — CONFIG sections will be populated via API calls
-  var el = document.getElementById('config-view');
-  if (el.children.length === 0) {
-    el.innerHTML = '<div style="padding:24px;color:var(--lo-dim);font-size:11px;text-transform:uppercase;letter-spacing:0.1em">' +
-      '<p>Settings are available at the API endpoints. Full CONFIG UI coming in next update.</p>' +
-      '<p style="margin-top:12px"><a href="/api/routing/config" style="color:var(--lo-accent)">Model Routing</a> \u00b7 ' +
-      '<a href="/api/packs" style="color:var(--lo-accent)">Knowledge Packs</a> \u00b7 ' +
-      '<a href="/api/db/stats" style="color:var(--lo-accent)">Database Stats</a></p>' +
-      '</div>';
-  }
+  // Models
+  await cfgRefreshModels();
+  // System prompt
+  var pd = await callApi('GET', '/api/system-prompt');
+  if (pd) { document.getElementById('cfg-prompt').value = pd.prompt; document.getElementById('cfg-prompt-count').textContent = pd.prompt.length + ' chars'; }
+  document.getElementById('cfg-prompt').addEventListener('input', function() { document.getElementById('cfg-prompt-count').textContent = this.value.length + ' chars'; });
+  // Config values
+  var cd = await callApi('GET', '/api/config');
+  if (cd) { document.getElementById('cfg-max-len').value = cd.max_response_length; document.getElementById('cfg-max-len-val').textContent = cd.max_response_length; document.getElementById('cfg-compression').checked = cd.compression_enabled; }
+  // RAG
+  cfgLoadRagDocs(); cfgLoadDbStats(); cfgLoadRouting(); cfgLoadPacks();
 }
+
+async function cfgRefreshModels() {
+  var d = await callApi('GET', '/api/models');
+  if (!d) return;
+  var sel = document.getElementById('cfg-model-sel');
+  sel.innerHTML = d.models.map(function(m) { return '<option' + (m === d.current ? ' selected' : '') + '>' + escapeHtml(m) + '</option>'; }).join('');
+  document.getElementById('cfg-model-cur').textContent = d.current;
+}
+async function cfgSwitchModel() { var m = document.getElementById('cfg-model-sel').value; var d = await callApi('POST', '/api/model', {model: m}); if (d && d.ok) { showToast('Model: ' + d.model); cfgRefreshModels(); } }
+async function cfgSavePrompt() { var d = await callApi('POST', '/api/system-prompt', {prompt: document.getElementById('cfg-prompt').value}); if (d && d.ok) showToast('Prompt saved'); }
+async function cfgApplySettings() { var d = await callApi('POST', '/api/config', { max_response_length: parseInt(document.getElementById('cfg-max-len').value), compression_enabled: document.getElementById('cfg-compression').checked }); if (d && d.ok) showToast('Settings applied'); }
+async function cfgToggleAiReplies(on) { await callApi('POST', '/api/ai-replies', {enabled: on}); }
+async function cfgToggleRag(on) { await callApi('POST', '/api/rag/toggle', {enabled: on}); }
+async function cfgIngestUrl() { var url = document.getElementById('cfg-url-input').value.trim(); if (!url) return; var st = document.getElementById('cfg-url-status'); st.textContent = 'Fetching...'; var d = await callApi('POST', '/api/rag/ingest-url', {url: url}); if (d && d.ok) { st.innerHTML = '<span style="color:var(--lo-accent-2)">\u2713 ' + escapeHtml(d.filename) + '</span>'; document.getElementById('cfg-url-input').value = ''; cfgLoadRagDocs(); } else { st.innerHTML = '<span style="color:#c0392b">Error</span>'; } }
+async function cfgUploadFile() { var input = document.getElementById('cfg-file-upload'); if (!input.files.length) return; var fd = new FormData(); fd.append('file', input.files[0]); try { var r = await fetch('/api/rag/ingest-file', {method:'POST',body:fd}); var d = await r.json(); if (d.ok) { showToast('Uploaded: ' + d.filename); input.value = ''; cfgLoadRagDocs(); } else showToast(d.error||'Failed','error'); } catch(e) { showToast('Error','error'); } }
+async function cfgLoadRagDocs() { var d = await callApi('GET', '/api/rag/stats'); var el = document.getElementById('cfg-rag-docs'); if (!el) return; if (!d || !d.documents || d.documents.length === 0) { el.innerHTML = '<span style="color:var(--lo-faint)">No documents yet.</span>'; return; } document.getElementById('cfg-rag-stats').textContent = (d.stats && d.stats.total_docs || d.documents.length) + ' docs'; el.innerHTML = d.documents.map(function(doc) { return '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--lo-divider)"><span style="color:var(--lo-dim)">' + escapeHtml(doc.filename||doc.doc_id) + '</span><span style="display:flex;gap:6px;align-items:center"><span style="color:var(--lo-faint);font-size:10px">' + (doc.chunk_count||0) + ' chunks</span><button class="btn btn-sm" style="color:#c0392b;border-color:#c0392b" onclick="cfgDeleteDoc(\'' + escapeHtml(doc.doc_id) + '\')">x</button></span></div>'; }).join(''); }
+async function cfgDeleteDoc(id) { if (!confirm('Delete this document?')) return; var d = await callApi('POST', '/api/rag/delete', {doc_id: id}); if (d && d.ok) { showToast('Deleted'); cfgLoadRagDocs(); } }
+async function cfgConnect() { var type = document.getElementById('cfg-conn-type').value; var addr = document.getElementById('cfg-conn-addr').value.trim(); var payload = {type: type}; if (type === 'tcp' && addr) { if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); } else payload.host = addr; } else payload.address = addr || null; fetch('/api/connection/switch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){}); showToast('Connecting...'); }
+async function cfgDisconnect() { await callApi('POST', '/api/connection/disconnect'); }
+async function cfgLoadDbStats() { var d = await callApi('GET', '/api/db/stats'); if (d) { var kb = Math.round((d.db_size_bytes||0)/1024); document.getElementById('cfg-db-stats').textContent = d.contacts + ' contacts, ' + d.messages + ' msgs, ' + kb + ' KB'; } }
+async function cfgPruneNow() { var d = await callApi('POST', '/api/db/prune'); if (d && d.ok) showToast('Pruned ' + d.pruned + ' messages'); cfgLoadDbStats(); }
+async function cfgClearAllMessages() { if (!confirm('Delete ALL messages? This cannot be undone.')) return; var d = await callApi('POST', '/api/db/clear-messages'); if (d && d.ok) showToast('Deleted ' + d.deleted + ' messages'); cfgLoadDbStats(); }
+async function cfgFactoryReset() { if (!confirm('FACTORY RESET\\n\\nErase all data? CONTEXT FILES/ preserved.\\n\\nRestart required after reset.')) return; if (!confirm('Are you sure?')) return; var d = await callApi('POST', '/api/factory-reset'); if (d && d.ok) showToast('Reset complete. Restart the bridge.'); cfgLoadDbStats(); }
+async function cfgLoadRouting() { try { var d = await callApi('GET', '/api/routing/config'); if (!d) return; document.getElementById('cfg-routing-auto').checked = d.auto_enabled !== false; document.getElementById('cfg-routing-tag').checked = d.show_tier_tag !== false; if (d.tiers) { if (d.tiers.tiny) { document.getElementById('cfg-tier-tiny').value = d.tiers.tiny.model; document.getElementById('cfg-tier-tiny-on').checked = d.tiers.tiny.enabled; } if (d.tiers.std) { document.getElementById('cfg-tier-std').value = d.tiers.std.model; document.getElementById('cfg-tier-std-on').checked = d.tiers.std.enabled; } if (d.tiers.big) { document.getElementById('cfg-tier-big').value = d.tiers.big.model; document.getElementById('cfg-tier-big-on').checked = d.tiers.big.enabled; } } } catch(e) {} }
+async function cfgSetRouting(key, val) { var p = {}; if (key === 'auto') p.auto_enabled = val; if (key === 'tag') p.show_tier_tag = val; await callApi('POST', '/api/routing/config', p); }
+async function cfgSaveTiers() { var t = { tiny: {model: document.getElementById('cfg-tier-tiny').value, enabled: document.getElementById('cfg-tier-tiny-on').checked}, std: {model: document.getElementById('cfg-tier-std').value, enabled: document.getElementById('cfg-tier-std-on').checked}, big: {model: document.getElementById('cfg-tier-big').value, enabled: document.getElementById('cfg-tier-big-on').checked} }; var d = await callApi('POST', '/api/routing/config', {tiers: t}); if (d && d.ok) showToast('Tiers saved'); }
+var _classifierTimer = null;
+function cfgTestClassifier(q) { clearTimeout(_classifierTimer); var el = document.getElementById('cfg-test-result'); if (!q.trim()) { el.textContent = ''; return; } _classifierTimer = setTimeout(async function() { var d = await callApi('POST', '/api/routing/classify', {query: q}); if (d) el.textContent = 'Route: [' + d.tier.toUpperCase() + '] \u00b7 model: ' + d.model; }, 200); }
+async function cfgLoadPacks() { try { var d = await callApi('GET', '/api/packs'); if (!d || !d.packs) return; var el = document.getElementById('cfg-packs-list'); el.innerHTML = d.packs.map(function(p) { var st = p.installed ? '<span style="color:var(--lo-accent-2)">INSTALLED</span>' : '<span style="color:var(--lo-faint)">NOT INSTALLED</span>'; return '<div style="padding:8px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" onclick="cfgShowPack(\'' + escapeHtml(p.id) + '\')"><div style="display:flex;justify-content:space-between"><span style="color:var(--lo-ink);font-weight:500">' + escapeHtml(p.name) + '</span><span style="font-size:9px">' + st + ' \u00b7 ~' + p.estimated_size_mb + 'MB</span></div><div style="font-size:10px;color:var(--lo-dim);margin-top:2px">' + escapeHtml(p.description).substring(0,80) + '</div></div>'; }).join(''); } catch(e) {} }
+async function cfgShowPack(id) { var d = await callApi('GET', '/api/packs/' + encodeURIComponent(id)); if (!d) return; var el = document.getElementById('cfg-pack-detail'); var c = document.getElementById('cfg-pack-detail-content'); el.style.display = ''; var actions = d.installed ? '<button class="btn btn-sm" onclick="cfgReinstPack(\'' + escapeHtml(id) + '\')">REINGEST</button> <button class="btn btn-sm" style="color:#c0392b;border-color:#c0392b" onclick="cfgUninstPack(\'' + escapeHtml(id) + '\')">UNINSTALL</button>' : '<button class="btn btn-primary btn-sm" onclick="cfgInstPack(\'' + escapeHtml(id) + '\')">INSTALL PACK</button>'; c.innerHTML = '<div style="font-weight:500;color:var(--lo-ink);margin-bottom:4px">' + escapeHtml(d.name) + ' v' + escapeHtml(d.version) + '</div><div style="font-size:10px;color:var(--lo-dim);margin-bottom:8px">' + (d.installed ? 'INSTALLED' : 'NOT INSTALLED') + ' \u00b7 ' + d.documents.length + ' docs</div><div>' + actions + '</div>'; }
+async function cfgInstPack(id) { showToast('Installing...'); await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/install'); setTimeout(function() { cfgLoadPacks(); cfgShowPack(id); }, 5000); }
+async function cfgUninstPack(id) { if (!confirm('Uninstall this pack?')) return; await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/uninstall'); showToast('Uninstalled'); cfgLoadPacks(); document.getElementById('cfg-pack-detail').style.display = 'none'; }
+async function cfgReinstPack(id) { var d = await callApi('POST', '/api/packs/' + encodeURIComponent(id) + '/reingest'); if (d && d.ok) showToast('Re-ingested: ' + d.total_chunks + ' chunks'); }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
