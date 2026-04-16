@@ -60,6 +60,30 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at REAL DEFAULT (strftime('%s','now'))
 );
+
+CREATE TABLE IF NOT EXISTS installed_packs (
+  pack_id TEXT PRIMARY KEY,
+  version TEXT NOT NULL,
+  installed_at REAL DEFAULT (strftime('%s','now')),
+  install_path TEXT NOT NULL,
+  doc_count_success INTEGER NOT NULL,
+  doc_count_failed INTEGER NOT NULL,
+  total_bytes INTEGER,
+  manifest_snapshot TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pack_documents (
+  pack_id TEXT NOT NULL,
+  doc_id TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  sha256 TEXT,
+  bytes INTEGER,
+  fetched_at REAL,
+  ingested_at REAL,
+  chunk_count INTEGER,
+  PRIMARY KEY (pack_id, doc_id),
+  FOREIGN KEY (pack_id) REFERENCES installed_packs(pack_id)
+);
 """
 
 

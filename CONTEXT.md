@@ -4,6 +4,27 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16] — Session 5: RAG Packs + Emergency Preparedness Pack
+
+- What changed:
+  - **New `packs/` module** — named, discoverable bundles of documents installable with one click:
+    - `manifest.py`: PackManifest/PackDocument dataclasses, JSON loader
+    - `registry.py`: discovers bundled manifests from `packs/bundled/*.json`
+    - `fetcher.py`: downloads docs from publisher URLs with retry + SHA-256 + progress callback
+    - `installer.py`: orchestrates fetch → ingest pipeline, records to DB, supports uninstall + reingest
+  - **Emergency Preparedness pack** (`packs/bundled/emergency-preparedness-v1.json`): 12 curated docs from FEMA, U.S. Army (FM 21-76, FM 4-25.11, FM 3-25.26), Hesperian (Where There Is No Doctor/Dentist), NOAA, CDC, Ready.gov. ~280MB estimated. All public domain or CC BY-NC.
+  - **New DB tables**: `installed_packs` (pack install records + manifest snapshots) and `pack_documents` (per-doc fetch/ingest status + SHA-256 + chunk counts)
+  - **Pack API endpoints**: `GET /api/packs`, `GET /api/packs/<id>`, `POST /api/packs/<id>/install`, `POST /api/packs/<id>/uninstall`, `POST /api/packs/<id>/reingest`
+  - **KNOWLEDGE PACKS** CONFIG section: shows available packs with install status, detail drawer with document list + chunk counts, install/uninstall/reingest buttons
+  - Install progress emitted via SSE for real-time UI updates
+  - **Metadata-only distribution**: no document binaries in repo — everything fetched from publisher URLs at install time
+- Files changed:
+  - `meshtastic-bridge/packs/` — new module (5 files + bundled manifest)
+  - `meshtastic-bridge/db/schema.py` — added installed_packs + pack_documents tables
+  - `meshtastic-bridge/dashboard.py` — pack API endpoints + KNOWLEDGE PACKS config section
+
+---
+
 ## [2026-04-16] — Session 3: Auto Model Routing
 
 - What changed:

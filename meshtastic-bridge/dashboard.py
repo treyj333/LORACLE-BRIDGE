@@ -890,6 +890,94 @@ def api_routing_classify():
         return jsonify({"tier": "std", "error": str(e)})
 
 
+# ─── Pack endpoints ──────────────────────────────────────────────────────────
+
+@app.route("/api/packs", methods=["GET"])
+def api_packs():
+    """List available packs with install status."""
+    from packs.registry import list_available_packs
+    from packs.installer import get_installed_packs
+    available = list_available_packs()
+    installed = {}
+    if _bridge and hasattr(_bridge, "_db"):
+        for p in get_installed_packs(_bridge._db):
+            installed[p["pack_id"]] = p
+    for p in available:
+        inst = installed.get(p["id"])
+        p["installed"] = inst is not None
+        if inst:
+            p["installed_at"] = inst.get("installed_at")
+            p["doc_count_success"] = inst.get("doc_count_success", 0)
+            p["doc_count_failed"] = inst.get("doc_count_failed", 0)
+            p["total_bytes"] = inst.get("total_bytes", 0)
+    return jsonify({"packs": available})
+
+
+@app.route("/api/packs/<pack_id>", methods=["GET"])
+def api_pack_detail(pack_id):
+    """Full manifest + install status."""
+    from packs.registry import get_pack_manifest
+    from packs.installer import get_installed_packs, get_pack_documents
+    manifest = get_pack_manifest(pack_id)
+    if manifest is None:
+        return jsonify({"error": "Pack not found"}), 404
+    result = manifest.to_dict()
+    result["installed"] = False
+    if _bridge and hasattr(_bridge, "_db"):
+        for p in get_installed_packs(_bridge._db):
+            if p["pack_id"] == pack_id:
+                result["installed"] = True
+                result["installed_at"] = p.get("installed_at")
+                result["doc_count_success"] = p.get("doc_count_success", 0)
+                result["doc_count_failed"] = p.get("doc_count_failed", 0)
+                result["total_bytes"] = p.get("total_bytes", 0)
+                result["installed_docs"] = get_pack_documents(_bridge._db, pack_id)
+    return jsonify(result)
+
+
+@app.route("/api/packs/<pack_id>/install", methods=["POST"])
+def api_pack_install(pack_id):
+    """Start pack install (runs in background thread)."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    rag = getattr(_bridge, "rag_engine", None)
+    db = getattr(_bridge, "_db", None)
+    if db is None:
+        return jsonify({"error": "Database not initialized"}), 503
+
+    import threading
+    from packs.installer import install_pack as _install
+
+    def _run():
+        def _progress(event_type, data):
+            _emit_sse(event_type, data)
+        _install(pack_id, rag, db, progress_callback=_progress)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "status": "installing"})
+
+
+@app.route("/api/packs/<pack_id>/uninstall", methods=["POST"])
+def api_pack_uninstall(pack_id):
+    """Remove pack + its chunks from RAG."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    from packs.installer import uninstall_pack
+    result = uninstall_pack(pack_id, getattr(_bridge, "rag_engine", None), _bridge._db)
+    return jsonify(result)
+
+
+@app.route("/api/packs/<pack_id>/reingest", methods=["POST"])
+def api_pack_reingest(pack_id):
+    """Re-ingest existing local files."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    from packs.installer import reingest_pack
+    result = reingest_pack(pack_id, getattr(_bridge, "rag_engine", None), _bridge._db)
+    return jsonify(result)
+
+
 @app.route("/api/send-mesh", methods=["POST"])
 def api_send_mesh():
     """Send a manual message to the mesh from the dashboard."""
@@ -2622,6 +2710,19 @@ input[type="checkbox"] {
     </div>
   </details>
 
+  <!-- Knowledge Packs -->
+  <details class="lo-section" id="cfg-packs-section">
+    <summary class="lo-section-head">KNOWLEDGE PACKS</summary>
+    <div class="lo-section-body">
+      <div id="cfg-packs-list" style="margin-bottom:12px">
+        <span style="color:var(--lo-faint);font-size:10px">Loading packs...</span>
+      </div>
+      <div id="cfg-pack-detail" style="display:none;margin-top:12px;padding:12px 0;border-top:1px solid var(--lo-divider)">
+        <div id="cfg-pack-detail-content"></div>
+      </div>
+    </div>
+  </details>
+
   <!-- Data & Storage -->
   <details class="lo-section">
     <summary class="lo-section-head">DATA & STORAGE</summary>
@@ -3592,6 +3693,7 @@ async function loadConfigData() {
   cfgLoadRagDocs();
   cfgLoadDbStats();
   cfgLoadRouting();
+  cfgLoadPacks();
   loadLastBleDevice();
 }
 
@@ -3706,6 +3808,95 @@ async function clearHistory() {
   if (!confirm('Clear all conversation history? This cannot be undone.')) return;
   var d = await callApi('POST', '/api/clear-history', {});
   if (d && d.ok) showToast('Cleared history for ' + d.cleared + ' node(s)');
+}
+
+// ─── Knowledge Packs ───────────────────────────────────────────────────────
+
+async function cfgLoadPacks() {
+  try {
+    var d = await callApi('GET', '/api/packs');
+    if (!d || !d.packs) return;
+    var el = document.getElementById('cfg-packs-list');
+    if (d.packs.length === 0) {
+      el.innerHTML = '<span style="color:var(--lo-faint);font-size:10px">No packs available</span>';
+      return;
+    }
+    el.innerHTML = d.packs.map(function(p) {
+      var status = p.installed ?
+        '<span style="color:var(--lo-accent-2)">INSTALLED</span> \u00b7 ' + (p.doc_count_success || 0) + ' docs' :
+        '<span style="color:var(--lo-faint)">NOT INSTALLED</span>';
+      var size = p.estimated_size_mb ? ' \u00b7 ~' + p.estimated_size_mb + 'MB' : '';
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" onclick="cfgShowPackDetail(\'' + escapeHtml(p.id) + '\')">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="color:var(--lo-ink);font-size:11px;font-weight:500">' + escapeHtml(p.name) + '</span>' +
+          '<span style="font-size:9px">' + status + size + '</span>' +
+        '</div>' +
+        '<div style="color:var(--lo-dim);font-size:10px;margin-top:2px">' + escapeHtml(p.description).substring(0, 80) + '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {}
+}
+
+async function cfgShowPackDetail(packId) {
+  try {
+    var d = await callApi('GET', '/api/packs/' + encodeURIComponent(packId));
+    if (!d) return;
+    var el = document.getElementById('cfg-pack-detail');
+    var content = document.getElementById('cfg-pack-detail-content');
+    el.style.display = '';
+
+    var docsHtml = (d.documents || []).map(function(doc) {
+      var installed = (d.installed_docs || []).find(function(id) { return id.doc_id === doc.id; });
+      var icon = installed ? '\u25cf' : '\u25cb';
+      var chunks = installed ? ' \u00b7 ' + (installed.chunk_count || 0) + ' chunks' : '';
+      return '<div style="padding:3px 0;font-size:10px;color:var(--lo-dim)">' +
+        icon + ' ' + escapeHtml(doc.filename) + chunks +
+        (doc.attribution ? ' <span style="color:var(--lo-faint)">(' + escapeHtml(doc.license) + ')</span>' : '') +
+      '</div>';
+    }).join('');
+
+    var actions = '';
+    if (d.installed) {
+      actions = '<button class="btn btn-sm" onclick="cfgReinstallPack(\'' + escapeHtml(packId) + '\')">REINGEST</button> ' +
+                '<button class="btn btn-sm" style="color:#c0392b;border-color:#c0392b" onclick="cfgUninstallPack(\'' + escapeHtml(packId) + '\')">UNINSTALL</button>';
+    } else {
+      actions = '<button class="btn btn-primary btn-sm" onclick="cfgInstallPack(\'' + escapeHtml(packId) + '\')">INSTALL PACK</button>';
+    }
+
+    content.innerHTML =
+      '<div style="font-size:12px;font-weight:500;color:var(--lo-ink);margin-bottom:4px">' + escapeHtml(d.name) + ' \u00b7 v' + escapeHtml(d.version) + '</div>' +
+      '<div style="font-size:10px;color:var(--lo-dim);margin-bottom:8px">' +
+        (d.installed ? 'INSTALLED' : 'NOT INSTALLED') + ' \u00b7 ' + (d.documents || []).length + ' documents \u00b7 ~' + (d.estimated_size_mb || 0) + 'MB' +
+      '</div>' +
+      '<div style="font-size:10px;color:var(--lo-dim);margin-bottom:8px">' + escapeHtml(d.license_summary || '') + '</div>' +
+      '<div style="margin-bottom:8px">' + docsHtml + '</div>' +
+      '<div id="cfg-pack-progress" style="display:none;margin-bottom:8px"></div>' +
+      '<div>' + actions + '</div>';
+  } catch(e) {}
+}
+
+async function cfgInstallPack(packId) {
+  showToast('Installing pack... this may take a few minutes');
+  // Subscribe to SSE for progress
+  var progEl = document.getElementById('cfg-pack-progress');
+  if (progEl) { progEl.style.display = ''; progEl.innerHTML = '<span style="color:var(--lo-dim);font-size:10px">Starting download...</span>'; }
+  await callApi('POST', '/api/packs/' + encodeURIComponent(packId) + '/install');
+  // Poll for completion (SSE handles real-time, but also reload after)
+  setTimeout(function() { cfgLoadPacks(); cfgShowPackDetail(packId); }, 5000);
+}
+
+async function cfgUninstallPack(packId) {
+  if (!confirm('Uninstall this pack? Documents and RAG chunks will be removed.')) return;
+  var d = await callApi('POST', '/api/packs/' + encodeURIComponent(packId) + '/uninstall');
+  if (d && d.ok) showToast('Pack uninstalled');
+  cfgLoadPacks();
+  document.getElementById('cfg-pack-detail').style.display = 'none';
+}
+
+async function cfgReinstallPack(packId) {
+  var d = await callApi('POST', '/api/packs/' + encodeURIComponent(packId) + '/reingest');
+  if (d && d.ok) showToast('Re-ingested: ' + d.total_chunks + ' chunks');
+  cfgShowPackDetail(packId);
 }
 
 // ─── Model Routing Config ──────────────────────────────────────────────────
