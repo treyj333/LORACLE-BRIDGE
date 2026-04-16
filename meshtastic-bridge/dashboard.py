@@ -227,6 +227,12 @@ def index():
 @app.route("/api/state")
 def api_state():
     state = dict(_state)
+    # Live connection check — don't trust the cached flag
+    if _bridge:
+        try:
+            state["connected"] = _bridge._is_interface_alive()
+        except Exception:
+            state["connected"] = False
     state["uptime"] = int(time.time() - state["uptime_start"]) if state["uptime_start"] else 0
     state["messages"] = list(_messages)
     # Performance metrics
