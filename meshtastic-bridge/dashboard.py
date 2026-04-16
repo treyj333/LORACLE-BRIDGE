@@ -1642,6 +1642,284 @@ input[type="checkbox"] {
 }
 .lo-ob-skip:hover { color: var(--lo-dim); }
 
+/* ── View Toggle ──────────────────────────────────────────────────────────── */
+.lo-view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--lo-divider-strong);
+  margin-left: 12px;
+}
+.lo-view-toggle button {
+  padding: 3px 12px !important;
+  font-size: 10px !important;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: none;
+  background: none;
+  color: var(--lo-dim);
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.4;
+}
+.lo-view-toggle button.active {
+  background: var(--lo-ink);
+  color: var(--lo-bg);
+}
+
+/* ── Messenger Layout ─────────────────────────────────────────────────────── */
+.lo-messenger {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.lo-messenger.active { display: flex; }
+.lo-msg-panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 180px);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.lo-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--lo-divider-strong);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.lo-sidebar-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--lo-divider-strong);
+  padding: 0;
+}
+.lo-sidebar-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 8px 8px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lo-dim);
+  cursor: pointer;
+}
+.lo-sidebar-tabs button:hover { color: var(--lo-ink); }
+.lo-sidebar-tabs button.active { color: var(--lo-ink); border-bottom-color: var(--lo-ink); }
+.lo-sidebar-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--lo-divider);
+}
+.lo-sidebar-search input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--lo-divider-strong);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--lo-ink);
+  padding: 4px 0;
+  outline: none;
+}
+.lo-sidebar-search input::placeholder { color: var(--lo-faint); }
+.lo-contact-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.lo-contact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--lo-divider);
+}
+.lo-contact:hover { background: var(--lo-bg-deep); }
+.lo-contact.selected {
+  background: var(--lo-bg-deep);
+  border-left: 2px solid var(--lo-ink);
+  padding-left: 10px;
+}
+.lo-avatar {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--lo-divider-strong);
+  background: var(--lo-bg-deep);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lo-ink);
+  flex-shrink: 0;
+  position: relative;
+}
+.lo-avatar .lo-proto {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+}
+.lo-avatar .lo-proto.mt { background: var(--lo-accent-2); }
+.lo-avatar .lo-proto.mc { border: 1px solid var(--lo-accent-2); background: transparent; }
+.lo-contact-info { flex: 1; min-width: 0; }
+.lo-contact-name {
+  font-size: 11px;
+  color: var(--lo-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lo-contact-preview {
+  font-size: 10px;
+  color: var(--lo-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.lo-contact-meta {
+  flex-shrink: 0;
+  text-align: right;
+}
+.lo-unread-badge {
+  display: inline-block;
+  background: var(--lo-accent);
+  color: var(--lo-bg);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+  margin-bottom: 2px;
+}
+.lo-contact-time {
+  font-size: 9px;
+  color: var(--lo-faint);
+}
+.lo-sidebar-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--lo-divider-strong);
+  font-size: 9px;
+  color: var(--lo-faint);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ── Thread View ──────────────────────────────────────────────────────────── */
+.lo-thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.lo-thread-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lo-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.lo-thread-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--lo-divider-strong);
+  min-height: 44px;
+  flex-shrink: 0;
+}
+.lo-thread-header .lo-avatar { width: 28px; height: 28px; font-size: 10px; }
+.lo-thread-name { font-size: 12px; font-weight: 500; color: var(--lo-ink); }
+.lo-thread-meta {
+  font-size: 9px;
+  color: var(--lo-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-left: auto;
+}
+.lo-ai-toggle {
+  background: none;
+  border: 1px solid var(--lo-divider-strong);
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lo-dim);
+  padding: 2px 8px;
+  cursor: pointer;
+  margin-left: 8px;
+}
+.lo-ai-toggle:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
+.lo-ai-toggle.on { color: var(--lo-accent); border-color: var(--lo-accent); }
+.lo-thread-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  min-height: 0;
+}
+.lo-tmsg {
+  display: grid;
+  grid-template-columns: 52px 14px 1fr;
+  gap: 6px;
+  padding: 4px 0;
+  align-items: baseline;
+}
+.lo-tmsg-time { color: var(--lo-faint); font-size: 10px; }
+.lo-tmsg-arrow { text-align: center; font-size: 11px; }
+.lo-tmsg-arrow.in { color: var(--lo-dim); }
+.lo-tmsg-arrow.out { color: var(--lo-ink); }
+.lo-tmsg-arrow.ai { color: var(--lo-accent); }
+.lo-tmsg-body { color: var(--lo-ink); word-break: break-word; font-size: 12px; }
+.lo-tmsg-ai-badge {
+  display: inline-block;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0 4px;
+  border: 1px solid var(--lo-accent);
+  color: var(--lo-accent);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.lo-thread-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--lo-divider-strong);
+  flex-shrink: 0;
+}
+.lo-thread-composer .lo-prompt { color: var(--lo-accent); font-size: 14px; font-weight: 500; }
+.lo-thread-composer input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--lo-ink);
+  caret-color: var(--lo-accent);
+  outline: none;
+}
+.lo-thread-composer input::placeholder { color: var(--lo-faint); }
+.lo-char-count { font-size: 9px; color: var(--lo-faint); margin-right: 4px; }
+.lo-char-count.warn { color: var(--lo-accent); }
+.lo-char-count.over { color: var(--lo-dim); }
+
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast-container {
   position: fixed;
@@ -1755,21 +2033,90 @@ input[type="checkbox"] {
   <span class="lo-brand"><span class="lo-accent">LORACLE</span> BRIDGE</span>
   <span class="lo-conn-dot" id="hdr-conn-dot"></span>
   <span class="lo-conn-label" id="hdr-conn-label">DISCONNECTED</span>
-  <span class="lo-clock" id="hdr-clock">--:--:--</span>
+  <span class="lo-view-toggle">
+    <button class="active" data-view="messenger" onclick="switchView('messenger')">MESSENGER</button>
+    <button data-view="dashboard" onclick="switchView('dashboard')">DASHBOARD</button>
+  </span>
+  <span class="lo-clock" id="hdr-clock" style="margin-left:auto">--:--:--</span>
   <button id="help-toggle" title="Help">?</button>
   <button id="theme-toggle" title="Toggle theme">&#9681;</button>
+  <button onclick="switchView('config')" title="Settings" style="font-size:13px">&#9881;</button>
 </header>
 
-<!-- ── Tab Navigation ────────────────────────────────────────────────────── -->
-<nav class="lo-tabs">
-  <button class="lo-tab-btn active" data-tab="live">LIVE</button>
-  <button class="lo-tab-btn" data-tab="config">CONFIG</button>
-</nav>
+<!-- ══════════════════════════════════════════════════════════════════════════
+     MESSENGER VIEW
+     ══════════════════════════════════════════════════════════════════════ -->
+<div class="lo-messenger active" id="view-messenger">
+  <!-- Reuse mesh header -->
+  <div class="lo-mesh-header" id="msg-mesh-header">
+    <svg viewBox="0 0 700 68" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <defs><style>
+        .mh-link { stroke: var(--lo-accent-2); stroke-width: 1; fill: none; opacity: 0.5; }
+        .mh-mynode { fill: var(--lo-accent); }
+        .mh-peer { fill: var(--lo-accent-2); }
+        .mh-packet { stroke: var(--lo-accent-2); stroke-width: 1.5; stroke-dasharray: 4 10; fill: none; }
+        .mh-packet-out { stroke: var(--lo-accent); }
+      </style></defs>
+      <g id="mh-links2"></g>
+      <circle cx="350" cy="34" r="5" fill="none" stroke="var(--lo-accent)" stroke-width="1" opacity="0.9">
+        <animate attributeName="r" values="5;26" dur="2.8s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.9;0" dur="2.8s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="350" cy="34" r="5" class="mh-mynode"/>
+      <g id="mh-peers2"></g>
+    </svg>
+  </div>
+
+  <div class="lo-msg-panes">
+    <!-- Sidebar -->
+    <div class="lo-sidebar" id="messenger-sidebar">
+      <div class="lo-sidebar-tabs">
+        <button class="active" data-stab="dm" onclick="setSidebarTab('dm',this)">DMs</button>
+        <button data-stab="channel" onclick="setSidebarTab('channel',this)">Channels</button>
+        <button data-stab="all" onclick="setSidebarTab('all',this)">All</button>
+      </div>
+      <div class="lo-sidebar-search">
+        <input type="text" id="sidebar-search" placeholder="search contacts..." oninput="filterSidebar(this.value)">
+      </div>
+      <div class="lo-contact-list" id="contact-list">
+        <div style="padding:20px;text-align:center;color:var(--lo-faint);font-size:10px;letter-spacing:0.1em;text-transform:uppercase">
+          NO CONVERSATIONS YET
+        </div>
+      </div>
+      <div class="lo-sidebar-footer">
+        <span id="sidebar-radios"></span>
+        <span id="sidebar-unread"></span>
+      </div>
+    </div>
+
+    <!-- Thread View -->
+    <div class="lo-thread" id="thread-view">
+      <div class="lo-thread-empty" id="thread-empty">
+        SELECT A CONVERSATION
+      </div>
+      <div id="thread-active" style="display:none;flex:1;display:none;flex-direction:column;min-height:0">
+        <div class="lo-thread-header" id="thread-header">
+          <div class="lo-avatar" id="thread-avatar"></div>
+          <span class="lo-thread-name" id="thread-name"></span>
+          <span class="lo-thread-meta" id="thread-meta"></span>
+          <button class="lo-ai-toggle" id="thread-ai-toggle" onclick="toggleThreadAi()">AI: --</button>
+        </div>
+        <div class="lo-thread-messages" id="thread-messages"></div>
+        <div class="lo-thread-composer">
+          <span class="lo-prompt">&gt;</span>
+          <input type="text" id="thread-input" placeholder="type a message..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();threadSend()}" oninput="updateCharCount()">
+          <span class="lo-char-count" id="thread-char-count"></span>
+          <button class="lo-send" id="thread-send-btn" onclick="threadSend()">SEND</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════════════════════════════════════════
-     LIVE TAB
+     DASHBOARD VIEW (was LIVE TAB)
      ══════════════════════════════════════════════════════════════════════ -->
-<section id="tab-live" class="lo-panel active">
+<section id="tab-live" class="lo-panel">
 
   <!-- Status Banner -->
   <div class="lo-status">
@@ -2447,7 +2794,7 @@ async function poll() {
     // Connection manager (always update)
     updateConnMgr(d);
 
-    if (App.currentTab === 'live') {
+    if (App_view === 'dashboard') {
       updateMeshHeader(d);
       updateStats(d);
       updateMeshMap(d);
@@ -2469,12 +2816,16 @@ async function poll() {
       }
     }
 
-    if (App.currentTab === 'config') {
+    if (App_view === 'config') {
       document.getElementById('cfg-uptime').textContent = formatUptime(d.uptime);
       updateRadiosSection(d.backends || []);
       var aiToggle = document.getElementById('cfg-ai-replies');
       if (aiToggle) aiToggle.checked = d.ai_replies_enabled !== false;
     }
+
+    // Messenger updates
+    pollMessenger();
+
   } catch(e) { /* silent retry */ }
 }
 
@@ -3430,9 +3781,261 @@ async function cfgToggleAiReplies(enabled) {
   await callApi('POST', '/api/ai-replies', {enabled: enabled});
 }
 
+// ─── View Toggle ───────────────────────────────────────────────────────────
+
+var App_view = 'messenger';  // 'messenger' | 'dashboard' | 'config'
+
+function switchView(view) {
+  App_view = view;
+  // Hide all views
+  var messenger = document.getElementById('view-messenger');
+  var dashboard = document.getElementById('tab-live');
+  var config = document.getElementById('tab-config');
+  messenger.classList.remove('active');
+  dashboard.classList.remove('active');
+  config.classList.remove('active');
+  // Show selected
+  if (view === 'messenger') messenger.classList.add('active');
+  else if (view === 'dashboard') dashboard.classList.add('active');
+  else if (view === 'config') config.classList.add('active');
+  // Update toggle buttons
+  document.querySelectorAll('.lo-view-toggle button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  // Trigger config load if needed
+  if (view === 'config' && !App.configLoaded) loadConfigData();
+  if (view === 'dashboard') {
+    App.currentTab = 'live';
+    setTimeout(function() { initGeoMap(); if (_geoMap) _geoMap.invalidateSize(); }, 100);
+  }
+  if (view === 'messenger') {
+    App.currentTab = 'messenger';
+    loadSidebar();
+  }
+}
+
+// ─── Messenger Sidebar ─────────────────────────────────────────────────────
+
+var _sidebarTab = 'dm';
+var _sidebarSearch = '';
+var _sidebarContacts = [];
+var _selectedThread = null;
+
+function setSidebarTab(tab, btn) {
+  _sidebarTab = tab;
+  document.querySelectorAll('.lo-sidebar-tabs button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.stab === tab);
+  });
+  renderSidebar();
+}
+
+function filterSidebar(q) {
+  _sidebarSearch = q.toLowerCase();
+  renderSidebar();
+}
+
+async function loadSidebar() {
+  try {
+    var r = await fetch('/api/threads');
+    var d = await r.json();
+    _sidebarContacts = d.threads || [];
+    renderSidebar();
+    // Footer
+    var state = App.state || {};
+    var backends = state.backends || [];
+    var radioText = backends.map(function(b) { return b.protocol.toUpperCase() + ' ' + (b.connected ? 'on' : 'off'); }).join(' \u00b7 ');
+    document.getElementById('sidebar-radios').textContent = radioText || 'MT';
+    var totalUnread = 0;
+    _sidebarContacts.forEach(function(c) { totalUnread += (c.unread_count || 0); });
+    document.getElementById('sidebar-unread').textContent = totalUnread > 0 ? '\u2709 ' + totalUnread + ' unread' : '';
+  } catch(e) {}
+}
+
+function renderSidebar() {
+  var list = document.getElementById('contact-list');
+  var filtered = _sidebarContacts;
+  // Tab filter
+  if (_sidebarTab === 'dm') filtered = filtered.filter(function(c) { return !c.is_channel; });
+  else if (_sidebarTab === 'channel') filtered = filtered.filter(function(c) { return c.is_channel; });
+  // Search
+  if (_sidebarSearch) {
+    filtered = filtered.filter(function(c) {
+      var searchable = (c.short_name + ' ' + (c.long_name || '') + ' ' + (c.last_message_text || '')).toLowerCase();
+      return searchable.indexOf(_sidebarSearch) !== -1;
+    });
+  }
+  if (filtered.length === 0) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--lo-faint);font-size:10px;letter-spacing:0.1em;text-transform:uppercase">NO CONVERSATIONS YET</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(function(c) {
+    var shortId = c.short_name || c.id.slice(-6);
+    var avatarChars = shortId.replace(/^!/, '').slice(0, 2).toUpperCase();
+    var proto = (c.protocol === 'meshcore' || c.protocol === 'mc') ? 'mc' : 'mt';
+    var name = c.long_name ? (c.short_name + ' \u00b7 ' + c.long_name) : c.short_name;
+    var preview = c.last_message_text ? escapeHtml(c.last_message_text).substring(0, 40) : '';
+    var timeStr = c.last_heard ? relativeTime(c.last_heard) : '';
+    var selected = _selectedThread === c.id ? ' selected' : '';
+    var unread = (c.unread_count > 0) ?
+      '<div class="lo-unread-badge">' + (c.unread_count > 99 ? '99+' : c.unread_count) + '</div>' : '';
+    return '<div class="lo-contact' + selected + '" onclick="openThread(\'' + escapeHtml(c.id) + '\')">' +
+      '<div class="lo-avatar">' + avatarChars + '<div class="lo-proto ' + proto + '"></div></div>' +
+      '<div class="lo-contact-info">' +
+        '<div class="lo-contact-name">' + escapeHtml(name) + '</div>' +
+        '<div class="lo-contact-preview">' + preview + '</div>' +
+      '</div>' +
+      '<div class="lo-contact-meta">' + unread +
+        '<div class="lo-contact-time">' + timeStr + '</div>' +
+      '</div></div>';
+  }).join('');
+}
+
+// ─── Thread View ───────────────────────────────────────────────────────────
+
+var _threadContact = null;
+var _threadMessages = [];
+
+async function openThread(contactId) {
+  _selectedThread = contactId;
+  renderSidebar();
+  // Fetch thread
+  try {
+    var r = await fetch('/api/threads/' + encodeURIComponent(contactId));
+    var d = await r.json();
+    _threadContact = d.contact;
+    _threadMessages = d.messages || [];
+    // Mark as read
+    fetch('/api/threads/' + encodeURIComponent(contactId) + '/open', {method: 'POST'});
+    renderThread();
+    // Update sidebar unread
+    loadSidebar();
+  } catch(e) {
+    showToast('Failed to load thread', 'error');
+  }
+}
+
+function renderThread() {
+  if (!_threadContact) return;
+  var empty = document.getElementById('thread-empty');
+  var active = document.getElementById('thread-active');
+  empty.style.display = 'none';
+  active.style.display = 'flex';
+
+  // Header
+  var shortId = _threadContact.short_name || _threadContact.id.slice(-6);
+  var avatarChars = shortId.replace(/^!/, '').slice(0, 2).toUpperCase();
+  document.getElementById('thread-avatar').textContent = avatarChars;
+  var name = _threadContact.long_name ? shortId + ' \u00b7 ' + _threadContact.long_name : shortId;
+  document.getElementById('thread-name').textContent = name;
+
+  var metaParts = [];
+  var proto = (_threadContact.protocol === 'meshcore' || _threadContact.protocol === 'mc') ? 'MC' : 'MT';
+  metaParts.push(proto);
+  if (_threadContact.last_hops !== null && _threadContact.last_hops !== undefined) metaParts.push(_threadContact.last_hops + ' hops');
+  if (_threadContact.last_rssi) metaParts.push(_threadContact.last_rssi + ' dBm');
+  if (_threadContact.last_heard) metaParts.push('heard ' + relativeTime(_threadContact.last_heard));
+  document.getElementById('thread-meta').textContent = metaParts.join(' \u00b7 ');
+
+  // AI toggle
+  var aiBtn = document.getElementById('thread-ai-toggle');
+  var aiVal = _threadContact.ai_enabled;
+  if (aiVal === 1) { aiBtn.textContent = 'AI: ON'; aiBtn.className = 'lo-ai-toggle on'; }
+  else if (aiVal === 0) { aiBtn.textContent = 'AI: OFF'; aiBtn.className = 'lo-ai-toggle'; }
+  else { aiBtn.textContent = 'AI: INHERIT'; aiBtn.className = 'lo-ai-toggle'; }
+
+  // Messages
+  var el = document.getElementById('thread-messages');
+  if (_threadMessages.length === 0) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--lo-faint);font-size:10px;text-transform:uppercase;letter-spacing:0.1em">NO MESSAGES YET</div>';
+  } else {
+    el.innerHTML = _threadMessages.map(function(m) {
+      var arrowClass = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
+      var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
+      var aiBadge = m.author === 'ai' ? '<span class="lo-tmsg-ai-badge">AI</span>' : '';
+      var channelHint = '';
+      if (m.originating_channel_id) {
+        channelHint = '<div style="font-size:9px;color:var(--lo-faint);margin-bottom:2px">\u2196 replying to channel message</div>';
+      }
+      return '<div class="lo-tmsg">' +
+        '<span class="lo-tmsg-time">' + formatTime(m.timestamp) + '</span>' +
+        '<span class="lo-tmsg-arrow ' + arrowClass + '">' + arrow + '</span>' +
+        '<span class="lo-tmsg-body">' + channelHint + escapeHtml(m.text) + aiBadge + '</span>' +
+        '</div>';
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // Composer placeholder
+  document.getElementById('thread-input').placeholder = 'type a message to ' + shortId + '...';
+}
+
+async function threadSend() {
+  if (!_selectedThread) return;
+  var input = document.getElementById('thread-input');
+  var text = input.value.trim();
+  if (!text || text.length > 233) return;
+  input.value = '';
+  updateCharCount();
+  document.getElementById('thread-send-btn').disabled = true;
+  try {
+    await callApi('POST', '/api/threads/' + encodeURIComponent(_selectedThread) + '/send', {text: text});
+    // Refresh thread
+    await openThread(_selectedThread);
+  } catch(e) {
+    showToast('Send failed', 'error');
+  }
+  document.getElementById('thread-send-btn').disabled = false;
+  input.focus();
+}
+
+async function toggleThreadAi() {
+  if (!_selectedThread) return;
+  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(_selectedThread) + '/ai-toggle');
+  if (d) {
+    _threadContact.ai_enabled = d.ai_enabled;
+    renderThread();
+  }
+}
+
+function updateCharCount() {
+  var input = document.getElementById('thread-input');
+  var el = document.getElementById('thread-char-count');
+  var len = input.value.length;
+  el.textContent = len + ' / 233';
+  el.className = 'lo-char-count' + (len > 233 ? ' over' : len > 210 ? ' warn' : '');
+  document.getElementById('thread-send-btn').disabled = len > 233;
+}
+
+// ─── Messenger Poll Integration ────────────────────────────────────────────
+
+// Refresh sidebar every poll when messenger is active
+var _lastSidebarRefresh = 0;
+function pollMessenger() {
+  if (App_view !== 'messenger') return;
+  var now = Date.now();
+  if (now - _lastSidebarRefresh > 3000) {
+    _lastSidebarRefresh = now;
+    loadSidebar();
+    // Refresh current thread if open
+    if (_selectedThread) {
+      fetch('/api/threads/' + encodeURIComponent(_selectedThread))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.messages) {
+            var oldLen = _threadMessages.length;
+            _threadMessages = d.messages;
+            _threadContact = d.contact;
+            if (d.messages.length !== oldLen) renderThread();
+          }
+        }).catch(function() {});
+    }
+  }
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 
 loadLastBleDevice();
+loadSidebar();
 poll();
 setInterval(poll, 2000);
 </script>
