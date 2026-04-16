@@ -952,10 +952,10 @@ body {
 
 /* ── Shell ────────────────────────────────────────────────────────────────── */
 .lo-shell {
-  max-width: 960px;
+  max-width: 1200px;
   margin: 0 auto;
+  padding: 0 24px;
   background: var(--lo-bg);
-  border-radius: 12px;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -966,20 +966,28 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 16px;
+  padding: 10px 0;
   background: var(--lo-bg-deep);
-  border-radius: 12px 12px 0 0;
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--lo-dim);
   flex-wrap: wrap;
+  border-bottom: 1px solid var(--lo-divider-strong);
 }
 .lo-title-bar .lo-brand {
   color: var(--lo-ink);
   font-weight: 500;
-  margin-right: auto;
 }
+.lo-conn-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--lo-faint);
+  margin-left: 10px;
+}
+.lo-conn-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
+.lo-conn-label { color: var(--lo-dim); margin-right: auto; }
 .lo-title-bar .lo-brand .lo-accent { color: var(--lo-accent); }
 .lo-clock { font-weight: 500; color: var(--lo-ink); }
 .lo-title-bar button {
@@ -994,7 +1002,7 @@ nav.lo-tabs {
   display: flex;
   gap: 0;
   border-bottom: 1px solid var(--lo-divider-strong);
-  padding: 0 16px;
+  padding: 0;
 }
 .lo-tab-btn {
   background: none; border: none; border-bottom: 2px solid transparent;
@@ -1008,7 +1016,7 @@ nav.lo-tabs {
 .lo-tab-btn.active { color: var(--lo-ink); border-bottom-color: var(--lo-ink); }
 
 /* ── Tab Panels ───────────────────────────────────────────────────────────── */
-.lo-panel { display: none; padding: 0 16px 16px; flex: 1; }
+.lo-panel { display: none; padding: 0 0 24px; flex: 1; }
 .lo-panel.active { display: block; }
 
 /* ── Status Banner ────────────────────────────────────────────────────────── */
@@ -1016,7 +1024,7 @@ nav.lo-tabs {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 0;
+  padding: 14px 0;
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1058,7 +1066,7 @@ nav.lo-tabs {
 }
 .lo-stat {
   flex: 1;
-  padding: 14px 16px;
+  padding: 18px 16px;
   border-right: 1px solid var(--lo-divider);
 }
 .lo-stat:last-child { border-right: none; }
@@ -1278,11 +1286,12 @@ nav.lo-tabs {
 .lo-section > summary, .lo-section-head {
   display: flex;
   align-items: center;
-  padding: 12px 0;
-  font-size: 10px;
+  padding: 16px 0;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--lo-dim);
+  color: var(--lo-ink);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -1290,19 +1299,20 @@ nav.lo-tabs {
 .lo-section > summary::-webkit-details-marker { display: none; }
 .lo-section > summary::before, .lo-section-head::before {
   content: '\25B8';
-  margin-right: 8px;
+  margin-right: 10px;
   font-size: 9px;
   transition: transform 0.2s;
+  color: var(--lo-dim);
 }
 .lo-section[open] > summary::before { transform: rotate(90deg); }
 .lo-section-body {
-  padding: 0 0 14px;
+  padding: 0 0 20px;
 }
 .lo-form-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 0;
+  padding: 8px 0;
   flex-wrap: wrap;
 }
 .lo-form-label {
@@ -1595,7 +1605,8 @@ input[type="checkbox"] {
 <!-- ── Title Bar ─────────────────────────────────────────────────────────── -->
 <header class="lo-title-bar">
   <span class="lo-brand"><span class="lo-accent">LORACLE</span> BRIDGE</span>
-  <span id="hdr-node"></span>
+  <span class="lo-conn-dot" id="hdr-conn-dot"></span>
+  <span class="lo-conn-label" id="hdr-conn-label">DISCONNECTED</span>
   <span class="lo-clock" id="hdr-clock">--:--:--</span>
   <button id="help-toggle" title="Help">?</button>
   <button id="theme-toggle" title="Toggle theme">&#9681;</button>
@@ -1709,6 +1720,16 @@ input[type="checkbox"] {
       NODE MAP <span style="margin-left:auto" id="geo-node-count"></span>
     </div>
     <div id="geo-map" class="lo-geo-map"></div>
+  </div>
+
+  <!-- Node List (scrollable) -->
+  <div style="border-bottom:1px solid var(--lo-divider-strong);padding:14px 0">
+    <div style="display:flex;align-items:center;margin-bottom:8px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--lo-dim)">
+      NODES <span style="margin-left:auto" id="node-list-count"></span>
+    </div>
+    <div id="node-list" style="max-height:180px;overflow-y:auto;font-size:11px">
+      <span style="color:var(--lo-faint)">Waiting for nodes...</span>
+    </div>
   </div>
 
   <!-- Message Feed -->
@@ -2250,6 +2271,12 @@ async function poll() {
     var d = await r.json();
     App.state = d;
 
+    // Title bar connection indicator
+    var hdrDot = document.getElementById('hdr-conn-dot');
+    var hdrLabel = document.getElementById('hdr-conn-label');
+    hdrDot.className = d.connected ? 'lo-conn-dot on' : 'lo-conn-dot';
+    hdrLabel.textContent = d.connected ? 'CONNECTED' : 'DISCONNECTED';
+
     // Status banner
     var pulse = document.getElementById('status-pulse');
     pulse.style.background = d.connected ? 'var(--lo-accent-2)' : 'var(--lo-faint)';
@@ -2322,6 +2349,28 @@ function updateStats(d) {
   document.getElementById('stat-radios').textContent = backends.length || 1;
   if (backends.length > 0) {
     document.getElementById('stat-radios-sub').textContent = backends.map(function(b) { return b.protocol.toUpperCase(); }).join('+');
+  }
+
+  // Node list
+  var nodeListEl = document.getElementById('node-list');
+  var nodeCountEl = document.getElementById('node-list-count');
+  var nodeIds = Object.keys(allNodes).sort();
+  nodeCountEl.textContent = nodeIds.length;
+  if (nodeIds.length === 0) {
+    nodeListEl.innerHTML = '<span style="color:var(--lo-faint)">Waiting for nodes...</span>';
+  } else {
+    var positions = d.node_positions || {};
+    var nodeMeta = d.node_meta || {};
+    nodeListEl.innerHTML = nodeIds.map(function(nid) {
+      var shortId = nid.length > 8 ? nid.slice(-6) : nid;
+      var pos = positions[nid] || {};
+      var meta = nodeMeta[nid] || {};
+      var parts = ['<span style="color:var(--lo-ink);min-width:60px;display:inline-block">' + escapeHtml(shortId) + '</span>'];
+      if (typeof meta.hops === 'number') parts.push(meta.hops === 0 ? 'direct' : meta.hops + 'h');
+      if (pos.lat) parts.push(pos.lat.toFixed(2) + ',' + pos.lon.toFixed(2));
+      if (pos.last_update) parts.push(relativeTime(pos.last_update));
+      return '<div style="padding:3px 0;border-bottom:1px solid var(--lo-divider);display:flex;gap:12px;color:var(--lo-dim)">' + parts.join('<span style="color:var(--lo-faint)"> \u00b7 </span>') + '</div>';
+    }).join('');
   }
 }
 
@@ -2408,16 +2457,21 @@ function updateMeshMap(d) {
   Object.keys(positions).forEach(function(n) { allNodeIds[n] = true; });
   var nodeList = Object.keys(allNodeIds);
 
-  nodeList.forEach(function(nodeId) {
+  // Distribute evenly around concentric rings to avoid cluster
+  var total = nodeList.length;
+  nodeList.forEach(function(nodeId, idx) {
     var h = hashNodeId(nodeId);
-    // Generate stable position: distribute around center, avoid center cluster
-    var angle = (h % 360) * Math.PI / 180;
-    var radius = 60 + (h % 80);
+    // Place nodes in concentric rings — golden angle for even spread
+    var goldenAngle = 2.399963;  // ~137.5 degrees in radians
+    var angle = idx * goldenAngle;
+    // Ring radius grows with sqrt(index) for even area distribution
+    var maxR = Math.min(cx - 30, cy - 20);
+    var radius = 40 + (Math.sqrt((idx + 1) / Math.max(total, 1)) * (maxR - 40));
     var nx = cx + Math.cos(angle) * radius;
-    var ny = cy + Math.sin(angle) * (radius * 0.7);
+    var ny = cy + Math.sin(angle) * (radius * 0.75);
     // Clamp to viewBox
-    nx = Math.max(40, Math.min(560, nx));
-    ny = Math.max(25, Math.min(240, ny));
+    nx = Math.max(30, Math.min(570, nx));
+    ny = Math.max(18, Math.min(245, ny));
 
     var meta = nodeMeta[nodeId] || {};
     var pos = positions[nodeId] || {};
@@ -2716,11 +2770,12 @@ async function loadCoverage() {
 }
 
 function covColorForRssi(rssi) {
+  // Must use hex colors (not CSS vars) — Leaflet canvas gradient can't parse var()
   if (rssi == null) return '#c0392b';
-  if (rssi >= -60)  return 'var(--lo-accent-2)';
+  if (rssi >= -60)  return '#0f6e56';
   if (rssi >= -80)  return '#7dcea0';
   if (rssi >= -95)  return '#d4a017';
-  if (rssi >= -110) return 'var(--lo-accent)';
+  if (rssi >= -110) return '#ff4f00';
   return '#c0392b';
 }
 
@@ -2778,7 +2833,7 @@ function renderCoverage() {
     });
     _covHeatLayer = L.heatLayer(heatPoints, {
       radius: 55, blur: 35, maxZoom: 15, minOpacity: 0.55,
-      gradient: { 0.0: '#7a0000', 0.2: '#c0392b', 0.4: 'var(--lo-accent)', 0.6: '#d4a017', 0.8: '#7dcea0', 1.0: 'var(--lo-accent-2)' }
+      gradient: { 0.0: '#7a0000', 0.2: '#c0392b', 0.4: '#ff4f00', 0.6: '#d4a017', 0.8: '#7dcea0', 1.0: '#0f6e56' }
     }).addTo(_covMap);
   }
 
