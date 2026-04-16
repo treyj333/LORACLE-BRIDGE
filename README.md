@@ -48,7 +48,7 @@ You don't need to install any of this yourself. The launch script handles everyt
 | Software | What It Does | How It's Installed |
 |----------|-------------|-------------------|
 | **Homebrew** | macOS package manager used to install everything else | Auto-installed if missing |
-| **Python 3.9+** | Runs the bridge code | Auto-installed via Homebrew if missing |
+| **Python 3.10+** | Runs the bridge code (3.10+ required for MeshCore support) | Auto-installed via Homebrew if missing |
 | **Ollama** | Runs AI models locally on your machine — no cloud needed | Auto-installed via Homebrew (macOS) or install script (Linux) |
 | **AI Model** | Auto-selected based on your RAM (see below) | Auto-pulled by Ollama on first run |
 
@@ -143,24 +143,40 @@ http://localhost:8000
 
 | Tab | What It Does |
 |-----|-------------|
-| **Dashboard** | Live status cards (connection, model, messages, nodes, avg response time, RAG), recent message feed, and a **chat panel** to test the LLM directly from your browser |
-| **Messages** | Full message log with direction filters (In/Out/All), text search, and auto-scroll |
-| **Controls** | Switch AI models, edit the system prompt, adjust response length and chunk delay, toggle RAG, **add web URLs to the knowledge base**, manage ingested documents, clear conversation history |
-| **Debug** | Live color-coded log viewer (filterable by level), firmware/library versions, performance metrics, thread and queue internals |
-| **Guide** | Built-in quick start, connection method explanations, mesh command reference, and troubleshooting tips |
-| **Dead Drop** | *(addon)* Encrypted message queue — pending/delivered status, purge controls, stats |
-| **Triage** | *(addon)* Medical reference search — query TCCC knowledge base, manage medical docs, ingest URLs |
-| **Brief** | *(addon)* Situation reports — latest SITREP, generate on demand, history, export as text/PDF |
+| **LIVE** | Animated mesh header, stat strip (messages, nodes, reply time, docs), schematic mesh map with peer nodes, unified message feed with direction filters and search, composer bar for direct LLM chat, collapsible system log viewer, and coverage heatmap section |
+| **CONFIG** | Connection management (USB/TCP/BLE), model switching, system prompt, response settings, RAG knowledge base (toggle, URL ingest, file upload, document list), history, geographic Leaflet map, appearance (light/dark theme), about, and addon sections (Dead Drop, Triage, Brief) |
 
-### Chat Panel
+### Composer Bar
 
-The Dashboard tab includes a **chat panel** at the bottom where you can type messages and get AI responses directly — no radio needed. This is useful for testing the LLM, tuning the system prompt, and verifying the knowledge base works before deploying over the mesh.
+The LIVE tab includes a **composer bar** at the bottom where you can type messages and get AI responses directly — no radio needed. This is useful for testing the LLM, tuning the system prompt, and verifying the knowledge base works before deploying over the mesh.
 
 The dashboard updates every 2 seconds. To change the port:
 
 ```bash
 ./mesh-llm.sh --dashboard-port 9000
 ```
+
+---
+
+## Supported Protocols
+
+LORACLE Bridge supports two mesh radio protocols:
+
+| Protocol | Library | Radios | Status |
+|----------|---------|--------|--------|
+| **Meshtastic** | `meshtastic>=2.3.0` | T-Beam, Heltec, RAK, etc. | Full support (serial, TCP, BLE) |
+| **MeshCore** | `meshcore>=2.2.1` | MeshCore companion devices | DM support (serial, TCP, BLE). Requires Python 3.10+. |
+
+You can run **both simultaneously** with `--second-radio`:
+
+```bash
+./mesh-llm.sh --second-radio meshcore:serial:/dev/ttyUSB1
+```
+
+New CLI flags:
+- `--protocol <auto|meshtastic|meshcore>` — override protocol detection for the primary radio
+- `--second-radio protocol:transport:params` — connect a second radio
+- `--ai-replies <on|off>` — toggle AI auto-replies globally
 
 ---
 
@@ -261,7 +277,7 @@ The script will automatically:
 
 You can also add web pages to the knowledge base directly from the dashboard:
 
-1. Open `http://localhost:8000` and go to the **Controls** tab
+1. Open `http://localhost:8000` and go to the **CONFIG** tab
 2. Scroll to **Knowledge Base (RAG)**
 3. Paste a URL and click **Add URL**
 4. The bridge fetches the page, extracts the text, and ingests it
@@ -270,7 +286,7 @@ The page is saved as a `.txt` file in `CONTEXT FILES/` so it persists across res
 
 ### Managing Documents
 
-From the **dashboard** (Controls > Knowledge Base), you can view all ingested documents and delete individual ones.
+From the **dashboard** (CONFIG > Knowledge Base), you can view all ingested documents and delete individual ones.
 
 From the **command line:**
 ```bash
@@ -387,7 +403,7 @@ Leave encrypted messages for mesh nodes that get picked up when they reconnect. 
 - Nodes register encryption keys with `!drop-key <passphrase>`
 - Messages encrypted with Fernet (AES-128-CBC + HMAC) at rest on the bridge
 - Auto-expire after 72 hours
-- Dashboard tab shows pending/delivered status
+- CONFIG tab shows pending/delivered status
 
 ### LORACLE TRIAGE — Offline Medical Reference
 
@@ -442,13 +458,13 @@ All addons load automatically — no flags needed. Just run `./mesh-llm.sh`.
 
 Beyond addons, the dashboard exposes two map-based features built on the radio's GPS-aware traffic:
 
-### Live Node Map (Messages tab)
+### Live Node Map (CONFIG > Geographic Map)
 - Bright pulsing markers for every node with a known GPS fix
 - Marker label shows a short node id and **hop count** (e.g. `ac12f3 · 2h`)
 - Click any node → popup with lat/lon, hop count, age, and a **DM this node** button that pre-fills the Send Message form so you can reply directly
 - Stale fixes (no update >10 min) flip to amber
 
-### Coverage Heatmap (Coverage tab)
+### Coverage Heatmap (LIVE > Coverage)
 The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that has both signal info and a known position to `~/.mesh-llm/coverage.jsonl`. The Coverage tab visualizes that data:
 
 - **Heatmap** mode (default): Leaflet.heat with a high-contrast green→red gradient
@@ -457,7 +473,7 @@ The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that h
 - **Dead zones** toggle: highlights cells where nodes traveled but signal was poor or missing
 - Time window filter: last hour / 6h / 24h / all-time
 - Min-RSSI slider, persistent legend
-- **Auto-refreshes every ~10 s** while the Coverage tab is open — no need to click Refresh manually
+- **Auto-refreshes every ~10 s** while the Coverage section is open — no need to click Refresh manually
 - **Disconnected banner** appears whenever the bridge has no radio attached, warning that the data on screen is from the last connected session and not live
 - **Clear log** button (red, in the toolbar) wipes `~/.mesh-llm/coverage.jsonl` and resets the in-memory throttle so the next sample logs immediately. Use this when you want to start fresh after moving locations or changing antennas
 
@@ -491,11 +507,11 @@ Greeter status (counts, queue length, grace remaining, current message) is visib
 
 ### Manual Broadcast: Welcome → Public
 
-The dashboard's Messages tab has a **Welcome → Public** button next to the Send button. Click it and the Send Message form pre-fills with the current greeter text, the recipient drops to **Broadcast**, and the channel is set to **Ch 0**. Review the text, then click **Send** to broadcast it. It does **not** auto-send — accidental clicks won't spam the channel.
+The dashboard's LIVE tab has a **Welcome → Public** button next to the Send button. Click it and the Send Message form pre-fills with the current greeter text, the recipient drops to **Broadcast**, and the channel is set to **Ch 0**. Review the text, then click **Send** to broadcast it. It does **not** auto-send — accidental clicks won't spam the channel.
 
 ### Ask LORACLE from the Dashboard
 
-The Send Message card on the Messages tab has a **Mode** selector with two options:
+The LIVE tab composer has a **Mode** selector with two options:
 
 - **Raw send** (default) — whatever you type is broadcast or DM'd as-is over the mesh, exactly like before. LORACLE does **not** see it (the bridge's own radio doesn't hear its own transmissions), so don't use this mode to ask questions.
 - **Ask LORACLE** — the text becomes a question to the local LLM. The answer is shown in the message log *and* (optionally) transmitted over the mesh.
@@ -634,7 +650,7 @@ loracle/
 │   │   │   ├── addon.py         # Command handlers, lifecycle hooks
 │   │   │   ├── store.py         # SQLite message queue (pending/delivered/expired)
 │   │   │   ├── crypto.py        # Fernet encryption (AES-128-CBC + HMAC)
-│   │   │   └── dashboard.py     # Dashboard tab HTML/JS + API routes
+│   │   │   └── dashboard.py     # 2-tab dashboard (LIVE/CONFIG) HTML/JS + API routes
 │   │   ├── triage/              # LORACLE TRIAGE — offline medical reference
 │   │   │   ├── addon.py         # Medical query handler with separate RAG instance
 │   │   │   ├── prompts.py       # TCCC-optimized system prompts
@@ -674,7 +690,7 @@ loracle/
 
 ### Protobuf parsing errors
 - These are suppressed automatically but may indicate a firmware/library version mismatch
-- Check the Debug tab in the dashboard for firmware vs library version info
+- Check the System Log section in the dashboard for firmware vs library version info
 - The bridge continues to work despite these warnings
 
 ### Dashboard not loading

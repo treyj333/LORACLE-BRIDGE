@@ -164,11 +164,17 @@ class GreeterService:
             self._queue.append(node_id)
         logger.info(f"Greeter: queued greeting for new node {node_id}")
 
-    def pump(self, interface) -> None:
-        """Send at most one queued greeting per call. Should be called from
-        the bridge's main loop on its existing periodic tick.
+    def pump(self, interface=None, send_fn=None) -> None:
+        """Send at most one queued greeting per call.
+
+        Args:
+            interface: Legacy meshtastic interface with ``sendText()``.
+            send_fn: Callable ``(node_id, text) -> None`` — preferred.
+                     If both are given, *send_fn* wins.
         """
-        if not self.enabled or interface is None:
+        if not self.enabled:
+            return
+        if interface is None and send_fn is None:
             return
         now = time.time()
         # Startup grace
@@ -196,12 +202,15 @@ class GreeterService:
 
         # Send outside the lock so a slow radio doesn't block other callers
         try:
-            interface.sendText(
-                self.message,
-                destinationId=target,
-                channelIndex=0,
-                wantAck=False,
-            )
+            if send_fn is not None:
+                send_fn(target, self.message)
+            else:
+                interface.sendText(
+                    self.message,
+                    destinationId=target,
+                    channelIndex=0,
+                    wantAck=False,
+                )
         except Exception as e:
             logger.warning(f"Greeter: send to {target} failed: {e}")
             # Re-queue once at the back so a transient failure doesn't drop the greeting
