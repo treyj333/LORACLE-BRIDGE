@@ -624,8 +624,13 @@ def api_connection_switch():
     if port:
         port = int(port)
 
-    result = _bridge.switch_connection(conn_type, address=address, host=host, port=port)
-    return jsonify(result)
+    # BLE connections block for 10-30s — run in background thread
+    # to avoid HTTP request timeout
+    import threading as _threading
+    def _do_switch():
+        _bridge.switch_connection(conn_type, address=address, host=host, port=port)
+    _threading.Thread(target=_do_switch, daemon=True).start()
+    return jsonify({"ok": True, "status": "connecting"})
 
 
 @app.route("/api/connection/disconnect", methods=["POST"])
