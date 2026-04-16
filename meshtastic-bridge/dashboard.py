@@ -2126,10 +2126,15 @@ function connectModalTypeChanged() {
 
 async function connectModalScan() {
   var btn = document.getElementById('connect-scan-btn'), statusEl = document.getElementById('connect-scan-status'), listEl = document.getElementById('connect-scan-list');
-  btn.disabled = true; btn.textContent = 'SCANNING...'; statusEl.textContent = 'Scanning (~10s)...'; listEl.innerHTML = '';
+  btn.disabled = true; btn.textContent = 'SCANNING...'; statusEl.textContent = 'Scanning for Bluetooth devices (~10s)...'; listEl.innerHTML = '';
   try {
-    var d = await callApi('GET', '/api/ble/scan?timeout=10');
-    if (!d || !d.devices) { statusEl.textContent = 'Scan failed.'; return; }
+    // BLE scan takes 10-20s — use AbortController with long timeout
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 45000);
+    var resp = await fetch('/api/ble/scan?timeout=10', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    var d = await resp.json();
+    if (!d || !d.devices) { statusEl.textContent = 'Scan returned no data. Is Bluetooth enabled?'; return; }
     var devices = d.devices.filter(function(dev) { return !dev.error; });
     if (devices.length === 0) { statusEl.textContent = 'No devices found.'; return; }
     statusEl.textContent = devices.length + ' found. Tap to connect:';
@@ -2147,8 +2152,12 @@ async function connectModalScan() {
 function connectModalPickDevice(el, address, name) {
   document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
   el.classList.add('selected');
-  document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '...';
-  callApi('POST', '/api/connection/switch', {type: 'ble', address: address});
+  document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '... (BLE takes 10-20s)';
+  // Fire and forget — don't use callApi (it shows network error toast on timeout)
+  fetch('/api/connection/switch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type: 'ble', address: address})
+  }).catch(function() {}); // ignore — poll loop will detect connection
 }
 
 async function connectFromModal() {
@@ -2159,8 +2168,12 @@ async function connectFromModal() {
     if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); }
     else payload.host = addr;
   } else { payload.address = addr || null; }
-  document.getElementById('connect-modal-status').textContent = 'Connecting...';
-  callApi('POST', '/api/connection/switch', payload);
+  document.getElementById('connect-modal-status').textContent = 'Connecting... (modal will close when connected)';
+  // Fire and forget — poll loop handles the rest
+  fetch('/api/connection/switch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  }).catch(function() {});
 }
 
 function checkConnectionForModal(connected) {
