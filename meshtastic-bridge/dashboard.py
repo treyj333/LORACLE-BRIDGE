@@ -1327,7 +1327,7 @@ button::-moz-focus-inner { border: 0; }
   margin-left: 6px;
   transition: background 0.3s;
 }
-.lo-conn-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; box-shadow: 0 0 6px var(--lo-accent-2); }
+.lo-conn-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
 .lo-conn-label { color: var(--lo-dim); margin-right: auto; font-size: 10px; }
 .lo-title-bar .lo-brand .lo-accent { color: var(--lo-accent); }
 .lo-clock { font-weight: 500; color: var(--lo-ink); font-size: 12px; letter-spacing: 0.08em; }
@@ -2075,7 +2075,7 @@ input[type="checkbox"] {
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 .lo-ai-toggle:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
-.lo-ai-toggle.on { color: var(--lo-accent); border-color: var(--lo-accent); background: rgba(255,79,0,0.06); }
+.lo-ai-toggle.on { color: var(--lo-accent); border-color: var(--lo-accent); }
 .lo-thread-messages {
   flex: 1;
   overflow-y: auto;
