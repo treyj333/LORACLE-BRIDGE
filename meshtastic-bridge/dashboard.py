@@ -2992,20 +2992,36 @@ input[type="checkbox"] {
 <div class="lo-connect-modal" id="connect-modal">
   <div class="lo-connect-box">
     <h3>CONNECT A RADIO</h3>
-    <p>No radio detected. Connect a Meshtastic or MeshCore device to get started.</p>
+    <p>No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.</p>
     <div class="lo-form-row">
-      <span class="lo-form-label">TYPE</span>
-      <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
-        <option value="serial">Serial (USB)</option>
-        <option value="tcp">TCP</option>
-        <option value="ble">BLE</option>
+      <span class="lo-form-label">PROTOCOL</span>
+      <select id="connect-protocol" style="max-width:140px">
+        <option value="auto">Auto-detect</option>
+        <option value="meshtastic">Meshtastic</option>
+        <option value="meshcore">MeshCore</option>
       </select>
     </div>
     <div class="lo-form-row">
+      <span class="lo-form-label">TRANSPORT</span>
+      <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
+        <option value="serial">Serial (USB)</option>
+        <option value="tcp">TCP</option>
+        <option value="ble">Bluetooth (BLE)</option>
+      </select>
+    </div>
+    <div class="lo-form-row" id="connect-address-row">
       <span class="lo-form-label">ADDRESS</span>
       <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)">
     </div>
-    <div class="lo-form-row" style="justify-content:space-between">
+    <div class="lo-form-row" id="connect-scan-row" style="display:none">
+      <span class="lo-form-label">DEVICES</span>
+      <div style="flex:1">
+        <button class="btn btn-sm" id="connect-scan-btn" onclick="connectModalScan()">SCAN FOR DEVICES</button>
+        <div id="connect-scan-status" style="font-size:10px;color:var(--lo-dim);margin-top:6px"></div>
+        <div id="connect-scan-list" style="margin-top:6px"></div>
+      </div>
+    </div>
+    <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
       <button class="btn" onclick="dismissConnectModal()">DISMISS</button>
       <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
     </div>
@@ -4604,9 +4620,68 @@ function hideConnectModal() {
 function connectModalTypeChanged() {
   var sel = document.getElementById('connect-type');
   var inp = document.getElementById('connect-address');
-  if (sel.value === 'serial') inp.placeholder = 'auto-detect (or /dev/...)';
-  else if (sel.value === 'tcp') inp.placeholder = '192.168.1.1:4403';
-  else inp.placeholder = 'BLE address (or empty to scan)';
+  var addrRow = document.getElementById('connect-address-row');
+  var scanRow = document.getElementById('connect-scan-row');
+  if (sel.value === 'ble') {
+    addrRow.style.display = 'none';
+    scanRow.style.display = '';
+  } else {
+    addrRow.style.display = '';
+    scanRow.style.display = 'none';
+    if (sel.value === 'serial') inp.placeholder = 'auto-detect (or /dev/...)';
+    else if (sel.value === 'tcp') inp.placeholder = '192.168.1.1:4403';
+  }
+}
+
+async function connectModalScan() {
+  var btn = document.getElementById('connect-scan-btn');
+  var statusEl = document.getElementById('connect-scan-status');
+  var listEl = document.getElementById('connect-scan-list');
+  btn.disabled = true;
+  btn.textContent = 'SCANNING...';
+  statusEl.textContent = 'Scanning for nearby Bluetooth radios (~10s)...';
+  listEl.innerHTML = '';
+  try {
+    var d = await callApi('GET', '/api/ble/scan?timeout=10');
+    if (!d || !d.devices) { statusEl.textContent = 'Scan failed.'; return; }
+    var devices = d.devices.filter(function(dev) { return !dev.error; });
+    if (devices.length === 0) {
+      statusEl.textContent = 'No devices found. Make sure Bluetooth is on.';
+      if (d.devices.length > 0 && d.devices[0].error) {
+        statusEl.textContent = d.devices[0].message || 'Bluetooth permission required';
+      }
+      return;
+    }
+    statusEl.textContent = devices.length + ' device(s) found. Tap to connect:';
+    listEl.innerHTML = devices.map(function(dev) {
+      var rssiPct = Math.min(100, Math.max(0, (dev.rssi + 100)));
+      var bars = rssiPct > 60 ? '\u2588\u2588\u2588' : rssiPct > 30 ? '\u2588\u2588\u2591' : '\u2588\u2591\u2591';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" ' +
+        'onclick="connectModalPickDevice(\'' + escapeHtml(dev.address) + '\',\'' + escapeHtml(dev.name || '') + '\')">' +
+        '<span style="color:var(--lo-ink);flex:1">' + escapeHtml(dev.name || 'Unknown') + '</span>' +
+        '<span style="color:var(--lo-faint);font-size:10px">' + escapeHtml(dev.address) + '</span>' +
+        '<span style="color:var(--lo-accent-2);font-size:10px;letter-spacing:1px">' + bars + '</span>' +
+        '<span style="color:var(--lo-faint);font-size:9px">' + dev.rssi + ' dBm</span>' +
+      '</div>';
+    }).join('');
+  } catch(e) { statusEl.textContent = 'Scan error: ' + e; }
+  finally { btn.disabled = false; btn.textContent = 'SCAN FOR DEVICES'; }
+}
+
+function connectModalPickDevice(address, name) {
+  document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '...';
+  document.getElementById('connect-modal-btn').disabled = true;
+  var payload = {type: 'ble', address: address};
+  callApi('POST', '/api/connection/switch', payload).then(function(d) {
+    document.getElementById('connect-modal-btn').disabled = false;
+    if (d && d.ok) {
+      document.getElementById('connect-modal-status').textContent = 'Connected to ' + (name || address) + '!';
+      _connectModalDismissed = true;
+      setTimeout(hideConnectModal, 800);
+    } else {
+      document.getElementById('connect-modal-status').textContent = 'Connecting in background...';
+    }
+  });
 }
 
 async function connectFromModal() {
