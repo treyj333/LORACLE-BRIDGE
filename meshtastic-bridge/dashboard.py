@@ -2167,6 +2167,21 @@ input[type="checkbox"] {
   line-height: 1.7;
 }
 .lo-connect-box .lo-form-row { padding: 6px 0; }
+.lo-scan-device {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--lo-divider);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.1s, border-left-color 0.1s;
+}
+.lo-scan-device:hover { background: var(--lo-bg-deep); }
+.lo-scan-device.selected {
+  background: var(--lo-bg-deep);
+  border-left-color: var(--lo-accent);
+}
 
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast-container {
@@ -4656,8 +4671,8 @@ async function connectModalScan() {
     listEl.innerHTML = devices.map(function(dev) {
       var rssiPct = Math.min(100, Math.max(0, (dev.rssi + 100)));
       var bars = rssiPct > 60 ? '\u2588\u2588\u2588' : rssiPct > 30 ? '\u2588\u2588\u2591' : '\u2588\u2591\u2591';
-      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" ' +
-        'onclick="connectModalPickDevice(\'' + escapeHtml(dev.address) + '\',\'' + escapeHtml(dev.name || '') + '\')">' +
+      return '<div class="lo-scan-device" data-addr="' + escapeHtml(dev.address) + '" ' +
+        'onclick="connectModalPickDevice(this,\'' + escapeHtml(dev.address) + '\',\'' + escapeHtml(dev.name || '') + '\')">' +
         '<span style="color:var(--lo-ink);flex:1">' + escapeHtml(dev.name || 'Unknown') + '</span>' +
         '<span style="color:var(--lo-faint);font-size:10px">' + escapeHtml(dev.address) + '</span>' +
         '<span style="color:var(--lo-accent-2);font-size:10px;letter-spacing:1px">' + bars + '</span>' +
@@ -4668,7 +4683,11 @@ async function connectModalScan() {
   finally { btn.disabled = false; btn.textContent = 'SCAN FOR DEVICES'; }
 }
 
-function connectModalPickDevice(address, name) {
+function connectModalPickDevice(el, address, name) {
+  // Highlight selected row
+  document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
+  el.classList.add('selected');
+  // Connect
   document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '...';
   document.getElementById('connect-modal-btn').disabled = true;
   var payload = {type: 'ble', address: address};
