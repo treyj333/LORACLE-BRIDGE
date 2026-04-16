@@ -4,6 +4,36 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16] — Session 2b: Full Messenger UI + SQLite Persistence
+
+- What changed:
+  - **New `db/` module** — SQLite persistence at `~/.mesh-llm/loracle.db`:
+    - `contacts` table: per-contact AI toggle (inherit/off/on), unread counts, protocol, last heard
+    - `messages` table: full message history with direction, author (human/ai), delivery status, channel origin tracking
+    - `settings` table: key-value store replacing settings.json
+    - Retention pruning: 500 messages/contact cap + 90-day cutoff, runs hourly
+    - Migration from settings.json on first run (renames to .bak)
+  - **Messenger view** — new default landing page:
+    - MESSENGER/DASHBOARD segmented toggle in title bar + gear icon for CONFIG
+    - Two-pane layout: 320px sidebar + thread view
+    - Sidebar: DMs/Channels/All tabs, search, contact list with square avatars + protocol indicators + unread badges
+    - Thread view: header with AI toggle (inherit/off/on cycle), scrollable messages with direction arrows + AI badges, composer with 233-char counter
+    - Auto-refresh every 3s via polling
+  - **Channel support**: channel messages stored under channel contacts (`meshtastic:channel:N`), AI replies redirect to sender as DM (never posted to channel), `originating_channel_id` tracked
+  - **Per-contact AI toggle**: effective state resolves per-contact override vs global default; commands always processed regardless
+  - **SSE events**: `/api/events` now pushes real `thread_updated` events when messages arrive
+  - **DATA & STORAGE** section in CONFIG: db path, stats, retention info, prune now + clear all buttons (replaces old HISTORY section)
+  - **Onboarding**: expanded to 6 steps with new "EVERY CONTACT IS A THREAD" step
+  - **13 new API endpoints**: `/api/threads`, `/api/threads/<id>`, `/api/threads/<id>/messages`, `/api/threads/<id>/open`, `/api/threads/<id>/send`, `/api/threads/<id>/ai-toggle`, `/api/events`, `/api/db/stats`, `/api/db/prune`, `/api/db/clear-messages`
+- Files changed:
+  - `meshtastic-bridge/db/` — new module (5 files)
+  - `meshtastic-bridge/standalone_bridge.py` — db init, contact upsert, message persist, channel logic, per-contact AI
+  - `meshtastic-bridge/dashboard.py` — messenger view, SSE, new endpoints, data storage config, onboarding
+  - `meshtastic-bridge/tests/test_db.py` — 28 tests
+  - `meshtastic-bridge/tests/test_dashboard_api.py` — mock updates
+
+---
+
 ## [2026-04-16] — Session 2a: MeshCore Backend + RadioBackend Abstraction
 
 - What changed:

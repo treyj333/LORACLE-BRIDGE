@@ -765,19 +765,37 @@ class StandaloneBridge:
                     h = int(hop_start) - int(hop_limit)
                     if 0 <= h <= 30:
                         hops = h
+                # Always upsert the sender as a DM contact
                 self._contact_store.upsert(
                     contact_id=sender, protocol="meshtastic",
                     backend_id=sender, short_name=sender[-6:] if len(sender) > 6 else sender,
                     rssi=rssi_val, snr=snr_val, hops=hops,
-                    is_channel=not is_dm, channel_idx=channel if not is_dm else None,
                 )
-                self._message_store.insert(
-                    contact_id=sender, direction="in", author="human",
-                    text=text.strip(), protocol="meshtastic",
-                    hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
-                    is_channel_msg=not is_dm,
-                )
-                self._contact_store.increment_unread(sender)
+                if is_dm:
+                    # DM: store under sender's contact
+                    self._message_store.insert(
+                        contact_id=sender, direction="in", author="human",
+                        text=text.strip(), protocol="meshtastic",
+                        hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
+                    )
+                    self._contact_store.increment_unread(sender)
+                else:
+                    # Channel message: store under channel contact
+                    chan_id = f"meshtastic:channel:{channel}"
+                    chan_name = f"Channel {channel}"
+                    self._contact_store.upsert(
+                        contact_id=chan_id, protocol="meshtastic",
+                        backend_id=chan_id, short_name=chan_name,
+                        long_name=chan_name, is_channel=True,
+                        channel_idx=channel, channel_name=chan_name,
+                    )
+                    self._message_store.insert(
+                        contact_id=chan_id, direction="in", author="human",
+                        text=f"{sender}: {text.strip()}", protocol="meshtastic",
+                        hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
+                        is_channel_msg=True,
+                    )
+                    self._contact_store.increment_unread(chan_id)
             except Exception as e:
                 logger.debug(f"DB persist error: {e}")
 
@@ -992,16 +1010,36 @@ class StandaloneBridge:
                 self._message_count += 1
                 self._node_last_active[node_id] = time.time()
 
-                # Check for commands
+                # Resolve per-contact AI state
+                effective_ai = self._ai_replies_enabled
+                try:
+                    effective_ai = self._contact_store.get_effective_ai(
+                        node_id, self._ai_replies_enabled
+                    )
+                    # For channel messages, check channel's AI state
+                    if not is_dm:
+                        chan_id = f"meshtastic:channel:{channel}"
+                        effective_ai = self._contact_store.get_effective_ai(
+                            chan_id, self._ai_replies_enabled
+                        )
+                except Exception:
+                    pass
+
+                # Check for commands (always process, regardless of AI toggle)
                 response = self._handle_command(node_id, text)
                 elapsed = 0
 
                 if response is None:
+                    # Check AI toggle — if off, log but don't reply
+                    if not effective_ai:
+                        logger.info(f"AI disabled for {node_id}, skipping reply")
+                        continue
+
                     # Regular message — send to Ollama
                     logger.info(f"Processing query from {node_id}...")
 
-                    # Send immediate acknowledgment so user knows not to resend
-                    self._send_raw(node_id, "Thinking...", channel=channel, is_dm=is_dm)
+                    # Send acknowledgment as DM to sender (even for channel msgs)
+                    self._send_raw(node_id, "Thinking...", channel=0, is_dm=True)
 
                     # RAG: search for relevant context
                     context_messages = None
@@ -1026,13 +1064,24 @@ class StandaloneBridge:
                     elapsed = time.time() - start
                     logger.info(f"Ollama responded in {elapsed:.1f}s ({len(response)} chars)")
 
-                # Send response
+                # Determine where to store + send the reply
+                reply_contact_id = node_id  # default: sender's DM thread
+                originating_channel = None
+                reply_is_dm = True  # always DM the reply
+
+                if not is_dm:
+                    # Channel message → AI reply goes to sender as DM
+                    originating_channel = f"meshtastic:channel:{channel}"
+                    logger.info(f"Channel AI redirect: replying to {node_id} as DM (from ch{channel})")
+
+                # Send response as DM to sender (never to channel)
                 record_message("out", node_id, response, chunks=1, llm_time=elapsed)
                 try:
                     author = "ai" if elapsed > 0 else "human"
                     self._message_store.insert(
-                        contact_id=node_id, direction="out", author=author,
+                        contact_id=reply_contact_id, direction="out", author=author,
                         text=response, protocol="meshtastic",
+                        originating_channel_id=originating_channel,
                     )
                 except Exception as e:
                     logger.debug(f"DB persist (out) error: {e}")
@@ -1041,11 +1090,11 @@ class StandaloneBridge:
                     node_count=self._node_count,
                     known_nodes=list(self._known_nodes),
                 )
-                self._send_response(node_id, response, channel=channel, is_dm=is_dm)
+                self._send_response(node_id, response, channel=0, is_dm=reply_is_dm)
 
             except Exception as e:
                 logger.error(f"Error processing message from {node_id}: {e}")
-                self._send_response(node_id, f"Error: {e}", channel=channel, is_dm=is_dm)
+                self._send_response(node_id, f"Error: {e}", channel=0, is_dm=True)
 
     def _init_commands(self):
         """Register built-in commands into the command registry."""

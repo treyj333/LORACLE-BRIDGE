@@ -44,6 +44,23 @@ _metrics = {
 
 _bridge = None
 
+# SSE event subscribers — list of queue.Queue instances, one per connected client
+_sse_subscribers = []
+
+
+def _emit_sse(event_type: str, data: dict):
+    """Push an event to all connected SSE clients."""
+    import queue as _q
+    payload = json.dumps({"type": event_type, **data})
+    dead = []
+    for i, q in enumerate(_sse_subscribers):
+        try:
+            q.put_nowait(payload)
+        except _q.Full:
+            dead.append(i)
+    for i in reversed(dead):
+        _sse_subscribers.pop(i)
+
 
 # ─── Log capture ─────────────────────────────────────────────────────────────
 
@@ -106,6 +123,8 @@ def record_message(direction, node_id, text, chunks=0, llm_time=0, **kwargs):
         _metrics["total_llm_time"] += llm_time
         _metrics["total_llm_calls"] += 1
         _metrics["total_chunks_sent"] += chunks
+    # Emit SSE event for messenger
+    _emit_sse("thread_updated", {"contact_id": node_id, "direction": direction})
 
 
 def set_bridge(bridge):
@@ -746,11 +765,25 @@ def api_thread_ai_toggle(thread_id):
 
 @app.route("/api/events", methods=["GET"])
 def api_events():
-    """Server-sent events stream (stub — heartbeat only for now)."""
+    """Server-sent events stream for realtime messenger updates."""
+    import queue as _q
+    client_q = _q.Queue(maxsize=50)
+    _sse_subscribers.append(client_q)
     def generate():
-        while True:
-            yield f"data: {json.dumps({'type': 'heartbeat', 'ts': time.time()})}\n\n"
-            time.sleep(5)
+        try:
+            while True:
+                try:
+                    payload = client_q.get(timeout=15)
+                    yield f"data: {payload}\n\n"
+                except _q.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'ts': time.time()})}\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            try:
+                _sse_subscribers.remove(client_q)
+            except ValueError:
+                pass
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -2470,13 +2503,28 @@ input[type="checkbox"] {
     </div>
   </details>
 
-  <!-- History -->
+  <!-- Data & Storage -->
   <details class="lo-section">
-    <summary class="lo-section-head">HISTORY</summary>
+    <summary class="lo-section-head">DATA & STORAGE</summary>
     <div class="lo-section-body">
       <div class="lo-form-row">
-        <span class="lo-form-label">CONVERSATIONS</span>
-        <button class="btn" onclick="clearHistory()">CLEAR ALL HISTORY</button>
+        <span class="lo-form-label">DATABASE</span>
+        <span style="color:var(--lo-dim);font-size:10px">~/.mesh-llm/loracle.db</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">STATS</span>
+        <span id="cfg-db-stats" style="color:var(--lo-dim);font-size:10px">Loading...</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">RETENTION</span>
+        <span style="color:var(--lo-faint);font-size:10px">Last 500 messages OR 90 days per contact</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" onclick="cfgPruneNow()">PRUNE NOW</button>
+          <button class="btn btn-sm" onclick="cfgClearAllMessages()" style="color:#c0392b;border-color:#c0392b">CLEAR ALL MESSAGES</button>
+        </div>
       </div>
     </div>
   </details>
@@ -2606,6 +2654,27 @@ input[type="checkbox"] {
 
     <div class="lo-ob-step" data-step="4">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
+        <!-- Sidebar sketch -->
+        <rect x="30" y="10" width="100" height="100" fill="none" stroke="var(--lo-divider-strong)" stroke-width="1"/>
+        <rect x="35" y="20" width="90" height="12" fill="var(--lo-bg-deep)" stroke="none"/>
+        <rect x="35" y="36" width="90" height="12" fill="var(--lo-bg-deep)" stroke="none"/>
+        <rect x="35" y="52" width="90" height="12" fill="var(--lo-bg-deep)" stroke="none"/>
+        <rect x="42" y="54" width="6" height="6" fill="var(--lo-accent)"/>
+        <!-- Thread sketch -->
+        <rect x="130" y="10" width="200" height="100" fill="none" stroke="var(--lo-divider-strong)" stroke-width="1"/>
+        <text x="180" y="30" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="6">hey you up?</text>
+        <text x="260" y="50" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="6">AI: sure</text>
+        <text x="180" y="70" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="6">how do i treat...</text>
+        <circle cx="320" cy="95" r="3" fill="var(--lo-accent)">
+          <animate attributeName="r" values="3;4.2" dur="3.2s" repeatCount="indefinite"/>
+        </circle>
+      </svg>
+      <h3>EVERY CONTACT IS A THREAD</h3>
+      <p>Each node gets their own conversation. Chat manually or let AI auto-reply. Toggle AI on or off per contact in the thread header.</p>
+    </div>
+
+    <div class="lo-ob-step" data-step="5">
+      <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <circle cx="180" cy="60" r="6" fill="var(--lo-accent)"/>
         <circle cx="180" cy="60" r="6" fill="none" stroke="var(--lo-accent)" stroke-width="1" opacity="0.7">
           <animate attributeName="r" values="6;28" dur="2.8s" repeatCount="indefinite"/>
@@ -2626,7 +2695,7 @@ input[type="checkbox"] {
         <text x="180" y="60" text-anchor="middle" dominant-baseline="central" fill="var(--lo-bg)" font-family="var(--font-mono)" font-size="5" font-weight="500">LO</text>
       </svg>
       <h3>YOU'RE LIVE</h3>
-      <p id="ob-live-stats">Your node is active. Peers can reach you now.</p>
+      <p id="ob-live-stats">Your node is active. Tap any contact to open their thread. New messages appear as unread badges.</p>
     </div>
 
     <div class="lo-ob-nav">
@@ -2655,7 +2724,7 @@ var App = {
   lastCovRefresh: 0,
   configLoaded: false,
   obStep: 0,
-  obTotal: 5
+  obTotal: 6
 };
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
@@ -3401,6 +3470,7 @@ async function loadConfigData() {
     document.getElementById('cfg-compression').checked = cd.compression_enabled;
   }
   cfgLoadRagDocs();
+  cfgLoadDbStats();
   loadLastBleDevice();
 }
 
@@ -3515,6 +3585,30 @@ async function clearHistory() {
   if (!confirm('Clear all conversation history? This cannot be undone.')) return;
   var d = await callApi('POST', '/api/clear-history', {});
   if (d && d.ok) showToast('Cleared history for ' + d.cleared + ' node(s)');
+}
+
+async function cfgPruneNow() {
+  var d = await callApi('POST', '/api/db/prune');
+  if (d && d.ok) showToast('Pruned ' + d.pruned + ' messages');
+  cfgLoadDbStats();
+}
+
+async function cfgClearAllMessages() {
+  if (!confirm('Delete ALL messages from the database? This cannot be undone. Contacts are preserved.')) return;
+  var d = await callApi('POST', '/api/db/clear-messages');
+  if (d && d.ok) showToast('Deleted ' + d.deleted + ' messages');
+  cfgLoadDbStats();
+}
+
+async function cfgLoadDbStats() {
+  try {
+    var d = await callApi('GET', '/api/db/stats');
+    if (d) {
+      var sizeKb = Math.round((d.db_size_bytes || 0) / 1024);
+      document.getElementById('cfg-db-stats').textContent =
+        d.contacts + ' contacts, ' + d.messages + ' messages, ' + sizeKb + ' KB';
+    }
+  } catch(e) {}
 }
 
 // ─── BLE / Connection ──────────────────────────────────────────────────────
