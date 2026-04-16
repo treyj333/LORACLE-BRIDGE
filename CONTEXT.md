@@ -4,6 +4,30 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16] — Network-as-Canvas: Force-Directed Mesh UI
+
+- What changed:
+  - **Complete frontend rewrite** of dashboard.py. The mesh IS the interface — one living force-directed graph replaces the previous messenger sidebar + dashboard split.
+  - **Canvas visualization** using d3-force: MY NODE at center (orange, sonar pulse), peer nodes on hop rings, channel nodes as hexagons, links weighted by signal strength, idle breathing animations, packet pulse trails.
+  - **Click-to-interact**: clicking a node opens a detail panel (slides in from right) with telemetry, message thread, DM composer, and AI toggle. Canvas stays alive behind the panel.
+  - **HUD overlay**: top-left stats (nodes, messages, model, uptime) + SCAN MESH button. Bottom: packet activity ribbon.
+  - **View filters**: MESH (default), TRAFFIC (active links), CONFIG (settings).
+  - **Full CONFIG view** rebuilt: connection, AI replies, model, model routing with classifier test, response settings, knowledge base, knowledge packs, data & storage with factory reset, appearance, about.
+  - **SCAN MESH button** + `/api/nodes/refresh` endpoint for on-demand nodeDB rescan after initial connection.
+  - **Dashboard.py reduced** from 4869 → ~2500 lines (49% reduction).
+  - **Dependencies**: d3-force v3 + d3-quadtree + d3-dispatch + d3-timer (~17KB total).
+- Files changed:
+  - `meshtastic-bridge/dashboard.py` — complete DASHBOARD_HTML rewrite
+  - `meshtastic-bridge/static/js/d3-*.min.js` — new (4 files)
+  - `README.md` — updated for canvas UI
+  - `CONTEXT.md` — this entry
+- What was NOT changed:
+  - All Python backend code (zero API changes)
+  - SQLite persistence, thread infrastructure, model routing, knowledge packs
+  - All 51 API endpoints
+
+---
+
 ## [2026-04-16] — Session 5: RAG Packs + Emergency Preparedness Pack
 
 - What changed:
