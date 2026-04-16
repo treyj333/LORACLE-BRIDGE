@@ -1284,6 +1284,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 ::selection { background: var(--lo-accent); color: #fff; }
+/* Kill browser focus outlines — we use border-bottom for active state */
+button:focus, select:focus, input:focus, summary:focus { outline: none; }
+button::-moz-focus-inner { border: 0; }
 
 /* ── Shell ────────────────────────────────────────────────────────────────── */
 .lo-shell {
@@ -1300,35 +1303,39 @@ body {
 .lo-title-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 0;
+  gap: 12px;
+  padding: 14px 0;
   background: var(--lo-bg-deep);
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--lo-dim);
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--lo-divider-strong);
+  border-bottom: 2px solid var(--lo-divider-strong);
 }
 .lo-title-bar .lo-brand {
   color: var(--lo-ink);
   font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.15em;
 }
 .lo-conn-dot {
   display: inline-block;
-  width: 6px; height: 6px;
+  width: 8px; height: 8px;
   border-radius: 50%;
   background: var(--lo-faint);
-  margin-left: 10px;
+  margin-left: 6px;
+  transition: background 0.3s;
 }
-.lo-conn-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
-.lo-conn-label { color: var(--lo-dim); margin-right: auto; }
+.lo-conn-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; box-shadow: 0 0 6px var(--lo-accent-2); }
+.lo-conn-label { color: var(--lo-dim); margin-right: auto; font-size: 10px; }
 .lo-title-bar .lo-brand .lo-accent { color: var(--lo-accent); }
-.lo-clock { font-weight: 500; color: var(--lo-ink); }
+.lo-clock { font-weight: 500; color: var(--lo-ink); font-size: 12px; letter-spacing: 0.08em; }
 .lo-title-bar button {
   background: none; border: none; cursor: pointer;
-  color: var(--lo-dim); font-family: inherit; font-size: 11px;
-  padding: 2px 6px; line-height: 1;
+  color: var(--lo-dim); font-family: inherit; font-size: 13px;
+  padding: 4px 8px; line-height: 1;
+  transition: color 0.15s;
 }
 .lo-title-bar button:hover { color: var(--lo-ink); }
 
@@ -1379,9 +1386,11 @@ nav.lo-tabs {
 /* ── Mesh Header SVG ──────────────────────────────────────────────────────── */
 .lo-mesh-header {
   width: 100%;
-  height: 72px;
+  height: 90px;
   overflow: hidden;
   border-bottom: 1px solid var(--lo-divider);
+  background: var(--lo-bg-deep);
+  padding: 8px 0;
 }
 .lo-mesh-header svg { width: 100%; height: 100%; }
 .lo-no-peers {
@@ -1398,10 +1407,11 @@ nav.lo-tabs {
 .lo-stats {
   display: flex;
   border-bottom: 1px solid var(--lo-divider-strong);
+  background: var(--lo-bg-deep);
 }
 .lo-stat {
   flex: 1;
-  padding: 18px 16px;
+  padding: 20px 18px;
   border-right: 1px solid var(--lo-divider);
 }
 .lo-stat:last-child { border-right: none; }
@@ -1836,7 +1846,7 @@ input[type="checkbox"] {
   margin-left: 12px;
 }
 .lo-view-toggle button {
-  padding: 3px 12px !important;
+  padding: 5px 16px !important;
   font-size: 10px !important;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -1846,7 +1856,9 @@ input[type="checkbox"] {
   cursor: pointer;
   font-family: inherit;
   line-height: 1.4;
+  transition: background 0.15s, color 0.15s;
 }
+.lo-view-toggle button:hover { color: var(--lo-ink); }
 .lo-view-toggle button.active {
   background: var(--lo-ink);
   color: var(--lo-bg);
@@ -1864,7 +1876,7 @@ input[type="checkbox"] {
   display: flex;
   flex: 1;
   min-height: 0;
-  height: calc(100vh - 180px);
+  height: calc(100vh - 160px);
 }
 
 /* ── Sidebar ──────────────────────────────────────────────────────────────── */
@@ -1886,17 +1898,18 @@ input[type="checkbox"] {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 10px 8px 8px;
+  padding: 12px 8px 10px;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--lo-dim);
   cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
 }
-.lo-sidebar-tabs button:hover { color: var(--lo-ink); }
-.lo-sidebar-tabs button.active { color: var(--lo-ink); border-bottom-color: var(--lo-ink); }
+.lo-sidebar-tabs button:hover { color: var(--lo-ink); background: var(--lo-bg-deep); }
+.lo-sidebar-tabs button.active { color: var(--lo-ink); border-bottom-color: var(--lo-accent); }
 .lo-sidebar-search {
   padding: 8px;
   border-bottom: 1px solid var(--lo-divider);
@@ -1922,15 +1935,16 @@ input[type="checkbox"] {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   cursor: pointer;
   border-bottom: 1px solid var(--lo-divider);
+  transition: background 0.1s, border-left 0.1s;
+  border-left: 3px solid transparent;
 }
 .lo-contact:hover { background: var(--lo-bg-deep); }
 .lo-contact.selected {
   background: var(--lo-bg-deep);
-  border-left: 2px solid var(--lo-ink);
-  padding-left: 10px;
+  border-left: 3px solid var(--lo-accent);
 }
 .lo-avatar {
   width: 32px;
@@ -1979,14 +1993,15 @@ input[type="checkbox"] {
 .lo-unread-badge {
   display: inline-block;
   background: var(--lo-accent);
-  color: var(--lo-bg);
+  color: #fff;
   font-size: 9px;
   font-weight: 500;
   letter-spacing: 0.05em;
-  padding: 1px 5px;
-  min-width: 16px;
+  padding: 2px 6px;
+  min-width: 18px;
   text-align: center;
   margin-bottom: 2px;
+  animation: loPulse 2s ease-in-out infinite;
 }
 .lo-contact-time {
   font-size: 9px;
@@ -2014,12 +2029,19 @@ input[type="checkbox"] {
 .lo-thread-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--lo-dim);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
+  gap: 12px;
+}
+.lo-thread-empty::before {
+  content: '\25C9';
+  font-size: 32px;
+  color: var(--lo-divider-strong);
 }
 .lo-thread-header {
   display: flex;
@@ -2047,12 +2069,13 @@ input[type="checkbox"] {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--lo-dim);
-  padding: 2px 8px;
+  padding: 4px 10px;
   cursor: pointer;
   margin-left: 8px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 .lo-ai-toggle:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
-.lo-ai-toggle.on { color: var(--lo-accent); border-color: var(--lo-accent); }
+.lo-ai-toggle.on { color: var(--lo-accent); border-color: var(--lo-accent); background: rgba(255,79,0,0.06); }
 .lo-thread-messages {
   flex: 1;
   overflow-y: auto;
@@ -2120,24 +2143,28 @@ input[type="checkbox"] {
 .lo-connect-modal.open { display: flex; }
 .lo-connect-box {
   background: var(--lo-bg);
-  border: 1px solid var(--lo-divider-strong);
-  width: 400px;
+  border: 2px solid var(--lo-divider-strong);
+  width: 420px;
   max-width: 90vw;
-  padding: 24px;
+  padding: 32px;
 }
 .lo-connect-box h3 {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--lo-ink);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+}
+.lo-connect-box h3::before {
+  content: '\25C9 ';
+  color: var(--lo-accent);
 }
 .lo-connect-box p {
   font-size: 11px;
   color: var(--lo-dim);
-  margin-bottom: 16px;
-  line-height: 1.6;
+  margin-bottom: 20px;
+  line-height: 1.7;
 }
 .lo-connect-box .lo-form-row { padding: 6px 0; }
 
@@ -2205,8 +2232,8 @@ input[type="checkbox"] {
 
 /* ── Animations ───────────────────────────────────────────────────────────── */
 @keyframes loPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.9); }
 }
 @keyframes loSonar {
   0% { r: 5; opacity: 0.9; }
@@ -2270,7 +2297,7 @@ input[type="checkbox"] {
 <div class="lo-messenger active" id="view-messenger">
   <!-- Reuse mesh header -->
   <div class="lo-mesh-header" id="msg-mesh-header">
-    <svg viewBox="0 0 700 68" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox="0 0 700 68" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
       <defs><style>
         .mh-link { stroke: var(--lo-accent-2); stroke-width: 1; fill: none; opacity: 0.5; }
         .mh-mynode { fill: var(--lo-accent); }
@@ -2353,7 +2380,7 @@ input[type="checkbox"] {
   <!-- Mesh Header SVG -->
   <div id="mesh-header-container">
     <div class="lo-mesh-header" id="mesh-header">
-      <svg id="mesh-header-svg" viewBox="0 0 700 68" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <svg id="mesh-header-svg" viewBox="0 0 700 68" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <style>
             .mh-link { stroke: var(--lo-accent-2); stroke-width: 1; fill: none; opacity: 0.5; }
