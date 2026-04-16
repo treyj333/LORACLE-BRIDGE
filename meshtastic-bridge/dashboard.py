@@ -3019,16 +3019,16 @@ input[type="checkbox"] {
     <div class="lo-form-row">
       <span class="lo-form-label">TRANSPORT</span>
       <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
+        <option value="ble" selected>Bluetooth (BLE)</option>
         <option value="serial">Serial (USB)</option>
         <option value="tcp">TCP</option>
-        <option value="ble">Bluetooth (BLE)</option>
       </select>
     </div>
-    <div class="lo-form-row" id="connect-address-row">
+    <div class="lo-form-row" id="connect-address-row" style="display:none">
       <span class="lo-form-label">ADDRESS</span>
       <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)">
     </div>
-    <div class="lo-form-row" id="connect-scan-row" style="display:none">
+    <div class="lo-form-row" id="connect-scan-row">
       <span class="lo-form-label">DEVICES</span>
       <div style="flex:1">
         <button class="btn btn-sm" id="connect-scan-btn" onclick="connectModalScan()">SCAN FOR DEVICES</button>
