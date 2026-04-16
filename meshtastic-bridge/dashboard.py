@@ -2107,6 +2107,40 @@ input[type="checkbox"] {
 .lo-char-count.warn { color: var(--lo-accent); }
 .lo-char-count.over { color: var(--lo-dim); }
 
+/* ── Connect Modal ────────────────────────────────────────────────────────── */
+.lo-connect-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1500;
+  align-items: center;
+  justify-content: center;
+}
+.lo-connect-modal.open { display: flex; }
+.lo-connect-box {
+  background: var(--lo-bg);
+  border: 1px solid var(--lo-divider-strong);
+  width: 400px;
+  max-width: 90vw;
+  padding: 24px;
+}
+.lo-connect-box h3 {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lo-ink);
+  margin-bottom: 4px;
+}
+.lo-connect-box p {
+  font-size: 11px;
+  color: var(--lo-dim);
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+.lo-connect-box .lo-form-row { padding: 6px 0; }
+
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast-container {
   position: fixed;
@@ -2927,6 +2961,31 @@ input[type="checkbox"] {
 </div>
 
 <!-- ── Toast Container ───────────────────────────────────────────────────── -->
+<!-- ── Connect Modal ──────────────────────────────────────────────────────── -->
+<div class="lo-connect-modal" id="connect-modal">
+  <div class="lo-connect-box">
+    <h3>CONNECT A RADIO</h3>
+    <p>No radio detected. Connect a Meshtastic or MeshCore device to get started.</p>
+    <div class="lo-form-row">
+      <span class="lo-form-label">TYPE</span>
+      <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
+        <option value="serial">Serial (USB)</option>
+        <option value="tcp">TCP</option>
+        <option value="ble">BLE</option>
+      </select>
+    </div>
+    <div class="lo-form-row">
+      <span class="lo-form-label">ADDRESS</span>
+      <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)">
+    </div>
+    <div class="lo-form-row" style="justify-content:space-between">
+      <button class="btn" onclick="dismissConnectModal()">DISMISS</button>
+      <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
+    </div>
+    <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
+  </div>
+</div>
+
 <div id="toast-container"></div>
 
 <script>
@@ -3060,6 +3119,9 @@ async function poll() {
     var hdrLabel = document.getElementById('hdr-conn-label');
     hdrDot.className = d.connected ? 'lo-conn-dot on' : 'lo-conn-dot';
     hdrLabel.textContent = d.connected ? 'CONNECTED' : 'DISCONNECTED';
+
+    // Connect modal — show on boot if disconnected, re-show on disconnect
+    checkConnectionForModal(d.connected);
 
     // Status banner
     var pulse = document.getElementById('status-pulse');
@@ -4488,6 +4550,90 @@ function pollMessenger() {
             if (d.messages.length !== oldLen) renderThread();
           }
         }).catch(function() {});
+    }
+  }
+}
+
+// ─── Connect Modal ─────────────────────────────────────────────────────────
+
+var _connectModalDismissed = false;
+var _disconnectedSince = 0;
+var _wasConnected = false;
+
+function showConnectModal() {
+  if (_connectModalDismissed) return;
+  document.getElementById('connect-modal').classList.add('open');
+}
+
+function dismissConnectModal() {
+  _connectModalDismissed = true;
+  document.getElementById('connect-modal').classList.remove('open');
+}
+
+function hideConnectModal() {
+  document.getElementById('connect-modal').classList.remove('open');
+}
+
+function connectModalTypeChanged() {
+  var sel = document.getElementById('connect-type');
+  var inp = document.getElementById('connect-address');
+  if (sel.value === 'serial') inp.placeholder = 'auto-detect (or /dev/...)';
+  else if (sel.value === 'tcp') inp.placeholder = '192.168.1.1:4403';
+  else inp.placeholder = 'BLE address (or empty to scan)';
+}
+
+async function connectFromModal() {
+  var type = document.getElementById('connect-type').value;
+  var addr = document.getElementById('connect-address').value.trim();
+  var statusEl = document.getElementById('connect-modal-status');
+  var btn = document.getElementById('connect-modal-btn');
+  btn.disabled = true;
+  statusEl.textContent = 'Connecting...';
+
+  var payload = {type: type};
+  if (type === 'ble') payload.address = addr || null;
+  else if (type === 'tcp') {
+    if (addr && addr.indexOf(':') !== -1) {
+      var parts = addr.split(':');
+      payload.host = parts[0];
+      payload.port = parseInt(parts[1]);
+    } else if (addr) {
+      payload.host = addr;
+    }
+  } else {
+    payload.address = addr || null;
+  }
+
+  var d = await callApi('POST', '/api/connection/switch', payload);
+  btn.disabled = false;
+  if (d && d.ok) {
+    statusEl.textContent = 'Connected!';
+    _connectModalDismissed = true;
+    setTimeout(hideConnectModal, 800);
+  } else {
+    statusEl.textContent = 'Connecting in background... you can dismiss this.';
+  }
+}
+
+function checkConnectionForModal(connected) {
+  if (connected) {
+    _wasConnected = true;
+    _disconnectedSince = 0;
+    hideConnectModal();
+    return;
+  }
+  // Not connected
+  if (!_wasConnected && !_connectModalDismissed) {
+    // Never been connected since page load — show immediately
+    showConnectModal();
+    return;
+  }
+  if (_wasConnected && !_connectModalDismissed) {
+    // Was connected, now disconnected — show after 10s debounce
+    if (_disconnectedSince === 0) _disconnectedSince = Date.now();
+    if (Date.now() - _disconnectedSince > 10000) {
+      _connectModalDismissed = false;  // reset dismiss for new disconnect
+      showConnectModal();
     }
   }
 }
