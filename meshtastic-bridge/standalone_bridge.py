@@ -212,6 +212,7 @@ class StandaloneBridge:
         self._overflow: Dict[str, tuple] = {}  # node_id -> (remaining_text, timestamp)
         self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
         self._node_meta: Dict[str, dict] = {}  # node_id -> {hops, hops_updated}
+        self._device_metrics: Dict[str, dict] = {}  # node_id -> {battery, voltage, ...}
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
         self.public_talk = public_talk  # respond on public channels when addressed
@@ -316,6 +317,7 @@ class StandaloneBridge:
         # application filtering happens in _processing_loop.)
         pub.subscribe(self._on_receive, "meshtastic.receive.text")
         pub.subscribe(self._on_position, "meshtastic.receive.position")
+        pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
 
         self._running = True
 
@@ -932,6 +934,36 @@ class StandaloneBridge:
         except Exception as e:
             logger.debug(f"Error processing position: {e}")
 
+    def _on_telemetry(self, packet, interface):
+        """Handle incoming telemetry packet — extract device metrics."""
+        try:
+            sender = packet.get("fromId", "")
+            if not sender:
+                return
+            telemetry = packet.get("decoded", {}).get("telemetry", {})
+            dm = telemetry.get("deviceMetrics", {})
+            if dm:
+                entry = self._device_metrics.setdefault(sender, {})
+                if "batteryLevel" in dm:
+                    entry["battery"] = dm["batteryLevel"]
+                if "voltage" in dm:
+                    entry["voltage"] = round(dm["voltage"], 2)
+                if "channelUtilization" in dm:
+                    entry["ch_util"] = round(dm["channelUtilization"], 1)
+                if "airUtilTx" in dm:
+                    entry["air_util"] = round(dm["airUtilTx"], 1)
+                entry["updated"] = time.time()
+            env = telemetry.get("environmentMetrics", {})
+            if env:
+                entry = self._device_metrics.setdefault(sender, {})
+                if "temperature" in env:
+                    entry["temperature"] = round(env["temperature"], 1)
+                if "relativeHumidity" in env:
+                    entry["humidity"] = round(env["relativeHumidity"], 1)
+                entry["updated"] = time.time()
+        except Exception as e:
+            logger.debug(f"Error processing telemetry: {e}")
+
     def _load_nodedb_positions(self):
         """Re-scan the meshtastic nodeDB and merge any positions into _node_positions.
 
@@ -980,6 +1012,20 @@ class StandaloneBridge:
                     logger.debug(f"Contact upsert from nodeDB error: {e}")
 
                 self._known_nodes.add(key)
+
+                # Extract device metrics from nodeDB
+                dm = info.get("deviceMetrics", {})
+                if dm:
+                    entry = self._device_metrics.setdefault(key, {})
+                    if "batteryLevel" in dm:
+                        entry["battery"] = dm["batteryLevel"]
+                    if "voltage" in dm:
+                        entry["voltage"] = round(dm["voltage"], 2)
+                    if not entry.get("updated"):
+                        entry["updated"] = time.time()
+                hw = info.get("user", {}).get("hwModel")
+                if hw:
+                    self._device_metrics.setdefault(key, {})["hw_model"] = hw
 
                 parsed = self._extract_position(info.get("position", {}))
                 if parsed is None:

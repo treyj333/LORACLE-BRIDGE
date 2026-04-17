@@ -261,6 +261,11 @@ def api_state():
         state["node_positions_count"] = 0
         state["node_meta"] = {}
         state["nodedb_size"] = 0
+    # Device metrics (battery, voltage, etc.)
+    if _bridge and hasattr(_bridge, "_device_metrics"):
+        state["device_metrics"] = dict(_bridge._device_metrics)
+    else:
+        state["device_metrics"] = {}
     # Greeter status (auto-greet new nodes feature)
     if _bridge and hasattr(_bridge, "greeter"):
         try:
@@ -1103,6 +1108,52 @@ def api_send_mesh():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/traceroute", methods=["POST"])
+def api_traceroute():
+    """Send a traceroute to a node and return the route."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Radio not connected"}), 503
+    data = request.get_json(silent=True) or {}
+    dest = data.get("dest", "").strip()
+    if not dest:
+        return jsonify({"error": "Missing dest"}), 400
+    try:
+        _bridge.interface.sendTraceRoute(dest, hopLimit=7)
+        return jsonify({"ok": True, "message": f"Traceroute sent to {dest}. Results arrive via mesh."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/device/reboot", methods=["POST"])
+def api_device_reboot():
+    """Reboot the connected radio device."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Radio not connected"}), 503
+    try:
+        _bridge.interface.reboot()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/device/shutdown", methods=["POST"])
+def api_device_shutdown():
+    """Shutdown the connected radio device."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    if not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Radio not connected"}), 503
+    try:
+        _bridge.interface.shutdown()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/ask", methods=["POST"])
 def api_ask():
     """Ask LORACLE a question directly from the dashboard.
@@ -1648,6 +1699,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
         <div style="display:flex;gap:6px">
           <button class="btn btn-primary" onclick="cfgConnect()">CONNECT</button>
           <button class="btn" id="cfg-disconn-btn" onclick="cfgDisconnect()" style="display:none">DISCONNECT</button>
+          <button class="btn" id="cfg-reboot-btn" onclick="cfgReboot()" style="display:none">REBOOT</button>
+          <button class="btn" id="cfg-shutdown-btn" onclick="cfgShutdown()" style="display:none;border-color:#c0392b;color:#c0392b">SHUTDOWN</button>
         </div>
       </div>
     </div>
@@ -2344,6 +2397,15 @@ function renderCanvas() {
       ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.stroke(); ctx.setLineDash([]);
     }
+    // Low battery indicator
+    if (!node.isSelf && App.state && App.state.device_metrics) {
+      var ndm = App.state.device_metrics[node.id];
+      if (ndm && ndm.battery !== undefined && ndm.battery <= 20) {
+        ctx.beginPath(); ctx.arc(node.x - baseR - 2, node.y - baseR - 2, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#c0392b'; ctx.fill();
+      }
+    }
+
     // Unread badge
     if (!node.isSelf && App.unreadCounts[node.id] > 0) {
       var uc = App.unreadCounts[node.id];
@@ -2431,11 +2493,25 @@ async function loadFloatData(nodeId) {
   if (contact.last_snr) lines.push('<div>SNR: ' + contact.last_snr + ' dB</div>');
   if (contact.last_heard) lines.push('<div>HEARD: ' + relativeTime(contact.last_heard) + '</div>');
   if (canvasNode && canvasNode.lat) lines.push('<div>GPS: ' + canvasNode.lat.toFixed(4) + ', ' + canvasNode.lon.toFixed(4) + '</div>');
+  // Device metrics (battery, voltage, temperature, etc.)
+  var dm = (App.state && App.state.device_metrics) ? App.state.device_metrics[nodeId] : null;
+  if (dm) {
+    var parts = [];
+    if (dm.battery !== undefined) parts.push(dm.battery + '%');
+    if (dm.voltage !== undefined) parts.push(dm.voltage + 'V');
+    if (parts.length) lines.push('<div>BATTERY: ' + parts.join(' / ') + '</div>');
+    if (dm.temperature !== undefined) lines.push('<div>TEMP: ' + dm.temperature + '\u00b0C</div>');
+    if (dm.humidity !== undefined) lines.push('<div>HUMIDITY: ' + dm.humidity + '%</div>');
+    if (dm.ch_util !== undefined) lines.push('<div>CH UTIL: ' + dm.ch_util + '%</div>');
+    if (dm.hw_model) lines.push('<div>HW: ' + escapeHtml(dm.hw_model) + '</div>');
+  }
   metaEl.innerHTML = lines.join('');
   var aiVal = contact.ai_enabled;
   var aiLabel = aiVal === 1 ? 'AI: ON' : aiVal === 0 ? 'AI: OFF' : 'AI: AUTO';
   var aiClass = aiVal === 1 ? ' on' : '';
-  actEl.innerHTML = '<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>';
+  var isChannel = nodeId.indexOf('channel:') !== -1;
+  actEl.innerHTML = '<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>' +
+    (isChannel ? '' : ' <button onclick="floatTrace(\'' + escapeHtml(nodeId) + '\')">TRACE</button>');
   if (msgs.length === 0) { msgsEl.innerHTML = '<div class="lo-fw-empty">NO MESSAGES YET</div>'; }
   else {
     msgsEl.innerHTML = msgs.slice(-15).map(function(m) {
@@ -2466,6 +2542,11 @@ async function floatSend(nodeId, inputEl) {
     showToast(isChannel ? 'Broadcast on CH ' + (nodeId.split(':').pop() || '0') : 'Sent to ' + nodeId.slice(-6));
   }
   loadFloatData(nodeId);
+}
+
+async function floatTrace(nodeId) {
+  var d = await callApi('POST', '/api/traceroute', {dest: nodeId});
+  if (d && d.ok) showToast('Traceroute sent to ' + nodeId.slice(-6) + ' — results arrive via mesh');
 }
 
 async function floatToggleAi(nodeId) {
@@ -2541,6 +2622,10 @@ async function poll() {
       if (cfgSt) { cfgSt.textContent = connected ? 'Connected' : 'Disconnected'; }
       if (cfgDet) { cfgDet.textContent = connected ? ((d.connection_type || '').toUpperCase() + (d.connection_address ? ' \u2014 ' + d.connection_address : '')) : ''; }
       if (cfgDisc) { cfgDisc.style.display = connected ? '' : 'none'; }
+      var cfgReboot = document.getElementById('cfg-reboot-btn');
+      var cfgShutdown = document.getElementById('cfg-shutdown-btn');
+      if (cfgReboot) cfgReboot.style.display = connected ? '' : 'none';
+      if (cfgShutdown) cfgShutdown.style.display = connected ? '' : 'none';
       var cfgUp = document.getElementById('cfg-uptime');
       if (cfgUp) cfgUp.textContent = formatUptime(d.uptime || 0);
     }
@@ -2779,6 +2864,8 @@ async function cfgLoadRagDocs() { var d = await callApi('GET', '/api/rag/stats')
 async function cfgDeleteDoc(id) { if (!confirm('Delete this document?')) return; var d = await callApi('POST', '/api/rag/delete', {doc_id: id}); if (d && d.ok) { showToast('Deleted'); cfgLoadRagDocs(); } }
 async function cfgConnect() { var type = document.getElementById('cfg-conn-type').value; var addr = document.getElementById('cfg-conn-addr').value.trim(); var payload = {type: type}; if (type === 'tcp' && addr) { if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); } else payload.host = addr; } else payload.address = addr || null; fetch('/api/connection/switch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){}); showToast('Connecting...'); }
 async function cfgDisconnect() { await callApi('POST', '/api/connection/disconnect'); }
+async function cfgReboot() { if (!confirm('Reboot the radio device?')) return; var d = await callApi('POST', '/api/device/reboot'); if (d && d.ok) showToast('Reboot command sent'); }
+async function cfgShutdown() { if (!confirm('Shutdown the radio device? You will need to manually power it back on.')) return; var d = await callApi('POST', '/api/device/shutdown'); if (d && d.ok) showToast('Shutdown command sent'); }
 async function cfgLoadDbStats() { var d = await callApi('GET', '/api/db/stats'); if (d) { var kb = Math.round((d.db_size_bytes||0)/1024); document.getElementById('cfg-db-stats').textContent = d.contacts + ' contacts, ' + d.messages + ' msgs, ' + kb + ' KB'; } }
 async function cfgPruneNow() { var d = await callApi('POST', '/api/db/prune'); if (d && d.ok) showToast('Pruned ' + d.pruned + ' messages'); cfgLoadDbStats(); }
 async function cfgClearAllMessages() { if (!confirm('Delete ALL messages? This cannot be undone.')) return; var d = await callApi('POST', '/api/db/clear-messages'); if (d && d.ok) showToast('Deleted ' + d.deleted + ' messages'); cfgLoadDbStats(); }
