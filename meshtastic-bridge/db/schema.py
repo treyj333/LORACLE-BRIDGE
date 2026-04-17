@@ -91,9 +91,10 @@ def init_db(path: str) -> sqlite3.Connection:
     """Create or open the database and ensure schema exists."""
     if path != ":memory:":
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    db = sqlite3.connect(path, check_same_thread=False)
+    db = sqlite3.connect(path, check_same_thread=False, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript(_TABLES)
     db.commit()

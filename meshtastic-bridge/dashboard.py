@@ -745,6 +745,29 @@ def api_thread_messages(thread_id):
     })
 
 
+@app.route("/api/messages/search", methods=["GET"])
+def api_messages_search():
+    """Search messages across all threads."""
+    if _bridge is None or not hasattr(_bridge, "_message_store"):
+        return jsonify({"results": []})
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify({"results": []})
+    try:
+        rows = _bridge._message_store._db.execute(
+            """SELECT m.text, m.timestamp, m.direction, m.contact_id,
+                      c.short_name
+               FROM messages m
+               LEFT JOIN contacts c ON c.id = m.contact_id
+               WHERE m.text LIKE ?
+               ORDER BY m.timestamp DESC LIMIT 20""",
+            (f"%{q}%",),
+        ).fetchall()
+        return jsonify({"results": [dict(r) for r in rows]})
+    except Exception:
+        return jsonify({"results": []})
+
+
 @app.route("/api/threads/<path:thread_id>/open", methods=["POST"])
 def api_thread_open(thread_id):
     """Mark thread as viewed — resets unread count."""
@@ -1748,11 +1771,18 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <button onclick="setNodeSort('unread',this)">UNREAD</button>
     </div>
     <div class="lo-ns-list" id="ns-list"></div>
+    <div style="border-top:2px solid var(--lo-divider-strong);padding:8px 12px">
+      <input type="text" id="ns-msg-search" placeholder="search messages..." style="width:100%;background:var(--lo-bg-deep);border:1px solid var(--lo-divider);color:var(--lo-ink);font-family:var(--font-mono);font-size:10px;padding:4px 6px;box-sizing:border-box" oninput="debounceMessageSearch()">
+      <div id="ns-msg-results" style="max-height:200px;overflow-y:auto;font-size:10px;color:var(--lo-dim);margin-top:4px"></div>
+    </div>
   </div>
 </div>
 
 <!-- ── Map View ───────────────────────────────────────────────────────────── -->
 <div id="map-view" style="display:none;position:absolute;inset:36px 0 26px 0;z-index:5"></div>
+<div id="map-controls" style="display:none;position:absolute;top:42px;right:12px;z-index:500">
+  <button class="btn btn-sm" onclick="toggleCoverageLayer()" title="Toggle coverage heatmap">COVERAGE</button>
+</div>
 
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
 <div class="lo-ribbon">
@@ -2154,6 +2184,7 @@ function setView(view) {
   var isCanvas = (view === 'mesh' || view === 'traffic');
   document.getElementById('canvas-wrap').style.display = isCanvas ? '' : 'none';
   document.getElementById('map-view').style.display = (view === 'map') ? '' : 'none';
+  document.getElementById('map-controls').style.display = (view === 'map') ? '' : 'none';
   document.querySelector('.lo-ribbon').style.display = (view === 'config') ? 'none' : '';
   document.getElementById('config-view').classList.toggle('active', view === 'config');
   document.getElementById('hud').style.display = isCanvas ? '' : 'none';
@@ -2886,7 +2917,7 @@ function checkConnectionForModal(connected) {
 
 // ─── Map View ──────────────────────────────────────────────────────────────
 
-var _map = null, _mapMarkers = {};
+var _map = null, _mapMarkers = {}, _mapLabels = {}, _covLayer = null;
 function initMap() {
   if (_map) { updateMapMarkers(); return; }
   _map = L.map('map-view').setView([39.8, -98.5], 4);
@@ -2906,9 +2937,12 @@ function updateMapMarkers() {
   var selfId = (backends.length > 0 && backends[0].self_node_id) ? backends[0].self_node_id : null;
   var bounds = [];
 
-  // Remove stale markers
+  // Remove stale markers and labels
   Object.keys(_mapMarkers).forEach(function(id) {
-    if (!positions[id]) { _map.removeLayer(_mapMarkers[id]); delete _mapMarkers[id]; }
+    if (!positions[id]) {
+      _map.removeLayer(_mapMarkers[id]); delete _mapMarkers[id];
+      if (_mapLabels[id]) { _map.removeLayer(_mapLabels[id]); delete _mapLabels[id]; }
+    }
   });
 
   Object.keys(positions).forEach(function(nid) {
@@ -2934,11 +2968,12 @@ function updateMapMarkers() {
         iconSize: [10, 10], iconAnchor: [5, 5]
       });
       var marker = L.marker(ll, {icon: icon}).addTo(_map).bindPopup(popupHtml);
-      L.marker(ll, {
+      var labelMarker = L.marker(ll, {
         icon: L.divIcon({className: 'lo-map-label', html: escapeHtml(label), iconSize: null, iconAnchor: [-6, -2]}),
         interactive: false
       }).addTo(_map);
       _mapMarkers[nid] = marker;
+      _mapLabels[nid] = labelMarker;
     }
   });
 
@@ -2946,6 +2981,17 @@ function updateMapMarkers() {
     _map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
     App._mapFitted = true;
   }
+}
+
+async function toggleCoverageLayer() {
+  if (_covLayer) { _map.removeLayer(_covLayer); _covLayer = null; return; }
+  try {
+    var r = await fetch('/api/coverage/samples?limit=5000');
+    var d = await r.json();
+    if (!d || !d.samples || d.samples.length === 0) { showToast('No coverage data yet'); return; }
+    var points = d.samples.map(function(s) { return [s.lat, s.lon, Math.max(0.2, (s.rssi + 120) / 80)]; });
+    _covLayer = L.heatLayer(points, {radius: 20, blur: 15, maxZoom: 17, gradient: {0.2: 'blue', 0.5: 'lime', 0.8: 'yellow', 1.0: 'red'}}).addTo(_map);
+  } catch(e) { showToast('Coverage load error', 'error'); }
 }
 
 // ─── Node List Sidebar ─────────────────────────────────────────────────────
@@ -2984,6 +3030,32 @@ function renderNodeList() {
       '<span class="lo-ns-heard">' + heard + '</span>' +
       badge + '</div>';
   }).join('');
+}
+
+// ─── Message Search ────────────────────────────────────────────────────────
+
+var _msgSearchTimer = null;
+function debounceMessageSearch() {
+  clearTimeout(_msgSearchTimer);
+  _msgSearchTimer = setTimeout(doMessageSearch, 400);
+}
+async function doMessageSearch() {
+  var q = (document.getElementById('ns-msg-search').value || '').trim();
+  var el = document.getElementById('ns-msg-results');
+  if (q.length < 2) { el.innerHTML = ''; return; }
+  try {
+    var r = await fetch('/api/messages/search?q=' + encodeURIComponent(q));
+    var d = await r.json();
+    if (!d.results || d.results.length === 0) { el.innerHTML = '<div style="padding:4px;color:var(--lo-faint)">No results</div>'; return; }
+    el.innerHTML = d.results.map(function(m) {
+      var name = m.short_name || (m.contact_id || '').slice(-6);
+      var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
+      var time = formatTime(m.timestamp);
+      return '<div style="padding:3px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(m.contact_id) + '\'}))">' +
+        '<span style="color:var(--lo-faint)">' + time + '</span> ' + arrow + ' <span style="color:var(--lo-ink)">' + escapeHtml(name) + '</span><br>' +
+        '<span>' + escapeHtml(m.text.substring(0, 80)) + '</span></div>';
+    }).join('');
+  } catch(e) { el.innerHTML = ''; }
 }
 
 // ─── Help + Theme ──────────────────────────────────────────────────────────

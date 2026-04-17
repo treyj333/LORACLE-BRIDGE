@@ -90,14 +90,13 @@ class TestOllamaClient(unittest.TestCase):
         self.assertEqual(len(messages), 2)  # system + user
         self.assertEqual(messages[-1]["content"], "Question from B")
 
-    def test_chat_truncates_long_response(self):
-        """Responses exceeding max_response_length should be truncated."""
-        long_text = "A" * 200  # max is 100
+    def test_chat_returns_full_response(self):
+        """chat() returns the full LLM response — truncation happens at send time in the bridge."""
+        long_text = "A" * 200
         self._mock_chat_response(long_text)
 
         result = self.client.chat("node1", "Tell me a lot")
-        self.assertLessEqual(len(result), 100)
-        self.assertTrue(result.endswith("...[truncated]"))
+        self.assertEqual(len(result), 200)
 
     def test_history_bounded(self):
         """History should not exceed maxlen."""
