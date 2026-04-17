@@ -4,6 +4,26 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16 22:00] — Phase 1: Canvas Panning, Mesh Topology, Unread Badges, Node Sidebar
+
+- What changed:
+  - **Canvas panning**: click-and-drag to move the viewport, double-click to reset. All hit detection and magnetism properly offset by pan coordinates.
+  - **Realistic mesh topology**: replaced star pattern (all nodes → center) with hop-chained links. Direct nodes connect to MY NODE, 2-hop nodes link to nearest direct node, etc. Creates tree-like layout mimicking actual relay paths.
+  - **Unread badges**: orange count badges drawn on canvas nodes with unread messages. Fetched from /api/threads every ~10s.
+  - **Node list sidebar**: hamburger button in title bar opens a right-side panel listing all nodes. Sort by name/hops/last heard/unread, filter by search, click row to open floating window.
+  - **Page crash fix**: moved canvas mousemove listener inside initCanvas() — was crashing at parse time when App.canvas was null.
+  - **Magnetism fix**: only closest node attracts, others repel. Subtle forces prevent blobbing.
+  - **Float window chat fix**: now uses /api/threads/<id>/send so messages persist in thread history.
+  - **Connect modal fix**: stays visible on boot until user interaction, shows "RADIO CONNECTED" on auto-connect.
+- Why:
+  - Feature comparison against Meshtastic web client revealed core UX gaps. Canvas was fixed-viewport with star topology — nodes outside view were invisible and layout didn't reflect actual mesh routing.
+- Impact on project goals:
+  - Dashboard now visualizes actual network topology. Users can pan to see all nodes, browse via sidebar, and see unread counts at a glance.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — all changes (HTML, CSS, JS)
+
+---
+
 ## [2026-04-16 21:00] — Fix: Connect Modal Stays Visible on Boot
 
 - What changed:
