@@ -215,11 +215,33 @@ You can run **both radios simultaneously** — Meshtastic as the primary and Mes
 
 Messages from both networks land in the same dashboard. The node list shows an `mc` badge next to MeshCore contacts so you can tell them apart.
 
-**Current Phase 1 limitations** (see `LORACLE_BRIDGE_V2_FSD.md` for the full roadmap):
+### Cross-Protocol Bridge (v2 Phases 2–5 — software-complete)
 
-- **No cross-network bridging yet** — a message on Meshtastic does *not* relay to MeshCore (that's Phase 2). v1 is multi-backend only.
+With `--second-radio` set and the bridge enabled, channel messages can cross between the two networks. The bridge is **off by default**; turn it on via the BRIDGE tab in the dashboard or by POSTing to `/api/bridge/config`.
+
+Features shipped:
+
+- **BRIDGE tab in the dashboard** — live ON/OFF badge, relayed/dropped/dedup counters, per-channel rule editor (source / channel / mode), scrolling flow log showing every relay as it happens.
+- **Per-channel rules** — three modes:
+  - `off` — channel does not bridge.
+  - `always` — every channel broadcast crosses (Akita-parity dumb bridge).
+  - `ai-gated` — messages are scored by a heuristic urgency classifier; only urgent traffic crosses. The classifier knows defense-tech mesh vocabulary (distress, medical, fire, threat, stuck/lost) and ignores chatter (hi / roger / copy / thanks).
+- **Force-relay prefixes** — a sender can prepend `!urgent`, `!priority`, `!sos`, or `!mayday` to force a message across the bridge past every policy. The prefix is stripped before the message reaches the other network.
+- **Sender tagging** — relayed messages are rendered as `[mt-Alice] original text` so recipients on the other network can see where the message came from. Custom nicknames / long names are preferred over raw node ids.
+- **Loop prevention** — two guards: the `[mt-...]` prefix short-circuits (bridge-originated text never re-relays), and a 5-minute dedup cache catches any that slip through.
+- **Per-direction rate limiting** — default 30 events / 60s per (source, dest, channel) tuple. `!urgent` bypasses the limit.
+- **Persistent audit log** — every successful relay writes to the `bridge_events` SQLite table with 30-day retention. `GET /api/bridge/history` queries it.
+- **Addon hook** — `Addon.on_bridged_message(event)` fires for every relay so custom addons can observe cross-protocol traffic.
+
+DMs never cross the bridge — bridging private conversations is a trust decision, not a priority decision.
+
+Phase 1 limitations still apply:
+
 - **MeshCore sends truncate** at the Meshtastic byte budget (233 bytes) — no `!more` paging yet.
-- **Addon compatibility** on MeshCore messages is best-effort; addons written for Meshtastic packet dicts may log warnings.
+- **Addon compatibility** on MeshCore-side incoming messages is best-effort; addons written for Meshtastic packet dicts may log warnings when processing raw MeshCore events.
+- **LLM rewrite mode** (Ollama-backed summarisation / translation of bridged text) is deferred to v2.1.
+
+See `LORACLE_BRIDGE_V2_FSD.md` for the full roadmap and phase-by-phase details.
 
 CLI flags:
 - `--protocol <auto|meshtastic|meshcore>` — primary-radio protocol detection
