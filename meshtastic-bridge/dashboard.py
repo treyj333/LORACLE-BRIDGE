@@ -2063,13 +2063,15 @@ function buildGraph(state) {
       node.lat = pos.lat || null; node.lon = pos.lon || null;
       node.lastHeard = pos.last_update || null;
     } else {
-      // New node — place on hop ring with organic jitter
-      var angle = hashStr(nid) % 360 * Math.PI / 180;
-      var ringR = hops !== null ? (80 + hops * 100) : 200;
-      ringR = Math.min(ringR, Math.min(cx, cy) - 40);
-      // Add chaos: ±30% radius jitter + ±15° angle jitter
-      var jitterR = ringR * (0.7 + (hashStr(nid + 'r') % 60) / 100);
-      var jitterA = angle + ((hashStr(nid + 'a') % 30) - 15) * Math.PI / 180;
+      // New node — golden-angle spiral with organic scatter
+      var idx = hashStr(nid);
+      var golden = 2.399963; // golden angle in radians
+      var angle = idx * golden;
+      var baseR = hops !== null ? (90 + hops * 90) : 180;
+      baseR = Math.min(baseR, Math.min(cx, cy) - 40);
+      var scatter = 0.5 + (hashStr(nid + 'r') % 100) / 100; // 0.5–1.5x
+      var jitterR = baseR * scatter;
+      var jitterA = angle + ((hashStr(nid + 'a') % 90) - 45) * Math.PI / 180;
       node = {
         id: nid, label: shortId, hops: hops, isChannel: isChannel,
         x: cx + Math.cos(jitterA) * jitterR,
@@ -2096,13 +2098,13 @@ function buildGraph(state) {
   // Rebuild simulation (only when nodes actually changed)
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
-    .force('charge', d3.forceManyBody().strength(-80))
-    .force('center', d3.forceCenter(cx, cy))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(cx, cy).strength(0.03))
     .force('link', d3.forceLink(links).distance(function(l) {
       var h = l.target.hops;
-      return h !== null ? 80 + h * 80 : 180;
-    }).strength(0.3))
-    .force('collision', d3.forceCollide(30))
+      return h !== null ? 100 + h * 90 : 200;
+    }).strength(0.2))
+    .force('collision', d3.forceCollide(45))
     .alphaDecay(0.05)
     .velocityDecay(0.4)
     .on('tick', function() {});
@@ -2114,16 +2116,27 @@ function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCod
 
 function renderLoop() {
   App.breathPhase += 0.02;
-  // Mouse magnetism — attract nearby nodes toward cursor
+  // Mouse magnetism — attract only the closest node, repel the rest
   if (_mouseX > 0 && _mouseY > 0) {
+    var closest = null, closestDist = 100;
     App.nodes.forEach(function(n) {
       if (n.isSelf) return;
       var dx = _mouseX - n.x, dy = _mouseY - n.y;
       var dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist < 120 && dist > 5) {
-        var pull = Math.max(0, (120 - dist) / 120) * 0.6;
-        n.x += dx * pull * 0.03;
-        n.y += dy * pull * 0.03;
+      if (dist < closestDist) { closest = n; closestDist = dist; }
+    });
+    App.nodes.forEach(function(n) {
+      if (n.isSelf) return;
+      var dx = _mouseX - n.x, dy = _mouseY - n.y;
+      var dist = Math.sqrt(dx*dx + dy*dy);
+      if (n === closest && dist > 5) {
+        var pull = Math.max(0, (100 - dist) / 100) * 0.15;
+        n.x += dx * pull * 0.04;
+        n.y += dy * pull * 0.04;
+      } else if (dist < 80 && dist > 5) {
+        var push = Math.max(0, (80 - dist) / 80) * 0.08;
+        n.x -= dx * push * 0.03;
+        n.y -= dy * push * 0.03;
       }
     });
   }
@@ -2360,14 +2373,10 @@ async function floatSend(nodeId, inputEl) {
   var text = inputEl.value.trim();
   if (!text) return;
   inputEl.value = '';
-  var isChannel = nodeId.indexOf('channel:') !== -1;
-  if (isChannel) {
-    var ch = parseInt(nodeId.split(':').pop()) || 0;
-    await callApi('POST', '/api/send-mesh', {text: text, node_id: '', channel: ch});
-    showToast('Broadcast on CH ' + ch);
-  } else {
-    await callApi('POST', '/api/send-mesh', {text: text, node_id: nodeId, channel: 0});
-    showToast('Sent to ' + nodeId.slice(-6));
+  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/send', {text: text});
+  if (d && d.ok) {
+    var isChannel = nodeId.indexOf('channel:') !== -1;
+    showToast(isChannel ? 'Broadcast on CH ' + (nodeId.split(':').pop() || '0') : 'Sent to ' + nodeId.slice(-6));
   }
   loadFloatData(nodeId);
 }
