@@ -2716,7 +2716,10 @@ async function loadFloatData(nodeId) {
     var parts = [];
     if (dm.battery !== undefined) parts.push(dm.battery + '%');
     if (dm.voltage !== undefined) parts.push(dm.voltage + 'V');
-    if (parts.length) lines.push('<div>BATTERY: ' + parts.join(' / ') + '</div>');
+    if (parts.length) {
+      var warn = (dm.battery !== undefined && dm.battery <= 20) ? ' <span style="color:#c0392b">\u26a0 LOW BATTERY</span>' : '';
+      lines.push('<div>BATTERY: ' + parts.join(' / ') + warn + '</div>');
+    }
     if (dm.temperature !== undefined) lines.push('<div>TEMP: ' + dm.temperature + '\u00b0C</div>');
     if (dm.humidity !== undefined) lines.push('<div>HUMIDITY: ' + dm.humidity + '%</div>');
     if (dm.ch_util !== undefined) lines.push('<div>CH UTIL: ' + dm.ch_util + '%</div>');
