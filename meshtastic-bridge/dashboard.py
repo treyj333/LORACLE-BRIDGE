@@ -2426,10 +2426,17 @@ function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCod
 
 // ─── Canvas Rendering ──────────────────────────────────────────────────────
 
+var _lastRender = 0;
 function renderLoop() {
-  App.breathPhase += 0.02;
-  // Mouse magnetism — attract only the closest node, repel the rest
-  if (_mouseX > 0 && _mouseY > 0 && !_panStart) {
+  App.animFrame = requestAnimationFrame(renderLoop);
+  // Throttle to ~30fps for performance with large meshes
+  var now = performance.now();
+  if (now - _lastRender < 33) return;
+  _lastRender = now;
+
+  App.breathPhase += 0.03;
+  // Mouse magnetism — only for meshes under 40 nodes
+  if (_mouseX > 0 && _mouseY > 0 && !_panStart && App.nodes.length < 40) {
     var wmx = _mouseX - App.panX, wmy = _mouseY - App.panY;
     var closest = null, closestDist = 100;
     App.nodes.forEach(function(n) {
@@ -2438,27 +2445,24 @@ function renderLoop() {
       var dist = Math.sqrt(dx*dx + dy*dy);
       if (dist < closestDist) { closest = n; closestDist = dist; }
     });
-    App.nodes.forEach(function(n) {
-      if (n.isSelf) return;
-      var dx = wmx - n.x, dy = wmy - n.y;
+    if (closest) {
+      var dx = wmx - closest.x, dy = wmy - closest.y;
       var dist = Math.sqrt(dx*dx + dy*dy);
-      if (n === closest && dist > 5) {
-        var pull = Math.max(0, (100 - dist) / 100) * 0.15;
-        n.x += dx * pull * 0.04;
-        n.y += dy * pull * 0.04;
-      } else if (dist < 80 && dist > 5) {
-        var push = Math.max(0, (80 - dist) / 80) * 0.08;
-        n.x -= dx * push * 0.03;
-        n.y -= dy * push * 0.03;
+      if (dist > 5) {
+        closest.x += dx * 0.005;
+        closest.y += dy * 0.005;
       }
-    });
+    }
   }
   renderCanvas();
-  App.animFrame = requestAnimationFrame(renderLoop);
 }
 
+var _colorCache = {}, _colorCacheTick = 0;
 function getColor(varName) {
-  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  var tick = Math.floor(App.breathPhase / 5); // refresh every ~4 seconds
+  if (tick !== _colorCacheTick) { _colorCache = {}; _colorCacheTick = tick; }
+  if (!_colorCache[varName]) _colorCache[varName] = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return _colorCache[varName];
 }
 
 function renderCanvas() {
@@ -2549,21 +2553,14 @@ function renderCanvas() {
     if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : (0.3 + 0.7 * freshness);
 
     if (node.isChannel) {
-      // Hexagon — public channels
-      ctx.save();
-      ctx.beginPath();
-      for (var a = 0; a < 6; a++) {
-        var angle = Math.PI / 3 * a - Math.PI / 6;
-        var px = node.x + baseR * Math.cos(angle);
-        var py = node.y + baseR * Math.sin(angle);
-        if (a === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.globalAlpha = 0.2; ctx.fillStyle = accent2; ctx.fill();
-      ctx.globalAlpha = 1; ctx.strokeStyle = accent2; ctx.lineWidth = 1.5; ctx.stroke();
-      ctx.font = '500 9px "IBM Plex Mono"'; ctx.textAlign = 'center';
-      ctx.fillStyle = accent2; ctx.fillText('\u25C9', node.x, node.y + 3);
-      ctx.restore();
+      // Channel — double ring with broadcast icon
+      ctx.beginPath(); ctx.arc(node.x, node.y, baseR + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = accent2; ctx.lineWidth = 1; ctx.globalAlpha = 0.3; ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
+      ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = accent2; ctx.globalAlpha = 0.15;
+      ctx.fill(); ctx.globalAlpha = 1;
     } else if (node.isSelf) {
       // MY NODE — orange with sonar ring
       var sonarR = 10 + (App.breathPhase * 8 % 30);
