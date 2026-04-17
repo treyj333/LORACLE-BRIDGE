@@ -1943,6 +1943,8 @@ function resizeCanvas() {
 
 // ─── Force Simulation ──────────────────────────────────────────────────────
 
+var _prevNodeIds = '';  // track whether node set changed
+
 function buildGraph(state) {
   var knownNodes = state.known_nodes || [];
   var positions = state.node_positions || {};
@@ -1950,46 +1952,90 @@ function buildGraph(state) {
   var cx = App.width / 2, cy = App.height / 2;
 
   // Merge all node IDs
-  var allIds = {}; var selfId = null;
+  var allIds = {};
+  var selfId = null;
   knownNodes.forEach(function(n) { allIds[n] = true; });
   Object.keys(positions).forEach(function(n) { allIds[n] = true; });
 
-  // Try to find self node
+  // Add public channel 0 (always present when connected)
+  if (state.connected) {
+    allIds['meshtastic:channel:0'] = true;
+  }
+
   var backends = state.backends || [];
   if (backends.length > 0 && backends[0].self_node_id) selfId = backends[0].self_node_id;
+
+  // Check if node set actually changed — if not, just update data in place
+  var currentIds = Object.keys(allIds).sort().join(',');
+  if (currentIds === _prevNodeIds && App.nodes.length > 0) {
+    // Just update metadata on existing nodes (no position reset)
+    App.nodes.forEach(function(n) {
+      if (n.isSelf) return;
+      var m = meta[n.id] || {};
+      var pos = positions[n.id] || {};
+      n.hops = (typeof m.hops === 'number') ? m.hops : n.hops;
+      n.rssi = m.rssi || pos.rssi || n.rssi;
+      n.snr = m.snr || pos.snr || n.snr;
+      n.lat = pos.lat || n.lat;
+      n.lon = pos.lon || n.lon;
+      n.lastHeard = pos.last_update || n.lastHeard;
+    });
+    return;
+  }
+  _prevNodeIds = currentIds;
+
+  // Build node list — preserve existing positions if node existed before
+  var oldNodeMap = {};
+  (App.nodes || []).forEach(function(n) { oldNodeMap[n.id] = n; });
 
   var nodes = [];
   var nodeMap = {};
 
-  // MY NODE at center
-  nodes.push({ id: '__self__', x: cx, y: cy, fx: cx, fy: cy, isSelf: true, label: 'MY NODE', hops: 0, isChannel: false });
-  nodeMap['__self__'] = nodes[0];
-
-  // Add channel nodes
-  // (channels from contacts DB will appear here)
+  // MY NODE at center (fixed position)
+  var selfNode = oldNodeMap['__self__'] || { id: '__self__', x: cx, y: cy };
+  selfNode.fx = cx; selfNode.fy = cy; selfNode.isSelf = true;
+  selfNode.label = 'MY NODE'; selfNode.hops = 0; selfNode.isChannel = false;
+  nodes.push(selfNode);
+  nodeMap['__self__'] = selfNode;
 
   Object.keys(allIds).forEach(function(nid) {
-    if (selfId && nid === selfId) return; // skip self
+    if (selfId && nid === selfId) return;
     var m = meta[nid] || {};
+    var pos = positions[nid] || {};
     var hops = (typeof m.hops === 'number') ? m.hops : null;
     var shortId = nid.length > 8 ? nid.slice(-4) : nid;
     var isChannel = nid.indexOf('channel:') !== -1;
+    if (isChannel) shortId = 'CH ' + (nid.split(':').pop() || '0');
 
-    // Position by hop ring
-    var angle = hashStr(nid) % 360 * Math.PI / 180;
-    var ringR = hops !== null ? (80 + hops * 100) : 200;
-    ringR = Math.min(ringR, Math.min(cx, cy) - 40);
-
-    nodes.push({
-      id: nid, label: shortId, hops: hops, isChannel: isChannel,
-      x: cx + Math.cos(angle) * ringR,
-      y: cy + Math.sin(angle) * ringR,
-      rssi: m.rssi || null, snr: m.snr || null,
-    });
-    nodeMap[nid] = nodes[nodes.length - 1];
+    // Reuse existing position if available
+    var existing = oldNodeMap[nid];
+    var node;
+    if (existing) {
+      node = existing;
+      node.hops = hops; node.isChannel = isChannel; node.label = shortId;
+      node.rssi = m.rssi || pos.rssi || null;
+      node.snr = m.snr || pos.snr || null;
+      node.lat = pos.lat || null; node.lon = pos.lon || null;
+      node.lastHeard = pos.last_update || null;
+    } else {
+      // New node — place on hop ring
+      var angle = hashStr(nid) % 360 * Math.PI / 180;
+      var ringR = hops !== null ? (80 + hops * 100) : 200;
+      ringR = Math.min(ringR, Math.min(cx, cy) - 40);
+      node = {
+        id: nid, label: shortId, hops: hops, isChannel: isChannel,
+        x: cx + Math.cos(angle) * ringR,
+        y: cy + Math.sin(angle) * ringR,
+        rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
+        lat: pos.lat || null, lon: pos.lon || null,
+        lastHeard: pos.last_update || null,
+      };
+    }
+    nodes.push(node);
+    nodeMap[nid] = node;
   });
 
-  // Links: every node links to self (simplified — real topology unknown from nodeDB)
+  // Links
   var links = [];
   nodes.forEach(function(n) {
     if (n.isSelf) return;
@@ -1999,7 +2045,7 @@ function buildGraph(state) {
   App.nodes = nodes;
   App.links = links;
 
-  // Setup d3-force simulation
+  // Rebuild simulation (only when nodes actually changed)
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
     .force('charge', d3.forceManyBody().strength(-120))
@@ -2008,9 +2054,10 @@ function buildGraph(state) {
       var h = l.target.hops;
       return h !== null ? 80 + h * 80 : 180;
     }).strength(0.3))
-    .force('collision', d3.forceCollide(25))
-    .alphaDecay(0.02)
-    .on('tick', function() {}); // rendering handled by renderLoop
+    .force('collision', d3.forceCollide(30))
+    .alphaDecay(0.05)
+    .velocityDecay(0.4)
+    .on('tick', function() {});
 }
 
 function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0; return Math.abs(h); }
@@ -2054,19 +2101,28 @@ function renderCanvas() {
   }
   ctx.setLineDash([]);
 
-  // Draw links
+  // Draw links with hop labels
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
     var hops = t.hops;
     ctx.beginPath();
     ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
     ctx.strokeStyle = accent2;
-    ctx.lineWidth = hops === 0 ? 1.5 : 0.5;
+    ctx.lineWidth = hops === 0 ? 2 : (hops !== null && hops <= 2 ? 1 : 0.5);
     ctx.globalAlpha = 0.3;
     if (hops !== null && hops > 2) { ctx.setLineDash([3, 5]); }
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+
+    // Hop count label on the link midpoint
+    if (hops !== null) {
+      var mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
+      ctx.font = '500 8px "IBM Plex Mono"';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = faint;
+      ctx.fillText(hops === 0 ? 'DIRECT' : hops + 'H', mx, my - 3);
+    }
   });
 
   // Draw nodes
@@ -2164,17 +2220,43 @@ async function openNodePanel(nodeId) {
     var contact = d.contact || {};
     var msgs = d.messages || [];
 
-    // Header
+    // Also pull live canvas data for this node
+    var canvasNode = App.nodes.find(function(n) { return n.id === nodeId; });
+
+    // Header — full name
     var name = contact.long_name ? (contact.short_name + ' \u00b7 ' + contact.long_name) : (contact.short_name || nodeId.slice(-6));
     document.getElementById('np-name').textContent = name;
 
-    var metaParts = [];
+    // Build rich metadata display
+    var metaHtml = '';
     var proto = (contact.protocol === 'mc' || contact.protocol === 'meshcore') ? 'MC' : 'MT';
-    metaParts.push(proto);
-    if (contact.last_hops !== null && contact.last_hops !== undefined) metaParts.push(contact.last_hops === 0 ? 'DIRECT' : contact.last_hops + ' HOPS');
-    if (contact.last_rssi) metaParts.push(contact.last_rssi + ' dBm');
-    if (contact.last_heard) metaParts.push('HEARD ' + relativeTime(contact.last_heard));
-    document.getElementById('np-meta').textContent = metaParts.join(' \u00b7 ');
+
+    metaHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:8px">';
+    metaHtml += '<div><span style="color:var(--lo-faint)">ID</span> <span style="color:var(--lo-ink)">' + escapeHtml(nodeId) + '</span></div>';
+    metaHtml += '<div><span style="color:var(--lo-faint)">PROTOCOL</span> <span style="color:var(--lo-ink)">' + proto + '</span></div>';
+
+    var hops = contact.last_hops;
+    if (hops !== null && hops !== undefined) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">HOPS</span> <span style="color:var(--lo-ink)">' + (hops === 0 ? 'DIRECT' : hops) + '</span></div>';
+    }
+    if (contact.last_rssi) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">RSSI</span> <span style="color:var(--lo-ink)">' + contact.last_rssi + ' dBm</span></div>';
+    }
+    if (contact.last_snr) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">SNR</span> <span style="color:var(--lo-ink)">' + contact.last_snr + ' dB</span></div>';
+    }
+    if (contact.last_heard) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">LAST HEARD</span> <span style="color:var(--lo-ink)">' + relativeTime(contact.last_heard) + '</span></div>';
+    }
+    if (contact.first_seen) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">FIRST SEEN</span> <span style="color:var(--lo-ink)">' + relativeTime(contact.first_seen) + '</span></div>';
+    }
+    if (contact.has_position && canvasNode && canvasNode.lat) {
+      metaHtml += '<div><span style="color:var(--lo-faint)">GPS</span> <span style="color:var(--lo-ink)">' + canvasNode.lat.toFixed(4) + ', ' + canvasNode.lon.toFixed(4) + '</span></div>';
+    }
+    metaHtml += '</div>';
+
+    document.getElementById('np-meta').innerHTML = metaHtml;
 
     // AI toggle
     var aiBtn = document.getElementById('np-ai-toggle');
