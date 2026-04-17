@@ -270,13 +270,22 @@ def api_state():
     else:
         state["greeter"] = {}
     # Radio backends info
-    if _bridge and hasattr(_bridge, "_radio_manager"):
+    # Build backends info from bridge's actual connection state
+    backends_info = []
+    if _bridge:
         try:
-            state["backends"] = _bridge._radio_manager.get_backends_info()
+            backends_info = _bridge._radio_manager.get_backends_info()
         except Exception:
-            state["backends"] = []
-    else:
-        state["backends"] = []
+            pass
+        # If RadioManager has no backends, report from bridge's own state
+        if not backends_info:
+            backends_info = [{
+                "id": "mt-primary",
+                "protocol": "mt",
+                "transport": getattr(_bridge, "connection_type", "serial"),
+                "connected": state.get("connected", False),
+            }]
+    state["backends"] = backends_info
     # AI replies toggle
     state["ai_replies_enabled"] = getattr(_bridge, "_ai_replies_enabled", True) if _bridge else True
     # Total unread from DB
@@ -650,9 +659,17 @@ def api_connection_disconnect():
 @app.route("/api/radios", methods=["GET"])
 def api_radios():
     """Return info about all active radio backends."""
-    if _bridge is None or not hasattr(_bridge, "_radio_manager"):
+    if _bridge is None:
         return jsonify({"backends": []})
-    return jsonify({"backends": _bridge._radio_manager.get_backends_info()})
+    try:
+        info = _bridge._radio_manager.get_backends_info()
+    except Exception:
+        info = []
+    if not info:
+        info = [{"id": "mt-primary", "protocol": "mt",
+                 "transport": getattr(_bridge, "connection_type", "serial"),
+                 "connected": _bridge._is_interface_alive()}]
+    return jsonify({"backends": info})
 
 
 @app.route("/api/ai-replies", methods=["GET"])

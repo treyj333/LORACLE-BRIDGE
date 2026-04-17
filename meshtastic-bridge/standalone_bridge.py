@@ -324,19 +324,12 @@ class StandaloneBridge:
         threading.Thread(target=self._dedup_cleanup_loop, daemon=True).start()
         threading.Thread(target=self._context_cleanup_loop, daemon=True).start()
 
-        # Connect radio(s) via RadioManager
-        try:
-            self._radio_manager.add_backend(self._primary_backend)
-            logger.info(
-                f"Primary radio: {self._primary_backend.protocol.value} · "
-                f"{self._primary_backend.transport.value} · "
-                f"{self._primary_backend.get_connection_address()}"
-            )
-        except Exception as e:
-            logger.warning(f"Primary radio backend failed: {e}")
-        # Also keep the legacy connection loop for the existing pubsub path
+        # Connect to radio in background — the old proven path
+        # (RadioManager/MeshtasticBackend are kept as library code for
+        # future multi-radio support but NOT connected at runtime to
+        # avoid fighting with the working _radio_connection_loop)
         threading.Thread(target=self._radio_connection_loop, daemon=True).start()
-        # Node sync loop — periodically pull positions from backends
+        # Node sync loop
         threading.Thread(target=self._node_sync_loop, daemon=True).start()
 
         # Start addons
