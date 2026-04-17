@@ -70,6 +70,14 @@ class MessageStore:
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    def update_status(self, msg_id: str, status: str) -> None:
+        """Update delivery status of a message."""
+        self._db.execute(
+            "UPDATE messages SET delivery_status = ? WHERE id = ?",
+            (status, msg_id),
+        )
+        self._db.commit()
+
     def count_by_contact(self, contact_id: str) -> int:
         row = self._db.execute(
             "SELECT COUNT(*) AS cnt FROM messages WHERE contact_id = ?",
