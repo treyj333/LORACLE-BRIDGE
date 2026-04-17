@@ -2056,6 +2056,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <div class="lo-onboarding" id="onboarding">
   <div class="lo-onboarding-box">
     <div class="lo-ob-progress" id="ob-progress"></div>
+
     <div class="lo-ob-step active" data-step="0">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <circle cx="180" cy="60" r="6" fill="var(--lo-accent)"/>
@@ -2065,51 +2066,105 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
         <circle cx="60" cy="90" r="3" fill="var(--lo-accent-2)"><animate attributeName="r" values="3;4.2" dur="3.2s" begin="1.2s" repeatCount="indefinite"/></circle>
         <circle cx="300" cy="95" r="3" fill="var(--lo-accent-2)"><animate attributeName="r" values="3;4.2" dur="3.2s" begin="1.8s" repeatCount="indefinite"/></circle>
       </svg>
-      <h3>THE MESH IS YOUR INTERFACE</h3>
-      <p>Every dot is a radio. Every line is a connection. Click any node to message it or see its info.</p>
+      <h3>WELCOME TO LORACLE BRIDGE</h3>
+      <p>Offline AI over mesh radio. The orange dot is your radio. Green dots are peers on the mesh. Purple dots are MeshCore nodes. Connect your radio first, then explore.</p>
     </div>
+
     <div class="lo-ob-step" data-step="1">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="180" cy="60" r="4" fill="var(--lo-accent)"/>
-        <circle cx="120" cy="60" r="3" fill="var(--lo-accent-2)"/><line x1="180" y1="60" x2="120" y2="60" stroke="var(--lo-accent-2)" stroke-width="1" opacity="0.5"/>
-        <circle cx="60" cy="60" r="3" fill="var(--lo-accent-2)"/><line x1="120" y1="60" x2="60" y2="60" stroke="var(--lo-accent-2)" stroke-width="1" opacity="0.5"/>
-        <text x="120" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">1H</text>
-        <text x="60" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">2H</text>
+        <circle cx="180" cy="60" r="6" fill="var(--lo-accent)"/>
+        <circle cx="120" cy="50" r="4" fill="var(--lo-accent-2)"/>
+        <line x1="180" y1="60" x2="120" y2="50" stroke="var(--lo-accent-2)" stroke-width="0.8" opacity="0.5"/>
+        <circle cx="70" cy="70" r="3" fill="var(--lo-accent-2)"/>
+        <line x1="120" y1="50" x2="70" y2="70" stroke="var(--lo-accent-2)" stroke-width="0.8" opacity="0.5"/>
+        <circle cx="250" cy="40" r="4" fill="var(--lo-accent-2)"/>
+        <line x1="180" y1="60" x2="250" y2="40" stroke="var(--lo-accent-2)" stroke-width="0.8" opacity="0.5"/>
+        <circle cx="310" cy="30" r="3" fill="var(--lo-accent-2)" opacity="0.5"/>
+        <line x1="250" y1="40" x2="310" y2="30" stroke="var(--lo-accent-2)" stroke-width="0.8" opacity="0.3"/>
       </svg>
-      <h3>DISTANCE = HOPS</h3>
-      <p>Closer nodes are direct peers. Farther nodes are more hops away. The mesh handles routing automatically.</p>
+      <h3>ORGANIC MESH TOPOLOGY</h3>
+      <p>Direct peers connect to your node. Multi-hop nodes chain through the radios they relay off of. Nodes with GPS are positioned geographically — the layout mirrors your actual network.</p>
     </div>
+
     <div class="lo-ob-step" data-step="2">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
-        <rect x="140" y="30" width="80" height="60" rx="0" fill="none" stroke="var(--lo-divider-strong)" stroke-width="1"/>
-        <text x="180" y="55" text-anchor="middle" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">NODE INFO</text>
-        <text x="180" y="70" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="6">&gt; type a message...</text>
+        <circle cx="120" cy="60" r="5" fill="var(--lo-accent-2)"/>
+        <text x="120" y="80" text-anchor="middle" fill="var(--lo-ink)" font-family="var(--font-mono)" font-size="7">FRESH</text>
+        <circle cx="200" cy="60" r="4" fill="var(--lo-accent-2)" opacity="0.6"/>
+        <text x="200" y="80" text-anchor="middle" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">30 MIN</text>
+        <circle cx="280" cy="60" r="3" fill="var(--lo-accent-2)" opacity="0.3"/>
+        <text x="280" y="80" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="7">STALE</text>
       </svg>
-      <h3>CLICK TO CHAT</h3>
-      <p>Click any node to open its panel. See signal info, hop count, and send messages directly.</p>
+      <h3>FRESH NODES GLOW</h3>
+      <p>Recently heard nodes are bright and pulse gently. Nodes go dim as they age out. After 1 hour of silence, they fade to ghosts. It's easy to tell who's alive at a glance.</p>
     </div>
+
     <div class="lo-ob-step" data-step="3">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="180,40 200,52 200,68 180,80 160,68 160,52" fill="none" stroke="var(--lo-accent-2)" stroke-width="1.5"/>
-        <text x="180" y="64" text-anchor="middle" fill="var(--lo-accent-2)" font-family="var(--font-mono)" font-size="7">CH 0</text>
+        <rect x="120" y="20" width="120" height="80" fill="none" stroke="var(--lo-divider-strong)" stroke-width="1"/>
+        <text x="180" y="40" text-anchor="middle" fill="var(--lo-ink)" font-family="var(--font-mono)" font-size="9" font-weight="500">NODE 3a7b</text>
+        <text x="180" y="55" text-anchor="middle" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">HOPS: 2H</text>
+        <text x="180" y="68" text-anchor="middle" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">BATT: 87%</text>
+        <text x="180" y="85" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="6">&gt; message...</text>
       </svg>
-      <h3>CHANNELS ARE HEXAGONS</h3>
-      <p>Public channels appear as hexagon nodes. Click to read channel traffic or broadcast to everyone in range.</p>
+      <h3>CLICK ANY NODE</h3>
+      <p>Opens a floating window with signal info, battery, GPS, hops, and a message thread. Send DMs, toggle AI auto-reply, run a traceroute, or view their chat history.</p>
     </div>
+
     <div class="lo-ob-step" data-step="4">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="180" cy="60" r="6" fill="var(--lo-accent)"/>
-        <circle cx="80" cy="30" r="3" fill="var(--lo-accent-2)"/><circle cx="280" cy="25" r="3" fill="var(--lo-accent-2)"/>
-        <circle cx="60" cy="90" r="3" fill="var(--lo-accent-2)"/><circle cx="300" cy="95" r="3" fill="var(--lo-accent-2)"/>
-        <circle cx="120" cy="105" r="3" fill="var(--lo-accent-2)"/><circle cx="250" cy="100" r="3" fill="var(--lo-accent-2)"/>
-        <line x1="180" y1="60" x2="80" y2="30" stroke="var(--lo-accent-2)" stroke-width="0.5" opacity="0.4"/>
-        <line x1="180" y1="60" x2="280" y2="25" stroke="var(--lo-accent-2)" stroke-width="0.5" opacity="0.4"/>
-        <line x1="180" y1="60" x2="60" y2="90" stroke="var(--lo-accent-2)" stroke-width="0.5" opacity="0.4"/>
-        <line x1="180" y1="60" x2="300" y2="95" stroke="var(--lo-accent-2)" stroke-width="0.5" opacity="0.4"/>
+        <circle cx="180" cy="60" r="12" fill="none" stroke="var(--lo-accent-2)" stroke-width="2"/>
+        <text x="180" y="64" text-anchor="middle" fill="var(--lo-accent-2)" font-family="var(--font-mono)" font-size="7">\u25C9</text>
+        <text x="180" y="95" text-anchor="middle" fill="var(--lo-accent-2)" font-family="var(--font-mono)" font-size="8" font-weight="500">PUBLIC</text>
+        <circle cx="100" cy="45" r="3" fill="var(--lo-accent-2)"/>
+        <circle cx="260" cy="40" r="3" fill="var(--lo-accent-2)"/>
+        <circle cx="90" cy="85" r="3" fill="var(--lo-accent-2)"/>
+        <circle cx="270" cy="80" r="3" fill="var(--lo-accent-2)"/>
       </svg>
-      <h3>YOUR MESH IS ALIVE</h3>
-      <p id="ob-live-stats">Nodes breathe, packets pulse along links. The UI's energy matches your network's activity.</p>
+      <h3>PUBLIC CHANNEL</h3>
+      <p>The ringed circle labeled PUBLIC is channel 0 — everyone on the mesh can see broadcasts there. Click it to send a message that reaches every node in range.</p>
     </div>
+
+    <div class="lo-ob-step" data-step="5">
+      <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
+        <rect x="60" y="20" width="240" height="80" fill="none" stroke="var(--lo-divider)" stroke-width="0.5"/>
+        <circle cx="100" cy="50" r="3" fill="var(--lo-accent-2)"/>
+        <circle cx="160" cy="70" r="3" fill="var(--lo-accent)"/>
+        <circle cx="230" cy="45" r="3" fill="var(--lo-accent-2)"/>
+        <circle cx="270" cy="80" r="3" fill="var(--lo-accent-2)"/>
+        <text x="180" y="110" text-anchor="middle" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">MAP VIEW</text>
+      </svg>
+      <h3>MAP, TRAFFIC &amp; SIDEBAR</h3>
+      <p>MAP shows nodes on a real map with coverage heatmap. TRAFFIC dims quiet nodes so active ones pop. The \u2630 sidebar lists every node — sort, filter, and search messages across all threads.</p>
+    </div>
+
+    <div class="lo-ob-step" data-step="6">
+      <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
+        <rect x="110" y="25" width="140" height="22" fill="var(--lo-accent)" opacity="0.15"/>
+        <text x="180" y="40" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="8" font-weight="500">!help</text>
+        <rect x="90" y="55" width="180" height="22" fill="var(--lo-accent-2)" opacity="0.15"/>
+        <text x="180" y="70" text-anchor="middle" fill="var(--lo-ink)" font-family="var(--font-mono)" font-size="7">LORACLE answers from local LLM</text>
+        <text x="180" y="100" text-anchor="middle" fill="var(--lo-faint)" font-family="var(--font-mono)" font-size="6">fully offline \u00b7 grounded in your docs</text>
+      </svg>
+      <h3>LORACLE AI</h3>
+      <p>Anyone on the mesh can DM your radio to chat with a local LLM. Drop PDFs in CONTEXT FILES/ for knowledge base grounding. Commands: !help, !nav, !triage, !brief, !drop.</p>
+    </div>
+
+    <div class="lo-ob-step" data-step="7">
+      <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
+        <rect x="80" y="20" width="200" height="16" fill="none" stroke="var(--lo-divider-strong)" stroke-width="0.5"/>
+        <text x="85" y="32" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">CONNECTION</text>
+        <rect x="80" y="44" width="200" height="16" fill="none" stroke="var(--lo-divider)" stroke-width="0.5"/>
+        <text x="85" y="56" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">CHANNELS &amp; RADIO</text>
+        <rect x="80" y="68" width="200" height="16" fill="none" stroke="var(--lo-divider)" stroke-width="0.5"/>
+        <text x="85" y="80" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">MODEL ROUTING &amp; RAG</text>
+        <rect x="80" y="92" width="200" height="16" fill="none" stroke="var(--lo-divider)" stroke-width="0.5"/>
+        <text x="85" y="104" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">DEVICE ADMIN</text>
+      </svg>
+      <h3>CONFIG HAS EVERYTHING</h3>
+      <p>Connection type, channel management, LoRa radio settings, AI model routing, knowledge packs, device reboot/shutdown. You can relaunch this tour any time from CONFIG &gt; APPEARANCE.</p>
+    </div>
+
     <div class="lo-ob-nav">
       <button class="btn" id="ob-prev" onclick="obPrev()">PREV</button>
       <button class="lo-ob-skip" onclick="obSkip()">SKIP</button>
@@ -2899,6 +2954,14 @@ async function poll() {
     try { connected = d.connected; } catch(e) {}
     dot.className = connected ? 'lo-dot on' : 'lo-dot';
     label.textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
+    // Disconnect alert — fire once on connected → disconnected transition
+    if (App._lastConnected === true && !connected) {
+      var ct = (d.connection_type || 'radio').toUpperCase();
+      showToast('\u26a0 RADIO DISCONNECTED — ' + ct + ' connection lost', 'error');
+    } else if (App._lastConnected === false && connected) {
+      showToast('\u2713 Radio reconnected', 'info');
+    }
+    App._lastConnected = connected;
     checkConnectionForModal(connected);
 
     // HUD
@@ -3211,7 +3274,7 @@ document.getElementById('theme-toggle').addEventListener('click', function() { v
 
 // ─── Onboarding ────────────────────────────────────────────────────────────
 
-var _obStep = 0, _obTotal = 5;
+var _obStep = 0, _obTotal = 8;
 function showOnboarding() { _obStep = 0; renderOb(); document.getElementById('onboarding').classList.add('open'); }
 function obNext() { if (_obStep < _obTotal - 1) { _obStep++; renderOb(); } else obSkip(); }
 function obPrev() { if (_obStep > 0) { _obStep--; renderOb(); } }
