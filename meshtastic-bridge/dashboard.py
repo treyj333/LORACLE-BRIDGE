@@ -764,11 +764,32 @@ def api_thread_send(thread_id):
     text = data.get("text", "").strip()
     if not text:
         return jsonify({"error": "Empty message"}), 400
+
+    # Auto-create contact if not in DB yet
     contact = _bridge._contact_store.get(thread_id)
     if contact is None:
+        try:
+            short = thread_id[-6:] if len(thread_id) > 6 else thread_id
+            _bridge._contact_store.upsert(
+                contact_id=thread_id, protocol="meshtastic",
+                backend_id=thread_id, short_name=short,
+            )
+            contact = _bridge._contact_store.get(thread_id)
+        except Exception:
+            pass
+    if contact is None:
         return jsonify({"error": "Contact not found"}), 404
+
     try:
-        _bridge._radio_manager.send(thread_id, text, is_dm=True)
+        # Send via the proven interface path (not RadioManager)
+        is_channel = "channel:" in thread_id
+        if is_channel:
+            ch_num = int(thread_id.split(":")[-1])
+            from meshtastic import BROADCAST_ADDR
+            _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=ch_num, wantAck=False)
+        else:
+            _bridge.interface.sendText(text, destinationId=thread_id, wantAck=False)
+
         msg_id = _bridge._message_store.insert(
             contact_id=thread_id, direction="out", author="human",
             text=text, protocol=contact["protocol"],
@@ -1905,8 +1926,8 @@ function showToast(message, type) {
   type = type || 'info';
   var c = document.getElementById('toast-container'), t = document.createElement('div');
   t.className = 'toast toast-' + type; t.textContent = message; c.appendChild(t);
-  setTimeout(function() { t.classList.add('fade-out'); }, 2700);
-  setTimeout(function() { if (t.parentNode) c.removeChild(t); }, 3100);
+  setTimeout(function() { t.classList.add('fade-out'); }, 9500);
+  setTimeout(function() { if (t.parentNode) c.removeChild(t); }, 10000);
 }
 
 async function callApi(method, url, body) {
@@ -2355,16 +2376,24 @@ async function panelSend() {
   input.value = '';
   document.getElementById('np-send').disabled = true;
 
-  // Try thread send first, fall back to raw mesh send
-  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(App.selectedNode) + '/send', {text: text});
-  if (!d || d.error) {
-    // Contact not in DB — send via raw mesh endpoint
-    d = await callApi('POST', '/api/send-mesh', {text: text, node_id: App.selectedNode, channel: 0});
+  var nodeId = App.selectedNode;
+  var isChannel = nodeId.indexOf('channel:') !== -1;
+
+  if (isChannel) {
+    // Channel broadcast — extract channel number
+    var chNum = parseInt(nodeId.split(':').pop()) || 0;
+    var d = await callApi('POST', '/api/send-mesh', {text: text, node_id: '', channel: chNum});
+    if (d && d.ok) showToast('Broadcast on CH ' + chNum);
+  } else {
+    // DM to specific node — use raw mesh send (proven path)
+    var d = await callApi('POST', '/api/send-mesh', {text: text, node_id: nodeId, channel: 0});
+    if (d && d.ok) showToast('Sent to ' + nodeId.slice(-6));
   }
 
   document.getElementById('np-send').disabled = false;
-  if (d && (d.ok || d.direction)) showToast('Sent to ' + App.selectedNode.slice(-6));
-  openNodePanel(App.selectedNode); // refresh
+  // Also persist to DB if contact exists
+  try { await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/open'); } catch(e) {}
+  openNodePanel(nodeId);
 }
 
 async function toggleNodeAi() {
