@@ -2215,16 +2215,19 @@ function onCanvasClick(e) {
   var rect = App.canvas.getBoundingClientRect();
   var mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-  // Find closest node
+  // Find closest node (40px hit area for easier clicking)
   var closest = null, closestDist = Infinity;
   App.nodes.forEach(function(n) {
     var dx = n.x - mx, dy = n.y - my;
     var dist = Math.sqrt(dx*dx + dy*dy);
-    if (dist < 30 && dist < closestDist) { closest = n; closestDist = dist; }
+    if (dist < 40 && dist < closestDist) { closest = n; closestDist = dist; }
   });
 
   if (closest && !closest.isSelf) {
     openNodePanel(closest.id);
+  } else if (closest && closest.isSelf) {
+    // Clicking MY NODE — could open broadcast/channel panel in future
+    showToast('This is your radio node');
   } else {
     closePanel();
   }
@@ -2238,7 +2241,16 @@ async function openNodePanel(nodeId) {
 
   try {
     var d = await callApi('GET', '/api/threads/' + encodeURIComponent(nodeId));
-    if (!d) { closePanel(); return; }
+    if (!d || d.error) {
+      // Contact not in DB yet — show basic panel with canvas data
+      var canvasNode = App.nodes.find(function(n) { return n.id === nodeId; });
+      document.getElementById('np-name').textContent = canvasNode ? canvasNode.label : nodeId.slice(-6);
+      document.getElementById('np-meta').innerHTML = '<div style="color:var(--lo-faint)">Node discovered but no contact record yet. Send a message to create one.</div>';
+      document.getElementById('np-messages').innerHTML = '<div class="lo-np-empty">SEND A MESSAGE TO START</div>';
+      document.getElementById('np-input').placeholder = 'message ' + (canvasNode ? canvasNode.label : nodeId.slice(-6)) + '...';
+      document.getElementById('np-input').focus();
+      return;
+    }
 
     var contact = d.contact || {};
     var msgs = d.messages || [];
@@ -2325,8 +2337,16 @@ async function panelSend() {
   if (!text) return;
   input.value = '';
   document.getElementById('np-send').disabled = true;
-  await callApi('POST', '/api/threads/' + encodeURIComponent(App.selectedNode) + '/send', {text: text});
+
+  // Try thread send first, fall back to raw mesh send
+  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(App.selectedNode) + '/send', {text: text});
+  if (!d || d.error) {
+    // Contact not in DB — send via raw mesh endpoint
+    d = await callApi('POST', '/api/send-mesh', {text: text, node_id: App.selectedNode, channel: 0});
+  }
+
   document.getElementById('np-send').disabled = false;
+  if (d && (d.ok || d.direction)) showToast('Sent to ' + App.selectedNode.slice(-6));
   openNodePanel(App.selectedNode); // refresh
 }
 
