@@ -1968,6 +1968,11 @@ function initCanvas() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
   App.canvas.addEventListener('click', onCanvasClick);
+  App.canvas.addEventListener('mousemove', function(e) {
+    var rect = App.canvas.getBoundingClientRect();
+    _mouseX = e.clientX - rect.left;
+    _mouseY = e.clientY - rect.top;
+  });
   requestAnimationFrame(renderLoop);
 }
 
@@ -2275,13 +2280,6 @@ function onCanvasClick(e) {
     showToast('This is your radio node');
   }
 }
-
-// Track mouse for magnetism
-App.canvas.addEventListener('mousemove', function(e) {
-  var rect = App.canvas.getBoundingClientRect();
-  _mouseX = e.clientX - rect.left;
-  _mouseY = e.clientY - rect.top;
-});
 
 // ─── Floating Node Windows ────────────────────────────────────────────────
 
