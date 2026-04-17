@@ -15,8 +15,8 @@ Thank you for your interest in contributing to LORACLE BRIDGE! Community contrib
 ### Prerequisites
 
 - macOS or Linux
-- Python 3.9+
-- A Meshtastic radio (for testing radio features)
+- Python 3.10+ (3.11+ for BLE, required for the MeshCore secondary radio)
+- A Meshtastic radio for testing radio features; a MeshCore radio is optional but required to exercise the v2 bridge relay paths end-to-end
 - Ollama installed locally
 
 ### Fork & Clone
@@ -24,12 +24,12 @@ Thank you for your interest in contributing to LORACLE BRIDGE! Community contrib
 1. Fork this repository
 2. Clone your fork locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/loracle.git
-   cd loracle
+   git clone https://github.com/YOUR_USERNAME/LORACLE-BRIDGE.git
+   cd LORACLE-BRIDGE
    ```
 3. Add the upstream remote:
    ```bash
-   git remote add upstream https://github.com/treyj333/loracle.git
+   git remote add upstream https://github.com/treyj333/LORACLE-BRIDGE.git
    ```
 
 ---
