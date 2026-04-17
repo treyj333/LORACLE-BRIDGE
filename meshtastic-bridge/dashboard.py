@@ -1154,6 +1154,86 @@ def api_device_shutdown():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/channels", methods=["GET"])
+def api_channels():
+    """Get all channel configurations from the radio."""
+    if _bridge is None or not _bridge.interface:
+        return jsonify({"channels": []})
+    try:
+        channels = []
+        ch_list = getattr(_bridge.interface, "channels", None) or []
+        for i, ch in enumerate(ch_list):
+            settings = ch.settings if hasattr(ch, "settings") else ch
+            role_val = ch.role if hasattr(ch, "role") else 0
+            role = {0: "disabled", 1: "primary", 2: "secondary"}.get(role_val, "disabled")
+            name = getattr(settings, "name", "") or ""
+            psk = getattr(settings, "psk", b"")
+            channels.append({
+                "index": i,
+                "name": name,
+                "role": role,
+                "has_psk": len(psk) > 0 if psk else False,
+                "uplink_enabled": getattr(settings, "uplinkEnabled", False),
+                "downlink_enabled": getattr(settings, "downlinkEnabled", False),
+            })
+        return jsonify({"channels": channels})
+    except Exception as e:
+        return jsonify({"error": str(e), "channels": []}), 500
+
+
+@app.route("/api/radio/config", methods=["GET"])
+def api_radio_config():
+    """Get radio LoRa configuration."""
+    if _bridge is None or not _bridge.interface:
+        return jsonify({"error": "Not connected"}), 503
+    try:
+        node = _bridge.interface.localNode
+        lora = node.localConfig.lora if hasattr(node, "localConfig") else None
+        if not lora:
+            return jsonify({"error": "Cannot read config"}), 500
+        return jsonify({
+            "region": lora.region if hasattr(lora, "region") else 0,
+            "modem_preset": lora.modemPreset if hasattr(lora, "modemPreset") else 0,
+            "tx_power": lora.txPower if hasattr(lora, "txPower") else 0,
+            "hop_limit": lora.hopLimit if hasattr(lora, "hopLimit") else 3,
+            "tx_enabled": lora.txEnabled if hasattr(lora, "txEnabled") else True,
+            "bandwidth": lora.bandwidth if hasattr(lora, "bandwidth") else 0,
+            "spread_factor": lora.spreadFactor if hasattr(lora, "spreadFactor") else 0,
+            "coding_rate": lora.codingRate if hasattr(lora, "codingRate") else 0,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/radio/config", methods=["POST"])
+def api_radio_config_set():
+    """Update radio LoRa configuration."""
+    if _bridge is None or not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Not connected"}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        node = _bridge.interface.localNode
+        lora = node.localConfig.lora
+        changed = False
+        if "hop_limit" in data:
+            lora.hopLimit = max(1, min(int(data["hop_limit"]), 7))
+            changed = True
+        if "tx_power" in data:
+            lora.txPower = max(0, min(int(data["tx_power"]), 30))
+            changed = True
+        if "region" in data:
+            lora.region = int(data["region"])
+            changed = True
+        if "modem_preset" in data:
+            lora.modemPreset = int(data["modem_preset"])
+            changed = True
+        if changed:
+            node.writeConfig("lora")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/ask", methods=["POST"])
 def api_ask():
     """Ask LORACLE a question directly from the dashboard.
@@ -1573,6 +1653,12 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-help p { margin-bottom: 8px; }
 .lo-help code { background: var(--lo-divider); padding: 1px 4px; font-size: 11px; }
 
+/* ── Map View ─────────────────────────────────────────────────────────────── */
+#map-view { background: var(--lo-bg-deep); }
+.lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); }
+.lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); }
+.lo-map-label { font-family: var(--font-mono); font-size: 9px; color: var(--lo-ink); background: var(--lo-bg); padding: 1px 4px; border: 1px solid var(--lo-divider); white-space: nowrap; margin-top: 2px; }
+
 /* ── Node List Sidebar ────────────────────────────────────────────────────── */
 .lo-node-sidebar { display: none; position: absolute; top: 0; right: 0; width: 260px; height: 100%; background: var(--lo-bg); border-left: 1px solid var(--lo-divider-strong); z-index: 90; flex-direction: column; overflow: hidden; }
 .lo-node-sidebar.open { display: flex; }
@@ -1620,6 +1706,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <div class="lo-filters">
     <button class="active" data-view="mesh" onclick="setView('mesh')">MESH</button>
     <button data-view="traffic" onclick="setView('traffic')">TRAFFIC</button>
+    <button data-view="map" onclick="setView('map')">MAP</button>
     <button data-view="config" onclick="setView('config')">CONFIG</button>
   </div>
   <div class="lo-tools">
@@ -1664,6 +1751,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   </div>
 </div>
 
+<!-- ── Map View ───────────────────────────────────────────────────────────── -->
+<div id="map-view" style="display:none;position:absolute;inset:36px 0 26px 0;z-index:5"></div>
+
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
 <div class="lo-ribbon">
   <span id="ribbon-label">PACKETS</span>
@@ -1703,6 +1793,27 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
           <button class="btn" id="cfg-shutdown-btn" onclick="cfgShutdown()" style="display:none;border-color:#c0392b;color:#c0392b">SHUTDOWN</button>
         </div>
       </div>
+    </div>
+  </details>
+
+  <!-- Channels -->
+  <details class="lo-section">
+    <summary class="lo-section-head">CHANNELS</summary>
+    <div class="lo-section-body">
+      <div id="cfg-channels-list" style="font-size:11px;color:var(--lo-dim)">Loading...</div>
+      <div class="lo-form-row" style="margin-top:8px"><button class="btn btn-sm" onclick="cfgLoadChannels()">REFRESH</button></div>
+    </div>
+  </details>
+
+  <!-- Radio Config -->
+  <details class="lo-section">
+    <summary class="lo-section-head">RADIO</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row"><span class="lo-form-label">REGION</span><select id="cfg-radio-region" onchange="markConfigDirty()"><option value="0">Unset</option><option value="1">US</option><option value="2">EU_433</option><option value="3">EU_868</option><option value="4">CN</option><option value="5">JP</option><option value="6">ANZ</option><option value="7">KR</option><option value="8">TW</option><option value="9">RU</option><option value="10">IN</option><option value="11">NZ_865</option><option value="12">TH</option><option value="13">LORA_24</option><option value="14">UA_433</option><option value="15">UA_868</option><option value="16">MY_433</option><option value="17">MY_919</option><option value="18">SG_923</option></select></div>
+      <div class="lo-form-row"><span class="lo-form-label">MODEM PRESET</span><select id="cfg-radio-modem" onchange="markConfigDirty()"><option value="0">Long Fast</option><option value="1">Long Slow</option><option value="2">Very Long Slow</option><option value="3">Medium Slow</option><option value="4">Medium Fast</option><option value="5">Short Slow</option><option value="6">Short Fast</option><option value="7">Long Moderate</option></select></div>
+      <div class="lo-form-row"><span class="lo-form-label">TX POWER</span><input type="number" id="cfg-radio-tx" min="0" max="30" style="width:60px" onchange="markConfigDirty()"> <span style="font-size:10px;color:var(--lo-faint)">dBm</span></div>
+      <div class="lo-form-row"><span class="lo-form-label">MAX HOPS</span><input type="number" id="cfg-radio-hops" min="1" max="7" style="width:60px" onchange="markConfigDirty()"></div>
+      <div class="lo-form-row"><span class="lo-form-label"></span><button class="btn btn-primary" onclick="cfgSaveRadio()">SAVE RADIO CONFIG</button> <button class="btn btn-sm" onclick="cfgLoadRadio()">REFRESH</button></div>
     </div>
   </details>
 
@@ -2040,12 +2151,15 @@ function setView(view) {
   }
   App.view = view;
   document.querySelectorAll('.lo-filters button').forEach(function(b) { b.classList.toggle('active', b.dataset.view === view); });
-  document.getElementById('canvas-wrap').style.display = (view === 'config') ? 'none' : '';
+  var isCanvas = (view === 'mesh' || view === 'traffic');
+  document.getElementById('canvas-wrap').style.display = isCanvas ? '' : 'none';
+  document.getElementById('map-view').style.display = (view === 'map') ? '' : 'none';
   document.querySelector('.lo-ribbon').style.display = (view === 'config') ? 'none' : '';
   document.getElementById('config-view').classList.toggle('active', view === 'config');
-  document.getElementById('hud').style.display = (view === 'config') ? 'none' : '';
+  document.getElementById('hud').style.display = isCanvas ? '' : 'none';
   if (view === 'config' && !App.configLoaded) { App.configLoaded = true; loadConfigData(); }
-  if (view !== 'config') resizeCanvas();
+  if (view === 'map') initMap();
+  if (isCanvas) resizeCanvas();
 }
 
 // ─── Canvas Setup ──────────────────────────────────────────────────────────
@@ -2517,9 +2631,14 @@ async function loadFloatData(nodeId) {
     msgsEl.innerHTML = msgs.slice(-15).map(function(m) {
       var ac = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
       var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
+      var status = '';
+      if (m.direction === 'out' && m.delivery_status) {
+        var ds = m.delivery_status;
+        status = ds === 'acked' ? ' \u2713' : ds === 'delivered' ? ' \u2713\u2713' : ds === 'failed' ? ' \u2717' : '';
+      }
       return '<div class="lo-fw-msg"><span class="lo-fw-msg-time">' + formatTime(m.timestamp) +
         '</span><span class="lo-fw-msg-arrow ' + ac + '">' + arrow +
-        '</span><span class="lo-fw-msg-body">' + escapeHtml(m.text) + '</span></div>';
+        '</span><span class="lo-fw-msg-body">' + escapeHtml(m.text) + status + '</span></div>';
     }).join('');
     msgsEl.scrollTop = msgsEl.scrollHeight;
   }
@@ -2630,9 +2749,12 @@ async function poll() {
       if (cfgUp) cfgUp.textContent = formatUptime(d.uptime || 0);
     }
 
-    // Rebuild graph
-    if (App.view !== 'config') {
+    // Rebuild graph / update map
+    if (App.view === 'mesh' || App.view === 'traffic') {
       buildGraph(d);
+      updateRibbon(d);
+    } else if (App.view === 'map') {
+      updateMapMarkers();
       updateRibbon(d);
     }
 
@@ -2762,6 +2884,70 @@ function checkConnectionForModal(connected) {
   }
 }
 
+// ─── Map View ──────────────────────────────────────────────────────────────
+
+var _map = null, _mapMarkers = {};
+function initMap() {
+  if (_map) { updateMapMarkers(); return; }
+  _map = L.map('map-view').setView([39.8, -98.5], 4);
+  L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '\u00a9 OpenStreetMap'
+  }).addTo(_map);
+  updateMapMarkers();
+}
+
+function updateMapMarkers() {
+  if (!_map || !App.state) return;
+  var positions = App.state.node_positions || {};
+  var meta = App.state.node_meta || {};
+  var dm = App.state.device_metrics || {};
+  var backends = App.state.backends || [];
+  var selfId = (backends.length > 0 && backends[0].self_node_id) ? backends[0].self_node_id : null;
+  var bounds = [];
+
+  // Remove stale markers
+  Object.keys(_mapMarkers).forEach(function(id) {
+    if (!positions[id]) { _map.removeLayer(_mapMarkers[id]); delete _mapMarkers[id]; }
+  });
+
+  Object.keys(positions).forEach(function(nid) {
+    var pos = positions[nid];
+    if (!pos.lat || !pos.lon) return;
+    var ll = [pos.lat, pos.lon];
+    bounds.push(ll);
+    var isSelf = (selfId && nid === selfId);
+    var m = meta[nid] || {};
+    var d = dm[nid] || {};
+    var label = nid.length > 8 ? nid.slice(-6) : nid;
+    var hops = (typeof m.hops === 'number') ? (m.hops === 0 ? 'direct' : m.hops + 'h') : '';
+    var batt = (d.battery !== undefined) ? ' ' + d.battery + '%' : '';
+    var popupHtml = '<b>' + escapeHtml(label) + '</b>' + (hops ? ' &middot; ' + hops : '') + batt +
+      '<br>' + pos.lat.toFixed(5) + ', ' + pos.lon.toFixed(5) +
+      (isSelf ? '' : '<br><a href="#" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(nid) + '\'}));return false">Open</a>');
+
+    if (_mapMarkers[nid]) {
+      _mapMarkers[nid].setLatLng(ll).setPopupContent(popupHtml);
+    } else {
+      var icon = L.divIcon({
+        className: 'lo-map-marker' + (isSelf ? ' self' : ''),
+        iconSize: [10, 10], iconAnchor: [5, 5]
+      });
+      var marker = L.marker(ll, {icon: icon}).addTo(_map).bindPopup(popupHtml);
+      L.marker(ll, {
+        icon: L.divIcon({className: 'lo-map-label', html: escapeHtml(label), iconSize: null, iconAnchor: [-6, -2]}),
+        interactive: false
+      }).addTo(_map);
+      _mapMarkers[nid] = marker;
+    }
+  });
+
+  if (bounds.length > 0 && !App._mapFitted) {
+    _map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
+    App._mapFitted = true;
+  }
+}
+
 // ─── Node List Sidebar ─────────────────────────────────────────────────────
 
 var _nodeSort = 'name';
@@ -2843,7 +3029,7 @@ async function loadConfigData() {
   var cd = await callApi('GET', '/api/config');
   if (cd) { document.getElementById('cfg-max-len').value = cd.max_response_length; document.getElementById('cfg-max-len-val').textContent = cd.max_response_length; document.getElementById('cfg-compression').checked = cd.compression_enabled; }
   // RAG
-  cfgLoadRagDocs(); cfgLoadDbStats(); cfgLoadRouting(); cfgLoadPacks();
+  cfgLoadRagDocs(); cfgLoadDbStats(); cfgLoadRouting(); cfgLoadPacks(); cfgLoadChannels(); cfgLoadRadio();
 }
 
 async function cfgRefreshModels() {
@@ -2864,6 +3050,40 @@ async function cfgLoadRagDocs() { var d = await callApi('GET', '/api/rag/stats')
 async function cfgDeleteDoc(id) { if (!confirm('Delete this document?')) return; var d = await callApi('POST', '/api/rag/delete', {doc_id: id}); if (d && d.ok) { showToast('Deleted'); cfgLoadRagDocs(); } }
 async function cfgConnect() { var type = document.getElementById('cfg-conn-type').value; var addr = document.getElementById('cfg-conn-addr').value.trim(); var payload = {type: type}; if (type === 'tcp' && addr) { if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); } else payload.host = addr; } else payload.address = addr || null; fetch('/api/connection/switch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){}); showToast('Connecting...'); }
 async function cfgDisconnect() { await callApi('POST', '/api/connection/disconnect'); }
+async function cfgLoadChannels() {
+  var d = await callApi('GET', '/api/channels');
+  var el = document.getElementById('cfg-channels-list');
+  if (!d || !d.channels || d.channels.length === 0) { el.textContent = 'No channels (radio not connected)'; return; }
+  el.innerHTML = d.channels.map(function(ch) {
+    if (ch.role === 'disabled') return '';
+    var psk = ch.has_psk ? '\u{1f512}' : '\u{1f513}';
+    var name = ch.name || ('Channel ' + ch.index);
+    var up = ch.uplink_enabled ? '\u2191' : '';
+    var dn = ch.downlink_enabled ? '\u2193' : '';
+    return '<div style="padding:4px 0;border-bottom:1px solid var(--lo-divider)">' +
+      '<span style="color:var(--lo-ink);font-weight:500">' + ch.index + '. ' + escapeHtml(name) + '</span> ' +
+      '<span style="color:var(--lo-faint);font-size:10px">' + ch.role.toUpperCase() + ' ' + psk + ' ' + up + dn + '</span></div>';
+  }).filter(Boolean).join('') || 'No active channels';
+}
+async function cfgLoadRadio() {
+  var d = await callApi('GET', '/api/radio/config');
+  if (!d || d.error) return;
+  document.getElementById('cfg-radio-region').value = d.region || 0;
+  document.getElementById('cfg-radio-modem').value = d.modem_preset || 0;
+  document.getElementById('cfg-radio-tx').value = d.tx_power || 0;
+  document.getElementById('cfg-radio-hops').value = d.hop_limit || 3;
+}
+async function cfgSaveRadio() {
+  if (!confirm('Save radio config? The radio may restart.')) return;
+  var d = await callApi('POST', '/api/radio/config', {
+    region: parseInt(document.getElementById('cfg-radio-region').value),
+    modem_preset: parseInt(document.getElementById('cfg-radio-modem').value),
+    tx_power: parseInt(document.getElementById('cfg-radio-tx').value),
+    hop_limit: parseInt(document.getElementById('cfg-radio-hops').value),
+  });
+  if (d && d.ok) showToast('Radio config saved');
+  _configDirty = false;
+}
 async function cfgReboot() { if (!confirm('Reboot the radio device?')) return; var d = await callApi('POST', '/api/device/reboot'); if (d && d.ok) showToast('Reboot command sent'); }
 async function cfgShutdown() { if (!confirm('Shutdown the radio device? You will need to manually power it back on.')) return; var d = await callApi('POST', '/api/device/shutdown'); if (d && d.ok) showToast('Shutdown command sent'); }
 async function cfgLoadDbStats() { var d = await callApi('GET', '/api/db/stats'); if (d) { var kb = Math.round((d.db_size_bytes||0)/1024); document.getElementById('cfg-db-stats').textContent = d.contacts + ' contacts, ' + d.messages + ' msgs, ' + kb + ' KB'; } }
