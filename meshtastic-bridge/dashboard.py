@@ -1144,7 +1144,19 @@ def api_traceroute():
         return jsonify({"error": "Missing dest"}), 400
     try:
         _bridge.interface.sendTraceRoute(dest, hopLimit=7)
-        return jsonify({"ok": True, "message": f"Traceroute sent to {dest}. Results arrive via mesh."})
+        return jsonify({"ok": True, "dest": dest})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/traceroute/result/<path:dest>", methods=["GET"])
+def api_traceroute_result(dest):
+    """Poll for traceroute results."""
+    if _bridge is None:
+        return jsonify({"result": None})
+    try:
+        result = _bridge._traceroute_results.get(dest)
+        return jsonify({"result": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2275,6 +2287,20 @@ function buildGraph(state) {
   }
   _prevNodeIds = currentIds;
 
+  // Compute GPS bounds for position-based layout
+  var _gpsBounds = {minLat: 90, maxLat: -90, minLon: 180, maxLon: -180, latSpan: 0, lonSpan: 0};
+  Object.keys(positions).forEach(function(k) {
+    var p = positions[k];
+    if (p.lat && p.lon) {
+      if (p.lat < _gpsBounds.minLat) _gpsBounds.minLat = p.lat;
+      if (p.lat > _gpsBounds.maxLat) _gpsBounds.maxLat = p.lat;
+      if (p.lon < _gpsBounds.minLon) _gpsBounds.minLon = p.lon;
+      if (p.lon > _gpsBounds.maxLon) _gpsBounds.maxLon = p.lon;
+    }
+  });
+  _gpsBounds.latSpan = _gpsBounds.maxLat - _gpsBounds.minLat || 0.001;
+  _gpsBounds.lonSpan = _gpsBounds.maxLon - _gpsBounds.minLon || 0.001;
+
   // Build node list — preserve existing positions if node existed before
   var oldNodeMap = {};
   (App.nodes || []).forEach(function(n) { oldNodeMap[n.id] = n; });
@@ -2313,19 +2339,21 @@ function buildGraph(state) {
       node.lat = pos.lat || null; node.lon = pos.lon || null;
       node.lastHeard = pos.last_update || null;
     } else {
-      // New node — golden-angle spiral with organic scatter
-      var idx = hashStr(nid);
-      var golden = 2.399963; // golden angle in radians
-      var angle = idx * golden;
-      var baseR = hops !== null ? (90 + hops * 90) : 180;
-      baseR = Math.min(baseR, Math.min(cx, cy) - 40);
-      var scatter = 0.5 + (hashStr(nid + 'r') % 100) / 100; // 0.5–1.5x
-      var jitterR = baseR * scatter;
-      var jitterA = angle + ((hashStr(nid + 'a') % 90) - 45) * Math.PI / 180;
+      // New node — place using GPS if available, else hash scatter
+      var startX, startY;
+      if (pos.lat && pos.lon && _gpsBounds.latSpan > 0) {
+        startX = 60 + ((pos.lon - _gpsBounds.minLon) / _gpsBounds.lonSpan) * (App.width - 120);
+        startY = 60 + (1 - (pos.lat - _gpsBounds.minLat) / _gpsBounds.latSpan) * (App.height - 120);
+      } else {
+        var idx = hashStr(nid);
+        var angle = idx * 2.399963;
+        var spread = 80 + (hashStr(nid + 'r') % 120);
+        startX = cx + Math.cos(angle) * spread;
+        startY = cy + Math.sin(angle) * spread;
+      }
       node = {
         id: nid, label: shortId, hops: hops, isChannel: isChannel, isMC: isMC,
-        x: cx + Math.cos(jitterA) * jitterR,
-        y: cy + Math.sin(jitterA) * jitterR,
+        x: startX, y: startY,
         rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
         lat: pos.lat || null, lon: pos.lon || null,
         lastHeard: pos.last_update || null,
@@ -2335,52 +2363,72 @@ function buildGraph(state) {
     nodeMap[nid] = node;
   });
 
-  // Links — chain nodes by hop tier (realistic mesh topology)
+  // Links — GPS-proximity chains
+  // Each node links to the closest node with fewer hops (or closest GPS neighbor)
   var links = [];
-  var tiers = {0: [], 1: [], 2: [], 3: [], 4: []};
-  var unknowns = [];
-  nodes.forEach(function(n) {
-    if (n.isSelf) return;
-    var h = (n.hops !== null && n.hops >= 0) ? Math.min(n.hops, 4) : -1;
-    if (h >= 0) tiers[h].push(n);
-    else unknowns.push(n);
-  });
-
-  // Direct nodes (hops 0-1) link to MY NODE
-  tiers[0].concat(tiers[1]).forEach(function(n) {
-    links.push({ source: nodeMap['__self__'], target: n });
-  });
-
-  // Higher hop tiers link to a parent in previous tier (hash-based for stability)
-  for (var tier = 2; tier <= 4; tier++) {
-    var parents = (tier === 2) ? tiers[0].concat(tiers[1]) : tiers[tier - 1];
-    if (parents.length === 0) parents = [nodeMap['__self__']];
-    tiers[tier].forEach(function(n) {
-      var parent = parents[hashStr(n.id) % parents.length];
-      links.push({ source: parent, target: n });
-    });
+  function gpsDist(a, b) {
+    if (!a.lat || !b.lat) return Infinity;
+    var dlat = a.lat - b.lat, dlon = a.lon - b.lon;
+    return Math.sqrt(dlat * dlat + dlon * dlon);
   }
+  var linked = {};
+  // Sort by hops (known first, direct first) then unknowns
+  var sorted = nodes.filter(function(n) { return !n.isSelf && !n.isChannel; }).sort(function(a, b) {
+    var ha = (a.hops !== null) ? a.hops : 99;
+    var hb = (b.hops !== null) ? b.hops : 99;
+    return ha - hb;
+  });
 
-  // Unknown hop nodes — distribute among all known nodes (not just center)
-  var allKnown = tiers[0].concat(tiers[1], tiers[2], tiers[3], tiers[4]);
-  if (allKnown.length === 0) allKnown = [nodeMap['__self__']];
-  unknowns.forEach(function(n) {
-    var parent = allKnown[hashStr(n.id) % allKnown.length];
-    links.push({ source: parent, target: n });
+  sorted.forEach(function(n) {
+    // Direct nodes link to self
+    if (n.hops !== null && n.hops <= 1) {
+      links.push({ source: nodeMap['__self__'], target: n, gpsDist: 0 });
+      linked[n.id] = true;
+      return;
+    }
+    // Find best parent: closest GPS node with fewer hops (or any linked node)
+    var best = null, bestDist = Infinity;
+    var candidates = [nodeMap['__self__']];
+    sorted.forEach(function(c) {
+      if (c.id === n.id || !linked[c.id]) return;
+      if (n.hops !== null && c.hops !== null && c.hops >= n.hops) return;
+      candidates.push(c);
+    });
+    candidates.forEach(function(c) {
+      var d = gpsDist(n, c);
+      if (d < bestDist) { best = c; bestDist = d; }
+    });
+    // No GPS match — use hash-based assignment among linked nodes
+    if (!best || bestDist === Infinity) {
+      var pool = Object.keys(linked).map(function(id) { return nodeMap[id]; }).filter(Boolean);
+      if (pool.length > 0) best = pool[hashStr(n.id) % pool.length];
+      else best = nodeMap['__self__'];
+    }
+    links.push({ source: best, target: n, gpsDist: bestDist });
+    linked[n.id] = true;
+  });
+
+  // Channels link to self
+  nodes.forEach(function(n) {
+    if (n.isChannel) links.push({ source: nodeMap['__self__'], target: n, gpsDist: 0 });
   });
 
   App.nodes = nodes;
   App.links = links;
 
-  // Rebuild simulation (only when nodes actually changed)
+  // Rebuild simulation — link distance proportional to GPS distance
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
-    .force('charge', d3.forceManyBody().strength(-120))
-    .force('center', d3.forceCenter(cx, cy).strength(0.03))
-    .force('link', d3.forceLink(links).distance(100).strength(0.25))
-    .force('collision', d3.forceCollide(45))
-    .alphaDecay(0.05)
-    .velocityDecay(0.4)
+    .force('charge', d3.forceManyBody().strength(-100))
+    .force('center', d3.forceCenter(cx, cy).strength(0.02))
+    .force('link', d3.forceLink(links).distance(function(l) {
+      if (l.gpsDist === 0 || l.gpsDist === Infinity) return 100;
+      // Scale GPS degrees to pixels (0.001° ≈ ~110m → ~60px)
+      return Math.max(50, Math.min(200, l.gpsDist * 60000));
+    }).strength(0.3))
+    .force('collision', d3.forceCollide(40))
+    .alphaDecay(0.04)
+    .velocityDecay(0.45)
     .on('tick', function() {});
 }
 
@@ -2451,15 +2499,10 @@ function renderCanvas() {
     });
   }
 
-  // Draw hop rings
-  ctx.strokeStyle = divider;
-  ctx.lineWidth = 0.5;
-  ctx.setLineDash([4, 6]);
-  for (var ring = 1; ring <= 4; ring++) {
-    var r = 80 + ring * 80;
-    if (r > Math.min(cx, cy) - 20) break;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-  }
+  // Subtle crosshair at center
+  ctx.strokeStyle = divider; ctx.lineWidth = 0.3; ctx.setLineDash([4, 8]);
+  ctx.beginPath(); ctx.moveTo(cx - 30, cy); ctx.lineTo(cx + 30, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy + 30); ctx.stroke();
   ctx.setLineDash([]);
 
   // Draw links with hop labels
@@ -2704,8 +2747,29 @@ async function floatSend(nodeId, inputEl) {
 }
 
 async function floatTrace(nodeId) {
+  var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
+  var metaEl = document.getElementById('fw-m-' + eid);
   var d = await callApi('POST', '/api/traceroute', {dest: nodeId});
-  if (d && d.ok) showToast('Traceroute sent to ' + nodeId.slice(-6) + ' — results arrive via mesh');
+  if (!d || !d.ok) return;
+  showToast('Traceroute sent — waiting for response...');
+  if (metaEl) metaEl.innerHTML += '<div id="fw-trace-' + eid + '" style="color:var(--lo-accent);margin-top:4px">TRACE: waiting for response...</div>';
+  // Poll for result (up to 30s)
+  var attempts = 0;
+  var poll = setInterval(async function() {
+    attempts++;
+    try {
+      var r = await fetch('/api/traceroute/result/' + encodeURIComponent(nodeId));
+      var rd = await r.json();
+      if (rd && rd.result) {
+        clearInterval(poll);
+        var route = rd.result.route || [];
+        var el = document.getElementById('fw-trace-' + eid);
+        if (el) el.innerHTML = 'TRACE: ' + (route.length === 0 ? 'DIRECT (no hops)' : 'YOU \u2192 ' + route.map(function(h) { return h.slice(-4); }).join(' \u2192 ') + ' \u2192 ' + nodeId.slice(-4));
+        showToast('Traceroute complete: ' + (route.length === 0 ? 'direct' : route.length + ' hops'));
+      }
+    } catch(e) {}
+    if (attempts >= 15) { clearInterval(poll); var el = document.getElementById('fw-trace-' + eid); if (el) el.textContent = 'TRACE: no response (timed out)'; }
+  }, 2000);
 }
 
 async function floatToggleAi(nodeId) {

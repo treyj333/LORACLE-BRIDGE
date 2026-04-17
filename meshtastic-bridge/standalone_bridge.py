@@ -213,6 +213,7 @@ class StandaloneBridge:
         self._node_positions: Dict[str, dict] = {}  # node_id -> {lat, lon, alt, last_update}
         self._node_meta: Dict[str, dict] = {}  # node_id -> {hops, hops_updated}
         self._device_metrics: Dict[str, dict] = {}  # node_id -> {battery, voltage, ...}
+        self._traceroute_results: Dict[str, dict] = {}  # dest_id -> {route, timestamp}
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
         self.public_talk = public_talk  # respond on public channels when addressed
@@ -318,6 +319,7 @@ class StandaloneBridge:
         pub.subscribe(self._on_receive, "meshtastic.receive.text")
         pub.subscribe(self._on_position, "meshtastic.receive.position")
         pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
+        pub.subscribe(self._on_traceroute, "meshtastic.receive.traceroute")
 
         self._running = True
 
@@ -963,6 +965,25 @@ class StandaloneBridge:
                 entry["updated"] = time.time()
         except Exception as e:
             logger.debug(f"Error processing telemetry: {e}")
+
+    def _on_traceroute(self, packet, interface):
+        """Handle traceroute response — store the route."""
+        try:
+            sender = packet.get("fromId", "")
+            decoded = packet.get("decoded", {})
+            route_back = decoded.get("traceroute", {}).get("route", [])
+            route_towards = decoded.get("traceroute", {}).get("routeBack", [])
+            hops = []
+            for node_num in route_back:
+                hops.append(f"!{node_num:08x}" if isinstance(node_num, int) else str(node_num))
+            self._traceroute_results[sender] = {
+                "route": hops,
+                "dest": sender,
+                "timestamp": time.time(),
+            }
+            logger.info(f"Traceroute to {sender}: {' → '.join(hops) or 'direct'}")
+        except Exception as e:
+            logger.debug(f"Error processing traceroute: {e}")
 
     def _load_nodedb_positions(self):
         """Re-scan the meshtastic nodeDB and merge any positions into _node_positions.
