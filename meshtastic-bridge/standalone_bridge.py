@@ -1388,11 +1388,15 @@ class StandaloneBridge:
         Includes a post-TX settle delay so the radio returns to RX mode.
         """
         if not self.interface or not self._is_interface_alive():
+            logger.warning(
+                f"Status drop to {node_id}: interface not alive ({text[:40]!r})"
+            )
             return
         try:
             dest = node_id if is_dm else BROADCAST_ADDR
+            want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
             self.interface.sendText(
-                text, destinationId=dest, channelIndex=channel, wantAck=False,
+                text, destinationId=dest, channelIndex=channel, wantAck=want_ack,
             )
             ch_label = "DM" if is_dm else f"ch{channel}"
             logger.info(f"Status to {node_id} ({ch_label}): {text}")
@@ -1472,16 +1476,18 @@ class StandaloneBridge:
 
             try:
                 dest = node_id if is_dm else BROADCAST_ADDR
+                want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
                 result = self.interface.sendText(
                     message,
                     destinationId=dest,
                     channelIndex=channel,
-                    wantAck=False,
+                    wantAck=want_ack,
                 )
                 pkt_id = getattr(result, "id", None)
                 ch_label = "DM" if is_dm else f"ch{channel}"
+                ack_label = " wantAck=1" if want_ack else ""
                 logger.info(
-                    f"Sent to {node_id} ({ch_label}, pkt_id={pkt_id}, attempt={attempt})"
+                    f"Sent to {node_id} ({ch_label}, pkt_id={pkt_id}, attempt={attempt}){ack_label}"
                 )
                 time.sleep(3)  # Post-TX settle — let radio return to RX
                 return  # Success

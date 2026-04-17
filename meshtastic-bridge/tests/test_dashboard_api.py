@@ -45,6 +45,7 @@ def _make_mock_bridge():
     bridge._contact_store.total_unread = MagicMock(return_value=0)
     bridge._contact_store.list_with_preview = MagicMock(return_value=[])
     bridge._contact_store.count = MagicMock(return_value=0)
+    bridge._contact_store.get_display_meta = MagicMock(return_value={})
     bridge._message_store = MagicMock()
     bridge._message_store.count_total = MagicMock(return_value=0)
     return bridge

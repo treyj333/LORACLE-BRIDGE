@@ -151,11 +151,16 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 | **Hop-chained links** | Nodes link through their relay path (direct → 1-hop → 2-hop), not a star |
 | **Line thickness** | Signal strength — thick = strong, dotted = weak |
 | **Orange badges** | Unread message count per node |
+| **Gold star** | Favorited node — sorted to the top of the sidebar |
 | **Red dot** | Low battery warning (≤20%) |
 
-**Click any node** to open a floating window with signal info, battery/voltage, temperature, hardware model, hop count, message thread, and a composer. Toggle AI auto-reply per node. Click **TRACE** to send a traceroute.
+**Click any node** to open a thread panel with full message history (up to 50 messages), signal info, battery/voltage, temperature, hardware model, hop count, and a composer. Toggle AI auto-reply, star as a favorite, rename with a custom nickname, or run a traceroute — all from the same panel.
 
-**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view.
+- **Rename a node**: double-click its name in the panel header, or hit the **RENAME** button. Nicknames persist across sessions and override the default short-name everywhere (canvas, sidebar, thread list).
+- **Favorite a node**: hit the **★ FAV** button. Favorites float to the top of the node sidebar and show a gold star on the canvas.
+- **Color nodes by device type**: hit the **HW COLOR** button in the HUD — T-Beam, Heltec, RAK, T-Deck, Station, Nano each get a distinct color. A legend appears under the HUD listing the models in view. Preference persists across sessions.
+
+**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view. A toast fires whenever a new node comes online mid-session.
 
 ### Views
 
@@ -515,6 +520,8 @@ From CONFIG > CONNECTION (visible when connected):
 ### Disconnect Alerts
 
 If the radio drops off the USB/TCP/BLE connection, a **red toast alert** appears immediately at the bottom-right of the dashboard: *"⚠ RADIO DISCONNECTED — USB connection lost"*. When it comes back online, you'll see *"✓ Radio reconnected"*. The connection dot in the title bar also flips from green to grey. If the disconnection lasts more than 10 seconds, the CONNECT modal reappears so you can switch to a different transport.
+
+Outbound sends from the dashboard composer now also verify the radio is alive before transmitting — if it isn't, you get an immediate error toast and the message stays in the input so you can retry, instead of silently vanishing. Set `DEBUG_WANT_ACK=1` in the environment to request radio-level ACKs on every send (useful when diagnosing whether a lost message is a software or hardware issue).
 
 ### Onboarding Tour
 

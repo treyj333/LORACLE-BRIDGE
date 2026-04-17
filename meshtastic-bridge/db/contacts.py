@@ -142,3 +142,46 @@ class ContactStore:
     def count(self) -> int:
         row = self._db.execute("SELECT COUNT(*) AS cnt FROM contacts").fetchone()
         return row["cnt"] if row else 0
+
+    def toggle_favorite(self, contact_id: str) -> int:
+        row = self.get(contact_id)
+        if not row:
+            return 0
+        new_val = 0 if row.get("is_favorite") else 1
+        self._db.execute(
+            "UPDATE contacts SET is_favorite = ? WHERE id = ?",
+            (new_val, contact_id),
+        )
+        self._db.commit()
+        return new_val
+
+    def set_custom_name(self, contact_id: str, name: Optional[str]) -> bool:
+        """Set or clear the custom display name. Returns True if the contact existed."""
+        row = self.get(contact_id)
+        if not row:
+            return False
+        clean = (name or "").strip() or None
+        self._db.execute(
+            "UPDATE contacts SET custom_name = ? WHERE id = ?",
+            (clean, contact_id),
+        )
+        self._db.commit()
+        return True
+
+    def get_display_meta(self) -> Dict[str, dict]:
+        """Compact {contact_id: {custom_name, is_favorite}} for poll-time UI.
+
+        Only includes contacts that have at least one non-default field set,
+        to keep the state payload small on large meshes.
+        """
+        rows = self._db.execute(
+            "SELECT id, custom_name, is_favorite FROM contacts "
+            "WHERE custom_name IS NOT NULL OR is_favorite = 1"
+        ).fetchall()
+        return {
+            r["id"]: {
+                "custom_name": r["custom_name"],
+                "is_favorite": bool(r["is_favorite"]),
+            }
+            for r in rows
+        }

@@ -4,6 +4,32 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 11:00] — Hardware-debug pass + favorites/rename + richer node interaction
+
+- What changed:
+  - **TX/RX diagnostic fixes**: `/api/threads/<id>/send` now checks `_is_interface_alive()` before sending and returns `503` with a clear error; the frontend composer preserves the user's text on failure so they can retry. `_send_raw()` now logs a `WARNING` on silent drops instead of failing quietly. New `DEBUG_WANT_ACK=1` env var flips `wantAck=True` on every send for live diagnosis without changing the battery-friendly default.
+  - **Animation polish**: signal pulses now ease out (`t * (2 - t)`) so they accelerate off the source and settle at the destination; breathing bumped to ±1.8px radius + ±0.08 alpha oscillation; sonar ring uses smooth quadratic fade instead of hard clamp; new-node entrance is 1.2s with an expanding ring flash; renderer targets 60fps only while animations are active, 30fps at rest.
+  - **New-node-detected toast**: mirrors the disconnect-alert pattern — tracks the known-nodes set across polls and fires a single info toast when a new node appears mid-session (guards against toast spam on initial load).
+  - **Node/line overlap fix**: link endpoints are now shortened by `nodeRadius(n) + 2px` on each side, so the lines stop at the edge of the circle instead of bleeding through the middle.
+  - **HW-model color toggle**: new HUD button colors nodes by hardware model (T-Beam blue, Heltec green, RAK amber, T-Deck red, Station teal, Nano purple). Legend renders under the HUD listing models currently in view. Preference persists in `localStorage`.
+  - **Favorites**: new `is_favorite` column on `contacts` with idempotent ALTER-TABLE migration. `POST /api/threads/<id>/favorite` toggles. Canvas renders a gold star next to favorited nodes; sidebar sorts favorites to the top within any sort mode.
+  - **Custom nicknames**: new `custom_name` column. `POST /api/threads/<id>/rename` (null or empty clears). Double-click the panel header to edit inline (Enter commits, Esc cancels); RENAME button in the actions row does the same. Label resolution is `custom_name → long_name → short_name → last-4-of-id`.
+  - **Richer map-node interaction**: clicking a node on the mesh canvas now opens a larger (420×540) thread panel positioned in the upper-right (so it feels persistent, not tooltip-like), shows full message history instead of truncating to 15, sets `App.selectedNode` (which already drove a selection ring in the renderer but was never populated), and closes other panels so the focused node is unambiguous. Click radius widened 40→60px. `cursor: pointer` now appears when hovering a hittable node. Dangling `openNodePanel()` reference wired up to a real function.
+- Why:
+  - The user reported messages sometimes not transmitting on the hardware and asked me to rule out the software side before they poke the radio. That turned into a broader UX pass covering polish items they'd been sitting on.
+- Impact on project goals:
+  - Silent TX failures are now surfaced in logs and the UI, so hardware debugging is actionable instead of guess-and-check. Map nodes behave like first-class contacts (message, star, rename, see history) rather than read-only tooltips. Favorites + nicknames make it possible to personalize a mesh with dozens of nodes.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — send-endpoint alive check, `contact_meta` in `/api/state`, favorite + rename endpoints, animation loop polish, new-node toast, link shortener, HW color toggle, favorite/rename frontend (buttons, inline edit, star glyph), widened click radius, hover cursor, larger thread panel
+  - `meshtastic-bridge/standalone_bridge.py` — `_send_raw` warning log, `DEBUG_WANT_ACK` wiring in both send paths
+  - `meshtastic-bridge/db/schema.py` — new `is_favorite` and `custom_name` columns + idempotent `_ensure_contact_columns()` migration
+  - `meshtastic-bridge/db/contacts.py` — `toggle_favorite`, `set_custom_name`, `get_display_meta` methods
+  - `meshtastic-bridge/tests/test_dashboard_api.py` — mock now stubs `get_display_meta` so `/api/state` serializes cleanly
+  - `README.md` — documented favorites, rename, HW color toggle, new-node toast, DEBUG_WANT_ACK env var
+  - `.claude/launch.json` — added `loracle-bridge-verify` profile on port 8001 for safe verification alongside a running production instance
+
+---
+
 ## [2026-04-17] — Feature Roadmap: Meshtastic Parity + UX Improvements
 
 - What changed:

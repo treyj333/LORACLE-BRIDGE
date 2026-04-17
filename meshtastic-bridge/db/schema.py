@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS contacts (
   channel_name TEXT,
   unread_count INTEGER DEFAULT 0,
   last_read_at REAL,
+  is_favorite INTEGER NOT NULL DEFAULT 0,
+  custom_name TEXT,
   created_at REAL DEFAULT (strftime('%s','now'))
 );
 
@@ -97,9 +99,21 @@ def init_db(path: str) -> sqlite3.Connection:
     db.execute("PRAGMA busy_timeout=5000")
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript(_TABLES)
+    _ensure_contact_columns(db)
     db.commit()
     logger.info(f"Database ready: {path}")
     return db
+
+
+def _ensure_contact_columns(db: sqlite3.Connection) -> None:
+    """Idempotently add columns that were introduced after the initial schema."""
+    cols = {row["name"] for row in db.execute("PRAGMA table_info(contacts)").fetchall()}
+    if "is_favorite" not in cols:
+        db.execute("ALTER TABLE contacts ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
+        logger.info("Migration: added contacts.is_favorite")
+    if "custom_name" not in cols:
+        db.execute("ALTER TABLE contacts ADD COLUMN custom_name TEXT")
+        logger.info("Migration: added contacts.custom_name")
 
 
 def migrate_from_json(db: sqlite3.Connection, json_path: str) -> None:

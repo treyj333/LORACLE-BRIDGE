@@ -293,14 +293,19 @@ def api_state():
     state["backends"] = backends_info
     # AI replies toggle
     state["ai_replies_enabled"] = getattr(_bridge, "_ai_replies_enabled", True) if _bridge else True
-    # Total unread from DB
+    # Total unread + display metadata (custom_name / is_favorite) from DB
     if _bridge and hasattr(_bridge, "_contact_store"):
         try:
             state["total_unread"] = _bridge._contact_store.total_unread()
         except Exception:
             state["total_unread"] = 0
+        try:
+            state["contact_meta"] = _bridge._contact_store.get_display_meta()
+        except Exception:
+            state["contact_meta"] = {}
     else:
         state["total_unread"] = 0
+        state["contact_meta"] = {}
     return jsonify(state)
 
 
@@ -808,15 +813,19 @@ def api_thread_send(thread_id):
     if contact is None:
         return jsonify({"error": "Contact not found"}), 404
 
+    if not _bridge.interface or not _bridge._is_interface_alive():
+        return jsonify({"error": "Radio not connected"}), 503
+
     try:
+        want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
         # Send via the proven interface path (not RadioManager)
         is_channel = "channel:" in thread_id
         if is_channel:
             ch_num = int(thread_id.split(":")[-1])
             from meshtastic import BROADCAST_ADDR
-            _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=ch_num, wantAck=False)
+            _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=ch_num, wantAck=want_ack)
         else:
-            _bridge.interface.sendText(text, destinationId=thread_id, wantAck=False)
+            _bridge.interface.sendText(text, destinationId=thread_id, wantAck=want_ack)
 
         msg_id = _bridge._message_store.insert(
             contact_id=thread_id, direction="out", author="human",
@@ -838,6 +847,34 @@ def api_thread_ai_toggle(thread_id):
         thread_id, _bridge._ai_replies_enabled
     )
     return jsonify({"ok": True, "ai_enabled": new_val, "effective": effective})
+
+
+@app.route("/api/threads/<path:thread_id>/favorite", methods=["POST"])
+def api_thread_favorite(thread_id):
+    """Toggle the is_favorite flag on a contact."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    if _bridge._contact_store.get(thread_id) is None:
+        return jsonify({"error": "Contact not found"}), 404
+    new_val = _bridge._contact_store.toggle_favorite(thread_id)
+    return jsonify({"ok": True, "is_favorite": bool(new_val)})
+
+
+@app.route("/api/threads/<path:thread_id>/rename", methods=["POST"])
+def api_thread_rename(thread_id):
+    """Set or clear a custom display name for a contact."""
+    if _bridge is None or not hasattr(_bridge, "_contact_store"):
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if name is not None and not isinstance(name, str):
+        return jsonify({"error": "name must be a string or null"}), 400
+    if isinstance(name, str) and len(name) > 64:
+        return jsonify({"error": "Name too long (max 64 chars)"}), 400
+    if not _bridge._contact_store.set_custom_name(thread_id, name):
+        return jsonify({"error": "Contact not found"}), 404
+    contact = _bridge._contact_store.get(thread_id)
+    return jsonify({"ok": True, "custom_name": contact.get("custom_name")})
 
 
 @app.route("/api/events", methods=["GET"])
@@ -1552,9 +1589,10 @@ button::-moz-focus-inner { border: 0; }
 /* ── Floating Node Windows ─────────────────────────────────────────────────── */
 .lo-float-win {
   position: absolute; z-index: 80;
-  width: 320px; max-height: 400px;
+  width: 420px; max-height: 540px;
   background: var(--lo-bg);
   border: 1px solid var(--lo-divider-strong);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
   display: flex; flex-direction: column;
   font-size: 11px;
   pointer-events: auto;
@@ -1590,7 +1628,7 @@ button::-moz-focus-inner { border: 0; }
 .lo-fw-actions button:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
 .lo-fw-actions button.on { color: var(--lo-accent); border-color: var(--lo-accent); }
 .lo-fw-messages {
-  flex: 1; overflow-y: auto; padding: 8px 12px; max-height: 180px; min-height: 40px;
+  flex: 1; overflow-y: auto; padding: 8px 12px; max-height: 340px; min-height: 80px;
 }
 .lo-fw-msg {
   display: grid; grid-template-columns: 42px 12px 1fr; gap: 3px;
@@ -1662,6 +1700,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .btn:disabled { opacity: 0.4; cursor: default; }
 .btn-primary { background: var(--lo-ink); color: var(--lo-bg); border-color: var(--lo-ink); }
 .btn-sm { padding: 3px 8px; font-size: 9px; }
+.btn.active { color: var(--lo-accent); border-color: var(--lo-accent); }
 
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast-container { position: fixed; bottom: 50px; right: 20px; z-index: 3000; display: flex; flex-direction: column; gap: 6px; }
@@ -1761,7 +1800,11 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div><span class="lo-hud-val" id="hud-msgs">0</span> MESSAGES</div>
     <div><span class="lo-hud-val" id="hud-model">--</span> MODEL</div>
     <div><span class="lo-hud-val" id="hud-uptime">0s</span> UPTIME</div>
-    <div style="margin-top:8px"><button class="btn btn-sm" onclick="refreshNodes()" id="hud-refresh-btn" style="pointer-events:auto">SCAN MESH</button></div>
+    <div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="refreshNodes()" id="hud-refresh-btn" style="pointer-events:auto">SCAN MESH</button>
+      <button class="btn btn-sm" onclick="toggleHwColor()" id="hud-hwcolor-btn" style="pointer-events:auto" title="Color nodes by hardware model">HW COLOR</button>
+    </div>
+    <div id="hw-legend" style="display:none;margin-top:6px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em"></div>
   </div>
 
   <!-- Hop ring legend -->
@@ -2280,6 +2323,8 @@ function initCanvas() {
       var dx = e.clientX - _panStart.x, dy = e.clientY - _panStart.y;
       if (Math.abs(dx) > 4 || Math.abs(dy) > 4) _isPanning = true;
       if (_isPanning) { App.panX = _panStart.panX + dx; App.panY = _panStart.panY + dy; }
+    } else {
+      _updateHoverCursor(_mouseX, _mouseY);
     }
   });
   App.canvas.addEventListener('mouseup', function() { _panStart = null; });
@@ -2370,6 +2415,7 @@ function buildGraph(state) {
   nodes.push(selfNode);
   nodeMap['__self__'] = selfNode;
 
+  var contactMeta = (state.contact_meta) || {};
   Object.keys(allIds).forEach(function(nid) {
     if (selfId && nid === selfId) return;
     var m = meta[nid] || {};
@@ -2382,13 +2428,17 @@ function buildGraph(state) {
       var chNum = nid.split(':').pop() || '0';
       shortId = (chNum === '0') ? 'PUBLIC' : 'CH ' + chNum;
     }
+    var cm = contactMeta[nid] || {};
+    var displayLabel = cm.custom_name || m.long_name || m.short_name || shortId;
+    var isFav = !!cm.is_favorite;
 
     // Reuse existing position if available
     var existing = oldNodeMap[nid];
     var node;
     if (existing) {
       node = existing;
-      node.hops = hops; node.isChannel = isChannel; node.isMC = isMC; node.label = shortId;
+      node.hops = hops; node.isChannel = isChannel; node.isMC = isMC; node.label = displayLabel;
+      node.isFavorite = isFav;
       node.rssi = m.rssi || pos.rssi || null;
       node.snr = m.snr || pos.snr || null;
       node.lat = pos.lat || null; node.lon = pos.lon || null;
@@ -2407,7 +2457,8 @@ function buildGraph(state) {
         startY = cy + Math.sin(angle) * spread;
       }
       node = {
-        id: nid, label: shortId, hops: hops, isChannel: isChannel, isMC: isMC,
+        id: nid, label: displayLabel, hops: hops, isChannel: isChannel, isMC: isMC,
+        isFavorite: isFav,
         birthTime: performance.now(),
         x: startX, y: startY,
         rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
@@ -2480,14 +2531,34 @@ function buildGraph(state) {
 
 function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0; return Math.abs(h); }
 
+// Returns true if any animation needs 60fps rendering (recent message pulse or node entrance <2s old).
+function _hasActiveAnimation(nowMs) {
+  if (App.state && App.state.messages) {
+    var nowS = nowMs / 1000;  // performance.now vs Date.now alignment isn't perfect but good enough
+    var walk = Date.now() / 1000;
+    for (var i = 0; i < App.state.messages.length; i++) {
+      if (walk - App.state.messages[i].ts < 3) return true;
+    }
+  }
+  if (App.nodes) {
+    for (var j = 0; j < App.nodes.length; j++) {
+      var n = App.nodes[j];
+      if (n.birthTime && (nowMs - n.birthTime) < 2000) return true;
+    }
+  }
+  return false;
+}
+
 // ─── Canvas Rendering ──────────────────────────────────────────────────────
 
 var _lastRender = 0;
 function renderLoop() {
   App.animFrame = requestAnimationFrame(renderLoop);
-  // Throttle to ~30fps for performance with large meshes
+  // Adaptive framerate: 60fps while animations are active, 30fps at rest.
   var now = performance.now();
-  if (now - _lastRender < 33) return;
+  var active = _hasActiveAnimation(now);
+  var frameBudget = active ? 16 : 33;
+  if (now - _lastRender < frameBudget) return;
   _lastRender = now;
 
   App.breathPhase += 0.03;
@@ -2519,6 +2590,89 @@ function getColor(varName) {
   if (tick !== _colorCacheTick) { _colorCache = {}; _colorCacheTick = tick; }
   if (!_colorCache[varName]) _colorCache[varName] = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
   return _colorCache[varName];
+}
+
+// Hardware-model palette — applied to node fill when App.colorByHwModel is on.
+// Self node (accent) and MeshCore (mcColor) always override these.
+var HW_COLORS = {
+  'TBEAM': '#3498db', 'TBEAM_V0_7': '#3498db', 'TBEAM_S3_CORE': '#3498db',
+  'HELTEC_V3': '#2ecc71', 'HELTEC_V2_1': '#2ecc71', 'HELTEC_V2_0': '#2ecc71',
+  'HELTEC_WIRELESS_TRACKER': '#27ae60', 'HELTEC_WSL_V3': '#27ae60',
+  'RAK4631': '#f39c12', 'RAK11200': '#f39c12', 'RAK11310': '#f39c12',
+  'T_DECK': '#e74c3c', 'T_WATCH_S3': '#e74c3c',
+  'STATION_G1': '#1abc9c', 'STATION_G2': '#1abc9c',
+  'NANO_G1': '#9b59b6', 'NANO_G1_EXPLORER': '#9b59b6', 'NANO_G2_ULTRA': '#9b59b6',
+  'LILYGO_TBEAM_S3_CORE': '#3498db', 'TLORA_V2_1_1P6': '#16a085', 'TLORA_V2_1_1P8': '#16a085',
+};
+function hwColorFor(nodeId, fallback) {
+  var dm = (App.state && App.state.device_metrics) ? App.state.device_metrics[nodeId] : null;
+  if (!dm || !dm.hw_model) return fallback;
+  var key = String(dm.hw_model).toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+  return HW_COLORS[key] || fallback;
+}
+function nodeFillColor(node, accent2, mcColor) {
+  if (node.isMC) return mcColor;  // MeshCore always purple
+  if (App.colorByHwModel) return hwColorFor(node.id, accent2);
+  return accent2;
+}
+
+function toggleHwColor() {
+  App.colorByHwModel = !App.colorByHwModel;
+  try { localStorage.setItem('loracle-hwcolor', App.colorByHwModel ? '1' : '0'); } catch(e) {}
+  var btn = document.getElementById('hud-hwcolor-btn');
+  if (btn) btn.classList.toggle('active', App.colorByHwModel);
+  renderHwLegend();
+}
+
+function renderHwLegend() {
+  var el = document.getElementById('hw-legend');
+  if (!el) return;
+  if (!App.colorByHwModel) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  // Build legend from hw_models actually present in the current node set.
+  var seen = {};
+  if (App.state && App.state.device_metrics) {
+    Object.keys(App.state.device_metrics).forEach(function(k) {
+      var hw = (App.state.device_metrics[k] || {}).hw_model;
+      if (!hw) return;
+      var key = String(hw).toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+      var color = HW_COLORS[key];
+      if (color && !seen[key]) seen[key] = { color: color, label: hw };
+    });
+  }
+  var rows = Object.keys(seen).map(function(k) {
+    var s = seen[k];
+    return '<div style="display:flex;align-items:center;gap:4px;padding:1px 0">' +
+      '<span style="display:inline-block;width:8px;height:8px;background:' + s.color + ';border-radius:50%"></span>' +
+      '<span>' + escapeHtml(s.label) + '</span></div>';
+  });
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:var(--lo-faint)">No HW models reported yet</div>';
+  } else {
+    el.innerHTML = rows.join('');
+  }
+  el.style.display = 'block';
+}
+
+// Restore toggle from localStorage on load
+(function() {
+  try {
+    if (localStorage.getItem('loracle-hwcolor') === '1') {
+      App.colorByHwModel = true;
+    }
+  } catch(e) {}
+})();
+
+// Base node radius — keep in sync with the sizing logic in renderCanvas so
+// the link shortener never overshoots the visible circle.
+function nodeRadius(node) {
+  if (!node) return 3;
+  if (node.isSelf) return 8;
+  if (node.isChannel) return 7;
+  var freshness = 1.0;
+  var nowSecs = Date.now() / 1000;
+  if (node.lastHeard) freshness = Math.max(0.25, Math.min(1.0, 1.0 - (nowSecs - node.lastHeard) / 3600));
+  else freshness = 0.25;
+  return 3 + Math.round(freshness * 3);
 }
 
 function renderCanvas() {
@@ -2573,11 +2727,19 @@ function renderCanvas() {
   var linkByTarget = {};
   App.links.forEach(function(l) { linkByTarget[l.target.id] = l; });
 
-  // Draw links
+  // Draw links — shortened by node radius + 2px so lines don't bleed through nodes.
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
+    var dx = t.x - s.x, dy = t.y - s.y;
+    var len = Math.sqrt(dx*dx + dy*dy) || 1;
+    var ux = dx / len, uy = dy / len;
+    var sr = nodeRadius(s) + 2;
+    var tr = nodeRadius(t) + 2;
+    if (sr + tr >= len) return;  // nodes overlap — skip the link entirely
+    var x1 = s.x + ux * sr, y1 = s.y + uy * sr;
+    var x2 = t.x - ux * tr, y2 = t.y - uy * tr;
     ctx.beginPath();
-    ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
+    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
     var linkActive = isTraffic && (activeNodes[t.id] || false);
     ctx.strokeStyle = linkActive ? accent : (t.isMC ? '#9b59b6' : accent2);
     ctx.lineWidth = linkActive ? 2 : 0.8;
@@ -2625,8 +2787,10 @@ function renderCanvas() {
       segProgress = (msg.age % perSeg) / perSeg;
     }
 
-    var px = from.x + (to.x - from.x) * segProgress;
-    var py = from.y + (to.y - from.y) * segProgress;
+    // Ease-out: pulse accelerates out, settles at destination (t * (2 - t))
+    var eased = segProgress * (2 - segProgress);
+    var px = from.x + (to.x - from.x) * eased;
+    var py = from.y + (to.y - from.y) * eased;
     var pulseColor = msg.dir === 'in' ? accent2 : accent;
     var pulseAlpha = Math.max(0, 1 - msg.age / totalDur);
 
@@ -2657,34 +2821,42 @@ function renderCanvas() {
     var nodeAlpha = node.isSelf || node.isChannel ? 1 : (0.3 + 0.7 * freshness);
     if (isTraffic && !node.isSelf && !activeNodes[node.id]) nodeAlpha = 0.1;
 
-    // Entrance fade-in (opacity only, no scale — safer than scale animation)
+    // Entrance fade-in (opacity only — safer than scale animation)
     var entranceAlpha = 1;
+    var entranceProg = 1;  // 0..1, used for the ring flash below
     if (node.birthTime && !node.isSelf) {
       var ageMs = performance.now() - node.birthTime;
-      var dur = freshness > 0.5 ? 2000 : 600;
-      if (ageMs < dur) entranceAlpha = ageMs / dur;
+      var dur = freshness > 0.5 ? 1200 : 600;
+      if (ageMs < dur) {
+        entranceProg = ageMs / dur;
+        entranceAlpha = entranceProg;
+      }
     }
     nodeAlpha *= entranceAlpha;
 
-    // Subtle breathing — fresh nodes only, clamped to ±1px
+    // Breathing — fresh nodes only. Radius ±1.8px, alpha ±0.08
     var breathPx = 0;
+    var breathAlpha = 0;
     if (!node.isSelf && !node.isChannel && freshness > 0.5) {
-      breathPx = Math.sin(App.breathPhase + i * 0.6) * freshness;
+      var phase = App.breathPhase + i * 0.6;
+      breathPx = Math.sin(phase) * 1.8 * freshness;
+      breathAlpha = Math.sin(phase) * 0.08 * freshness;
     }
     var baseR = node.isSelf ? 8 : (node.isChannel ? 7 : 3 + Math.round(freshness * 3));
     var r = Math.max(2, Math.min(12, baseR + breathPx));
 
-    ctx.globalAlpha = nodeAlpha;
+    ctx.globalAlpha = Math.max(0, Math.min(1, nodeAlpha + breathAlpha));
 
     if (node.isChannel) {
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
     } else if (node.isSelf) {
-      // Sonar ring — clamped radius
-      var sonarPhase = (App.breathPhase * 2) % 4;
-      var sonarR = Math.min(28, 10 + sonarPhase * 5);
-      var sonarAlpha = Math.max(0, 1 - sonarPhase / 4);
-      if (sonarAlpha > 0) {
+      // Sonar ring — smooth radial dissolve (no pop)
+      var sonarPhase = (App.breathPhase * 2) % 4;  // 0..4
+      var sonarT = sonarPhase / 4;  // 0..1
+      var sonarR = 10 + sonarT * 22;  // 10..32
+      var sonarAlpha = (1 - sonarT) * (1 - sonarT);  // ease-out quadratic
+      if (sonarAlpha > 0.01) {
         ctx.globalAlpha = sonarAlpha * 0.6;
         ctx.beginPath(); ctx.arc(node.x, node.y, sonarR, 0, Math.PI * 2);
         ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.stroke();
@@ -2694,7 +2866,18 @@ function renderCanvas() {
       ctx.fillStyle = accent; ctx.fill();
     } else {
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = node.isMC ? mcColor : accent2; ctx.fill();
+      ctx.fillStyle = nodeFillColor(node, accent2, mcColor);
+      ctx.fill();
+    }
+
+    // Entrance ring flash — expanding ring announces a newly detected node.
+    if (entranceProg < 1 && !node.isSelf) {
+      var ringR = baseR + entranceProg * 18;
+      var ringAlpha = (1 - entranceProg) * 0.8;
+      ctx.globalAlpha = ringAlpha;
+      ctx.beginPath(); ctx.arc(node.x, node.y, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = accent; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.globalAlpha = nodeAlpha;  // restore for anything drawn after
     }
 
     // Label
@@ -2738,6 +2921,15 @@ function renderCanvas() {
       ctx.fillText(uc > 9 ? '9+' : String(uc), bx, by + 2.5);
     }
 
+    // Favorite star
+    if (node.isFavorite && !node.isSelf) {
+      ctx.globalAlpha = 1;
+      ctx.font = '500 11px "IBM Plex Mono"';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#f1c40f';
+      ctx.fillText('\u2605', node.x - r - 4, node.y - r + 1);
+    }
+
     ctx.globalAlpha = 1; // reset after each node
   });
   ctx.restore();
@@ -2755,7 +2947,8 @@ function onCanvasClick(e) {
   App.nodes.forEach(function(n) {
     var dx = n.x - mx, dy = n.y - my;
     var dist = Math.sqrt(dx*dx + dy*dy);
-    if (dist < 40 && dist < closestDist) { closest = n; closestDist = dist; }
+    // Click radius scales with node size so larger nodes are easier to hit.
+    if (dist < 60 && dist < closestDist) { closest = n; closestDist = dist; }
   });
   if (closest && !closest.isSelf) {
     openFloatWindow(closest);
@@ -2764,23 +2957,49 @@ function onCanvasClick(e) {
   }
 }
 
+// Hover-cursor hit test, called from the main mousemove handler.
+function _updateHoverCursor(mxRel, myRel) {
+  var mx = mxRel - App.panX, my = myRel - App.panY;
+  var hit = false;
+  for (var i = 0; i < App.nodes.length; i++) {
+    var n = App.nodes[i];
+    var dx = n.x - mx, dy = n.y - my;
+    if (Math.sqrt(dx*dx + dy*dy) < 60) { hit = true; break; }
+  }
+  if (App.canvas) App.canvas.style.cursor = hit ? 'pointer' : '';
+}
+
 // ─── Floating Node Windows ────────────────────────────────────────────────
 
 var _openWindows = {};
 
 async function openFloatWindow(node) {
-  if (_openWindows[node.id]) return; // already open
+  if (!node) return;
+  App.selectedNode = node.id;  // drives the on-canvas selection ring
+  if (_openWindows[node.id]) {
+    // Already open — refresh data and bring into view
+    loadFloatData(node.id);
+    return;
+  }
+  // Close any other panels so the focused node is unambiguous. Users who
+  // want multiple detached views can drag one off before opening another.
+  Object.keys(_openWindows).forEach(function(k) {
+    if (k !== node.id) closeFloatWin(k);
+  });
   var win = document.createElement('div');
   win.className = 'lo-float-win';
   win.dataset.nodeId = node.id;
-  var wx = Math.min(Math.max(node.x + 20, 10), App.width - 340);
-  var wy = Math.max(Math.min(node.y - 80, App.height - 420), 10);
+  // Position in the upper-right corner by default so it feels like a persistent panel,
+  // not a tooltip glued to the click point. User can still drag it anywhere.
+  var winW = 420, winH = 540;
+  var wx = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10);
+  var wy = 60;
   win.style.left = wx + 'px'; win.style.top = wy + 'px';
   var label = node.label || node.id.slice(-6);
   var eid = node.id.replace(/[^a-zA-Z0-9]/g, '_');
   win.innerHTML =
     '<div class="lo-fw-header" onmousedown="startDragWin(event,this.parentElement)">' +
-      '<span class="lo-fw-name">' + escapeHtml(label) + '</span>' +
+      '<span class="lo-fw-name" id="fw-title-' + eid + '" ondblclick="floatStartRename(\'' + escapeHtml(node.id) + '\')" title="Double-click to rename">' + escapeHtml(label) + '</span>' +
       '<button class="lo-fw-close" onclick="closeFloatWin(\'' + escapeHtml(node.id) + '\')">\u00d7</button>' +
     '</div>' +
     '<div class="lo-fw-meta" id="fw-m-' + eid + '">Loading...</div>' +
@@ -2834,11 +3053,20 @@ async function loadFloatData(nodeId) {
   var aiLabel = aiVal === 1 ? 'AI: ON' : aiVal === 0 ? 'AI: OFF' : 'AI: AUTO';
   var aiClass = aiVal === 1 ? ' on' : '';
   var isChannel = nodeId.indexOf('channel:') !== -1;
+  var favOn = !!contact.is_favorite;
+  var favLabel = favOn ? '\u2605 FAV' : '\u2606 FAV';
+  var favClass = favOn ? ' on' : '';
   actEl.innerHTML = '<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>' +
+    (isChannel ? '' : ' <button class="' + favClass + '" onclick="floatToggleFavorite(\'' + escapeHtml(nodeId) + '\')">' + favLabel + '</button>') +
+    (isChannel ? '' : ' <button onclick="floatStartRename(\'' + escapeHtml(nodeId) + '\')">RENAME</button>') +
     (isChannel ? '' : ' <button onclick="floatTrace(\'' + escapeHtml(nodeId) + '\')">TRACE</button>');
+  // Use custom_name in the header if set
+  var titleEl = document.getElementById('fw-title-' + eid);
+  if (titleEl && contact.custom_name) titleEl.textContent = contact.custom_name;
   if (msgs.length === 0) { msgsEl.innerHTML = '<div class="lo-fw-empty">NO MESSAGES YET</div>'; }
   else {
-    msgsEl.innerHTML = msgs.slice(-15).map(function(m) {
+    // Show full history (API already limits to 50 most recent on the server).
+    msgsEl.innerHTML = msgs.map(function(m) {
       var ac = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
       var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
       var status = '';
@@ -2859,6 +3087,13 @@ function closeFloatWin(nodeId) {
   var win = _openWindows[nodeId];
   if (win && win.parentNode) win.parentNode.removeChild(win);
   delete _openWindows[nodeId];
+  if (App.selectedNode === nodeId) App.selectedNode = null;
+}
+
+// Called from the poll loop's soft-refresh path. If the window is open,
+// re-fetch its data; otherwise no-op (selection persists but nothing to refresh).
+function openNodePanel(nodeId) {
+  if (_openWindows[nodeId]) loadFloatData(nodeId);
 }
 
 async function floatSend(nodeId, inputEl) {
@@ -2869,6 +3104,9 @@ async function floatSend(nodeId, inputEl) {
   if (d && d.ok) {
     var isChannel = nodeId.indexOf('channel:') !== -1;
     showToast(isChannel ? 'Broadcast on CH ' + (nodeId.split(':').pop() || '0') : 'Sent to ' + nodeId.slice(-6));
+  } else {
+    // callApi already showed an error toast — just let the user retry
+    inputEl.value = text;
   }
   loadFloatData(nodeId);
 }
@@ -2902,6 +3140,57 @@ async function floatTrace(nodeId) {
 async function floatToggleAi(nodeId) {
   await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/ai-toggle');
   loadFloatData(nodeId);
+}
+
+async function floatToggleFavorite(nodeId) {
+  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/favorite');
+  if (d && d.ok) {
+    showToast(d.is_favorite ? '\u2605 Favorited' : 'Unfavorited');
+    // Optimistically update the canvas node so the star appears instantly
+    var n = App.nodes.find(function(x) { return x.id === nodeId; });
+    if (n) n.isFavorite = d.is_favorite;
+  }
+  loadFloatData(nodeId);
+}
+
+function floatStartRename(nodeId) {
+  var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
+  var titleEl = document.getElementById('fw-title-' + eid);
+  if (!titleEl) return;
+  if (titleEl.querySelector('input')) return;  // already editing
+  var current = titleEl.textContent;
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = current;
+  input.maxLength = 64;
+  input.style.cssText = 'background:transparent;border:1px solid var(--lo-accent);color:var(--lo-ink);font:inherit;font-size:12px;padding:0 4px;width:140px;outline:none';
+  input.onkeydown = function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); floatCommitRename(nodeId, input.value, current); }
+    else if (e.key === 'Escape') { e.preventDefault(); titleEl.textContent = current; }
+  };
+  input.onblur = function() { floatCommitRename(nodeId, input.value, current); };
+  titleEl.innerHTML = '';
+  titleEl.appendChild(input);
+  input.focus(); input.select();
+}
+
+async function floatCommitRename(nodeId, newName, oldName) {
+  var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
+  var titleEl = document.getElementById('fw-title-' + eid);
+  var trimmed = (newName || '').trim();
+  // Send null to clear, otherwise the new name (empty → clears)
+  var payload = { name: trimmed ? trimmed : null };
+  var d = await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/rename', payload);
+  if (d && d.ok) {
+    var finalLabel = d.custom_name || oldName;  // oldName may include short_name fallback
+    if (titleEl) titleEl.textContent = finalLabel;
+    // Update the canvas node label
+    var n = App.nodes.find(function(x) { return x.id === nodeId; });
+    if (n) n.label = d.custom_name || n.label;
+    showToast(d.custom_name ? 'Renamed to ' + d.custom_name : 'Name cleared');
+  } else if (titleEl) {
+    titleEl.textContent = oldName;
+  }
 }
 
 var _dragWin = null, _dragOff = {x:0, y:0};
@@ -2964,11 +3253,31 @@ async function poll() {
     App._lastConnected = connected;
     checkConnectionForModal(connected);
 
+    // New node detected toast — fires on nodes that appear mid-session (not on initial load).
+    var currIds = d.known_nodes || [];
+    var prevIds = App._lastKnownNodeIds;
+    if (prevIds && prevIds.size > 0) {
+      var freshIds = [];
+      for (var ni = 0; ni < currIds.length; ni++) {
+        var nid = currIds[ni];
+        if (typeof nid === 'string' && nid.indexOf('channel:') !== 0 && !prevIds.has(nid)) {
+          freshIds.push(nid);
+        }
+      }
+      if (freshIds.length === 1) {
+        showToast('\u2713 New node detected: ' + freshIds[0].slice(-4), 'info');
+      } else if (freshIds.length > 1) {
+        showToast('\u2713 ' + freshIds.length + ' new nodes detected', 'info');
+      }
+    }
+    App._lastKnownNodeIds = new Set(currIds);
+
     // HUD
     document.getElementById('hud-nodes').textContent = d.node_count || 0;
     document.getElementById('hud-msgs').textContent = d.message_count || 0;
     document.getElementById('hud-model').textContent = d.model || '--';
     document.getElementById('hud-uptime').textContent = formatUptime(d.uptime || 0);
+    if (App.colorByHwModel) renderHwLegend();
 
     // Update CONFIG connection status if visible
     if (App.view === 'config') {
@@ -3220,9 +3529,11 @@ function renderNodeList() {
     if (filter && n.label.toLowerCase().indexOf(filter) === -1 && n.id.toLowerCase().indexOf(filter) === -1) return false;
     return true;
   }).map(function(n) {
-    return { id: n.id, label: n.label, hops: n.hops, lastHeard: n.lastHeard || 0, unread: App.unreadCounts[n.id] || 0 };
+    return { id: n.id, label: n.label, hops: n.hops, lastHeard: n.lastHeard || 0, unread: App.unreadCounts[n.id] || 0, isFavorite: !!n.isFavorite };
   });
   items.sort(function(a, b) {
+    // Favorites always float to the top within the chosen sort
+    if (a.isFavorite !== b.isFavorite) return a.isFavorite ? -1 : 1;
     if (_nodeSort === 'hops') return (a.hops === null ? 99 : a.hops) - (b.hops === null ? 99 : b.hops);
     if (_nodeSort === 'heard') return (b.lastHeard || 0) - (a.lastHeard || 0);
     if (_nodeSort === 'unread') return b.unread - a.unread;
@@ -3232,8 +3543,9 @@ function renderNodeList() {
     var hops = n.hops !== null ? (n.hops === 0 ? 'direct' : n.hops + 'h') : '--';
     var heard = n.lastHeard ? relativeTime(n.lastHeard) : '--';
     var badge = n.unread > 0 ? '<span class="lo-ns-badge">' + n.unread + '</span>' : '';
+    var star = n.isFavorite ? '<span style="color:#f1c40f;margin-right:3px">\u2605</span>' : '';
     return '<div class="lo-ns-row" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(n.id) + '\'}))">' +
-      '<span class="lo-ns-name">' + escapeHtml(n.label) + '</span>' +
+      '<span class="lo-ns-name">' + star + escapeHtml(n.label) + '</span>' +
       '<span class="lo-ns-hops">' + hops + '</span>' +
       '<span class="lo-ns-heard">' + heard + '</span>' +
       badge + '</div>';
@@ -3394,6 +3706,12 @@ async function refreshNodes() {
 // ─── Init ──────────────────────────────────────────────────────────────────
 
 initCanvas();
+// Sync HW-color button with persisted preference
+(function() {
+  var btn = document.getElementById('hud-hwcolor-btn');
+  if (btn && App.colorByHwModel) btn.classList.add('active');
+  renderHwLegend();
+})();
 // Always show connect modal on load — poll will auto-hide if connected
 showConnectModal();
 poll();
