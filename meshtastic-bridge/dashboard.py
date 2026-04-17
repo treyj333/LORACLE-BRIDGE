@@ -1522,6 +1522,22 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-help p { margin-bottom: 8px; }
 .lo-help code { background: var(--lo-divider); padding: 1px 4px; font-size: 11px; }
 
+/* ── Node List Sidebar ────────────────────────────────────────────────────── */
+.lo-node-sidebar { display: none; position: absolute; top: 0; right: 0; width: 260px; height: 100%; background: var(--lo-bg); border-left: 1px solid var(--lo-divider-strong); z-index: 90; flex-direction: column; overflow: hidden; }
+.lo-node-sidebar.open { display: flex; }
+.lo-ns-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--lo-divider); font-size: 10px; letter-spacing: 0.1em; color: var(--lo-dim); }
+.lo-ns-header input { width: 100px; background: var(--lo-bg-deep); border: 1px solid var(--lo-divider); color: var(--lo-ink); font-family: var(--font-mono); font-size: 10px; padding: 3px 6px; margin-left: 8px; }
+.lo-ns-sort { display: flex; gap: 2px; padding: 6px 12px; border-bottom: 1px solid var(--lo-divider); }
+.lo-ns-sort button { background: none; border: 1px solid var(--lo-divider); color: var(--lo-faint); font-family: var(--font-mono); font-size: 9px; padding: 2px 6px; cursor: pointer; letter-spacing: 0.05em; }
+.lo-ns-sort button.active { color: var(--lo-ink); border-color: var(--lo-accent); }
+.lo-ns-list { flex: 1; overflow-y: auto; }
+.lo-ns-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--lo-divider); cursor: pointer; font-size: 10px; color: var(--lo-dim); }
+.lo-ns-row:hover { background: var(--lo-bg-deep); }
+.lo-ns-row .lo-ns-name { flex: 1; color: var(--lo-ink); font-weight: 500; }
+.lo-ns-row .lo-ns-hops { color: var(--lo-faint); font-size: 9px; }
+.lo-ns-row .lo-ns-heard { color: var(--lo-faint); font-size: 9px; }
+.lo-ns-row .lo-ns-badge { background: var(--lo-accent); color: var(--lo-bg); font-size: 8px; font-weight: 500; padding: 1px 4px; min-width: 14px; text-align: center; }
+
 /* ── Onboarding ───────────────────────────────────────────────────────────── */
 .lo-onboarding { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; }
 .lo-onboarding.open { display: flex; }
@@ -1556,6 +1572,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <button data-view="config" onclick="setView('config')">CONFIG</button>
   </div>
   <div class="lo-tools">
+    <button id="nodes-toggle" title="Node list" onclick="toggleNodeList()">&#9776;</button>
     <button id="help-toggle" title="Help">?</button>
     <button id="theme-toggle" title="Toggle theme">&#9681;</button>
   </div>
@@ -1579,6 +1596,21 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
   <!-- Floating node windows rendered here by JS -->
   <div id="float-windows" style="position:absolute;inset:0;pointer-events:none;z-index:80"></div>
+
+  <!-- Node list sidebar -->
+  <div class="lo-node-sidebar" id="node-sidebar">
+    <div class="lo-ns-header">
+      <span>NODES</span>
+      <input type="text" id="ns-search" placeholder="filter..." oninput="renderNodeList()">
+    </div>
+    <div class="lo-ns-sort">
+      <button class="active" onclick="setNodeSort('name',this)">NAME</button>
+      <button onclick="setNodeSort('hops',this)">HOPS</button>
+      <button onclick="setNodeSort('heard',this)">HEARD</button>
+      <button onclick="setNodeSort('unread',this)">UNREAD</button>
+    </div>
+    <div class="lo-ns-list" id="ns-list"></div>
+  </div>
 </div>
 
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
@@ -1906,6 +1938,9 @@ var App = {
   breathPhase: 0,
   packets: [],
   ribbonData: [],
+  panX: 0,
+  panY: 0,
+  unreadCounts: {},
 };
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
@@ -1967,12 +2002,25 @@ function initCanvas() {
   App.ctx = App.canvas.getContext('2d');
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
-  App.canvas.addEventListener('click', onCanvasClick);
+  App.canvas.addEventListener('mousedown', function(e) {
+    if (e.button !== 0) return;
+    _panStart = {x: e.clientX, y: e.clientY, panX: App.panX, panY: App.panY};
+    _isPanning = false;
+  });
   App.canvas.addEventListener('mousemove', function(e) {
     var rect = App.canvas.getBoundingClientRect();
     _mouseX = e.clientX - rect.left;
     _mouseY = e.clientY - rect.top;
+    if (_panStart) {
+      var dx = e.clientX - _panStart.x, dy = e.clientY - _panStart.y;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) _isPanning = true;
+      if (_isPanning) { App.panX = _panStart.panX + dx; App.panY = _panStart.panY + dy; }
+    }
   });
+  App.canvas.addEventListener('mouseup', function() { _panStart = null; });
+  App.canvas.addEventListener('mouseleave', function() { _panStart = null; });
+  App.canvas.addEventListener('click', onCanvasClick);
+  App.canvas.addEventListener('dblclick', function() { App.panX = 0; App.panY = 0; });
   requestAnimationFrame(renderLoop);
 }
 
@@ -2085,10 +2133,36 @@ function buildGraph(state) {
     nodeMap[nid] = node;
   });
 
-  // Links
+  // Links — chain nodes by hop tier (realistic mesh topology)
   var links = [];
+  var tiers = {};
   nodes.forEach(function(n) {
     if (n.isSelf) return;
+    var h = (n.hops !== null && n.hops >= 0) ? Math.min(n.hops, 4) : -1;
+    if (!tiers[h]) tiers[h] = [];
+    tiers[h].push(n);
+  });
+  // Direct nodes (hops 0-1) link to MY NODE
+  (tiers[0] || []).concat(tiers[1] || []).forEach(function(n) {
+    links.push({ source: nodeMap['__self__'], target: n });
+  });
+  // Higher hop tiers link to nearest node in previous tier
+  for (var tier = 2; tier <= 4; tier++) {
+    var targets = tiers[tier] || [];
+    var parents = (tier === 2) ? (tiers[0] || []).concat(tiers[1] || []) : (tiers[tier - 1] || []);
+    if (parents.length === 0) parents = [nodeMap['__self__']];
+    targets.forEach(function(n) {
+      var best = parents[0], bestDist = Infinity;
+      parents.forEach(function(p) {
+        var dx = n.x - p.x, dy = n.y - p.y;
+        var d = dx*dx + dy*dy;
+        if (d < bestDist) { best = p; bestDist = d; }
+      });
+      links.push({ source: best, target: n });
+    });
+  }
+  // Unknown hop nodes link to MY NODE
+  (tiers[-1] || []).forEach(function(n) {
     links.push({ source: nodeMap['__self__'], target: n });
   });
 
@@ -2100,10 +2174,7 @@ function buildGraph(state) {
   App.simulation = d3.forceSimulation(nodes)
     .force('charge', d3.forceManyBody().strength(-120))
     .force('center', d3.forceCenter(cx, cy).strength(0.03))
-    .force('link', d3.forceLink(links).distance(function(l) {
-      var h = l.target.hops;
-      return h !== null ? 100 + h * 90 : 200;
-    }).strength(0.2))
+    .force('link', d3.forceLink(links).distance(100).strength(0.25))
     .force('collision', d3.forceCollide(45))
     .alphaDecay(0.05)
     .velocityDecay(0.4)
@@ -2117,17 +2188,18 @@ function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCod
 function renderLoop() {
   App.breathPhase += 0.02;
   // Mouse magnetism — attract only the closest node, repel the rest
-  if (_mouseX > 0 && _mouseY > 0) {
+  if (_mouseX > 0 && _mouseY > 0 && !_panStart) {
+    var wmx = _mouseX - App.panX, wmy = _mouseY - App.panY;
     var closest = null, closestDist = 100;
     App.nodes.forEach(function(n) {
       if (n.isSelf) return;
-      var dx = _mouseX - n.x, dy = _mouseY - n.y;
+      var dx = wmx - n.x, dy = wmy - n.y;
       var dist = Math.sqrt(dx*dx + dy*dy);
       if (dist < closestDist) { closest = n; closestDist = dist; }
     });
     App.nodes.forEach(function(n) {
       if (n.isSelf) return;
-      var dx = _mouseX - n.x, dy = _mouseY - n.y;
+      var dx = wmx - n.x, dy = wmy - n.y;
       var dist = Math.sqrt(dx*dx + dy*dy);
       if (n === closest && dist > 5) {
         var pull = Math.max(0, (100 - dist) / 100) * 0.15;
@@ -2161,6 +2233,8 @@ function renderCanvas() {
   var divider = getColor('--lo-divider-strong');
 
   ctx.clearRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(App.panX, App.panY);
 
   var cx = w/2, cy = h/2;
   var isTraffic = App.view === 'traffic';
@@ -2270,17 +2344,30 @@ function renderCanvas() {
       ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.stroke(); ctx.setLineDash([]);
     }
+    // Unread badge
+    if (!node.isSelf && App.unreadCounts[node.id] > 0) {
+      var uc = App.unreadCounts[node.id];
+      var bx = node.x + baseR + 2, by = node.y - baseR - 2;
+      ctx.beginPath(); ctx.arc(bx, by, 6, 0, Math.PI * 2);
+      ctx.fillStyle = accent; ctx.fill();
+      ctx.font = '500 7px "IBM Plex Mono"';
+      ctx.textAlign = 'center'; ctx.fillStyle = bg;
+      ctx.fillText(uc > 9 ? '9+' : String(uc), bx, by + 2.5);
+    }
+
     ctx.globalAlpha = 1; // reset after each node
   });
+  ctx.restore();
 }
 
 // ─── Canvas Interaction + Floating Windows ────────────────────────────────
 
-var _mouseX = 0, _mouseY = 0;
+var _mouseX = 0, _mouseY = 0, _panStart = null, _isPanning = false;
 
 function onCanvasClick(e) {
+  if (_isPanning) { _isPanning = false; return; }
   var rect = App.canvas.getBoundingClientRect();
-  var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  var mx = e.clientX - rect.left - App.panX, my = e.clientY - rect.top - App.panY;
   var closest = null, closestDist = Infinity;
   App.nodes.forEach(function(n) {
     var dx = n.x - mx, dy = n.y - my;
@@ -2464,6 +2551,18 @@ async function poll() {
       updateRibbon(d);
     }
 
+    // Fetch unread counts every 5 polls (~10s)
+    if (!App._unreadTick) App._unreadTick = 0;
+    if (++App._unreadTick % 5 === 0) {
+      try {
+        var tr = await fetch('/api/threads');
+        var td = await tr.json();
+        var uc = {};
+        (td.contacts || []).forEach(function(c) { if (c.unread > 0) uc[c.contact_id] = c.unread; });
+        App.unreadCounts = uc;
+      } catch(e) {}
+    }
+
     // Refresh open panel
     if (App.selectedNode) {
       // Soft refresh every 5 polls (~10s)
@@ -2576,6 +2675,44 @@ function checkConnectionForModal(connected) {
     if (!_disconnectedSince) _disconnectedSince = Date.now();
     if (Date.now() - _disconnectedSince > 10000) { _connectModalDismissed = false; showConnectModal(); }
   }
+}
+
+// ─── Node List Sidebar ─────────────────────────────────────────────────────
+
+var _nodeSort = 'name';
+function toggleNodeList() { document.getElementById('node-sidebar').classList.toggle('open'); renderNodeList(); }
+function setNodeSort(sort, btn) {
+  _nodeSort = sort;
+  document.querySelectorAll('.lo-ns-sort button').forEach(function(b) { b.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  renderNodeList();
+}
+function renderNodeList() {
+  var list = document.getElementById('ns-list');
+  var filter = (document.getElementById('ns-search').value || '').toLowerCase();
+  var items = App.nodes.filter(function(n) {
+    if (n.isSelf) return false;
+    if (filter && n.label.toLowerCase().indexOf(filter) === -1 && n.id.toLowerCase().indexOf(filter) === -1) return false;
+    return true;
+  }).map(function(n) {
+    return { id: n.id, label: n.label, hops: n.hops, lastHeard: n.lastHeard || 0, unread: App.unreadCounts[n.id] || 0 };
+  });
+  items.sort(function(a, b) {
+    if (_nodeSort === 'hops') return (a.hops === null ? 99 : a.hops) - (b.hops === null ? 99 : b.hops);
+    if (_nodeSort === 'heard') return (b.lastHeard || 0) - (a.lastHeard || 0);
+    if (_nodeSort === 'unread') return b.unread - a.unread;
+    return a.label.localeCompare(b.label);
+  });
+  list.innerHTML = items.map(function(n) {
+    var hops = n.hops !== null ? (n.hops === 0 ? 'direct' : n.hops + 'h') : '--';
+    var heard = n.lastHeard ? relativeTime(n.lastHeard) : '--';
+    var badge = n.unread > 0 ? '<span class="lo-ns-badge">' + n.unread + '</span>' : '';
+    return '<div class="lo-ns-row" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(n.id) + '\'}))">' +
+      '<span class="lo-ns-name">' + escapeHtml(n.label) + '</span>' +
+      '<span class="lo-ns-hops">' + hops + '</span>' +
+      '<span class="lo-ns-heard">' + heard + '</span>' +
+      badge + '</div>';
+  }).join('');
 }
 
 // ─── Help + Theme ──────────────────────────────────────────────────────────
