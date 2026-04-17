@@ -47,7 +47,7 @@ from ollama_client import OllamaClient, auto_select_model, MODEL_PROFILES, get_s
 from protocol import chunk_message
 from dashboard import (
     start_dashboard, record_message, update_state, set_bridge,
-    register_addon_tab, register_addon_api_route,
+    register_addon_tab, register_addon_api_route, _emit_sse,
 )
 from addons import load_addons
 from coverage_logger import CoverageLogger
@@ -875,16 +875,22 @@ class StandaloneBridge:
         return sender[-6:] if len(sender) > 6 else sender
 
     def _on_bridge_relay(self, event: Dict[str, Any]) -> None:
-        """Capture relay events into a bounded ring buffer for the UI.
+        """Capture relay events into a bounded ring buffer + emit SSE.
 
-        Also persisted to SQLite in Phase 5; the in-memory buffer gives
-        the BRIDGE tab a fast recent-events view without hitting the DB.
+        The in-memory buffer feeds ``GET /api/bridge/events`` (polling
+        fallback). The SSE push lets the BRIDGE tab update instantly
+        without waiting for the next poll. Phase 5 will add persistent
+        SQLite storage for the bridge_events audit log.
         """
         event["timestamp"] = time.time()
         self._bridge_events.append(event)
         if len(self._bridge_events) > 200:
             # Trim to the last 200 — bounded buffer for dashboard polling.
             del self._bridge_events[:-200]
+        try:
+            _emit_sse("bridge.relay", {"event": event})
+        except Exception as e:
+            logger.debug(f"[bridge] SSE emit error: {e}")
 
     def _on_receive(self, packet, interface):
         """Handle incoming text message from the mesh."""

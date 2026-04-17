@@ -1900,6 +1900,42 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 }
 .lo-ai-composer .lo-send:disabled { opacity: 0.4; cursor: default; }
 
+/* ── BRIDGE View (LORACLE v2) ─────────────────────────────────────────────── */
+.lo-bridge-view { position: absolute; inset: 36px 0 26px 0; z-index: 5; background: var(--lo-bg); color: var(--lo-ink); display: flex; flex-direction: column; overflow-y: auto; }
+.lo-bridge-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--lo-divider-strong); flex-shrink: 0; }
+.lo-bridge-title { display: flex; align-items: baseline; gap: 12px; font-size: 12px; letter-spacing: 0.14em; }
+.lo-bridge-badge { font-size: 9px; letter-spacing: 0.12em; padding: 2px 8px; background: var(--lo-divider); color: var(--lo-ink); border-radius: 2px; }
+.lo-bridge-badge.on { background: #27ae60; color: #fff; }
+.lo-bridge-stats { display: flex; gap: 16px; font-size: 10px; color: var(--lo-dim); letter-spacing: 0.08em; }
+.lo-bridge-stats b { color: var(--lo-ink); font-weight: 600; margin-left: 4px; }
+.lo-bridge-panel { padding: 16px 20px; display: flex; flex-direction: column; gap: 18px; max-width: 900px; }
+.lo-bridge-section { border: 1px solid var(--lo-divider); padding: 12px 14px; background: var(--lo-bg-deep); }
+.lo-bridge-section-title { font-size: 10px; letter-spacing: 0.14em; color: var(--lo-dim); margin-bottom: 10px; }
+.lo-bridge-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.lo-bridge-hint { font-size: 10px; color: var(--lo-faint); line-height: 1.5; }
+.lo-bridge-rule { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--lo-divider); font-size: 11px; }
+.lo-bridge-rule:last-child { border-bottom: none; }
+.lo-bridge-rule select, .lo-bridge-rule input[type=number] {
+  background: var(--lo-bg); color: var(--lo-ink); border: 1px solid var(--lo-divider);
+  font-family: var(--font-mono); font-size: 11px; padding: 3px 6px;
+}
+.lo-bridge-rule .lo-bridge-rule-del {
+  background: none; border: 1px solid var(--lo-divider); color: var(--lo-faint);
+  font-family: inherit; font-size: 10px; padding: 2px 7px; cursor: pointer; letter-spacing: 0.05em;
+}
+.lo-bridge-rule .lo-bridge-rule-del:hover { color: #e74c3c; border-color: #e74c3c; }
+.lo-bridge-flow {
+  max-height: 360px; overflow-y: auto; border: 1px solid var(--lo-divider);
+  background: var(--lo-bg); padding: 6px 10px; font-family: var(--font-mono); font-size: 10px;
+}
+.lo-bridge-flow-row { padding: 4px 0; border-bottom: 1px dashed var(--lo-divider); color: var(--lo-dim); display: grid; grid-template-columns: 60px 70px auto 1fr; gap: 8px; }
+.lo-bridge-flow-row:last-child { border-bottom: none; }
+.lo-bridge-flow-row .time { color: var(--lo-faint); }
+.lo-bridge-flow-row .dir { color: var(--lo-accent); font-weight: 600; }
+.lo-bridge-flow-row .sender { color: var(--lo-ink); }
+.lo-bridge-flow-row .text { color: var(--lo-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lo-bridge-flow-empty { color: var(--lo-faint); text-align: center; padding: 28px 10px; font-size: 10px; }
+
 .lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); cursor: pointer; }
 .lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); cursor: default; }
 .lo-map-marker.fav { border-color: #f1c40f; box-shadow: 0 0 0 2px rgba(241,196,15,0.35); }
@@ -1956,6 +1992,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <button data-view="traffic" onclick="setView('traffic')">TRAFFIC</button>
     <button data-view="map" onclick="setView('map')">MAP</button>
     <button data-view="ai" onclick="setView('ai')">AI</button>
+    <button data-view="bridge" onclick="setView('bridge')">BRIDGE</button>
     <button data-view="config" onclick="setView('config')">CONFIG</button>
   </div>
   <div class="lo-tools">
@@ -2036,6 +2073,50 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <input type="text" id="ai-input" placeholder="ask anything..." autocomplete="off">
     <button type="submit" class="lo-send" id="ai-send-btn">SEND</button>
   </form>
+</div>
+
+<!-- ── BRIDGE View (LORACLE v2) ────────────────────────────────────────────── -->
+<div id="bridge-view" class="lo-bridge-view" style="display:none">
+  <div class="lo-bridge-header">
+    <div class="lo-bridge-title">
+      <span>CROSS-PROTOCOL BRIDGE</span>
+      <span class="lo-bridge-badge" id="bridge-enabled-badge">OFF</span>
+    </div>
+    <div class="lo-bridge-stats" id="bridge-stats">
+      <span>relayed: <b id="bridge-relayed">0</b></span>
+      <span>dropped: <b id="bridge-dropped">0</b></span>
+      <span>dedup: <b id="bridge-dedup">0</b></span>
+    </div>
+  </div>
+
+  <div class="lo-bridge-panel">
+    <div class="lo-bridge-section">
+      <div class="lo-bridge-section-title">GLOBAL</div>
+      <label class="lo-bridge-row">
+        <input type="checkbox" id="bridge-enabled" onchange="bridgeMarkDirty()">
+        <span>Relay enabled</span>
+        <span class="lo-bridge-hint">Master switch — when off, no messages cross between networks regardless of per-channel rules.</span>
+      </label>
+    </div>
+
+    <div class="lo-bridge-section">
+      <div class="lo-bridge-section-title">PER-CHANNEL RULES</div>
+      <div class="lo-bridge-hint" style="margin-bottom:8px">Each rule decides whether channel broadcasts from one network cross to the other. DMs never relay.</div>
+      <div id="bridge-rules-list"></div>
+      <button class="btn btn-sm" onclick="bridgeAddRule()" style="margin-top:8px">+ ADD RULE</button>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn btn-sm" onclick="bridgeSaveConfig()" id="bridge-save-btn">APPLY</button>
+        <button class="btn btn-sm" onclick="bridgeReloadConfig()">RELOAD</button>
+        <span id="bridge-save-status" style="align-self:center;color:var(--lo-faint);font-size:11px"></span>
+      </div>
+    </div>
+
+    <div class="lo-bridge-section">
+      <div class="lo-bridge-section-title">LIVE FLOW</div>
+      <div class="lo-bridge-hint" style="margin-bottom:8px">Last 200 relay events. Newest on top.</div>
+      <div id="bridge-flow-log" class="lo-bridge-flow"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
@@ -2519,13 +2600,16 @@ function setView(view) {
   document.getElementById('map-controls').style.display = (view === 'map') ? '' : 'none';
   var aiView = document.getElementById('ai-view');
   if (aiView) aiView.style.display = (view === 'ai') ? '' : 'none';
-  // Hide the ribbon on config + AI (neither cares about per-packet activity)
-  document.querySelector('.lo-ribbon').style.display = (view === 'config' || view === 'ai') ? 'none' : '';
+  var bridgeView = document.getElementById('bridge-view');
+  if (bridgeView) bridgeView.style.display = (view === 'bridge') ? '' : 'none';
+  // Hide the ribbon on config / AI / bridge (none care about per-packet activity)
+  document.querySelector('.lo-ribbon').style.display = (view === 'config' || view === 'ai' || view === 'bridge') ? 'none' : '';
   document.getElementById('config-view').classList.toggle('active', view === 'config');
   document.getElementById('hud').style.display = isCanvas ? '' : 'none';
   if (view === 'config' && !App.configLoaded) { App.configLoaded = true; loadConfigData(); }
   if (view === 'map') initMap();
   if (view === 'ai') aiActivate();
+  if (view === 'bridge') bridgeActivate();
   if (isCanvas) resizeCanvas();
 }
 
@@ -3594,6 +3678,185 @@ async function aiClearHistory() {
     box.innerHTML = '<div class="lo-ai-empty"><div>Conversation cleared.</div><div style="margin-top:4px;color:var(--lo-faint);font-size:10px">Start a new chat below.</div></div>';
     showToast('AI history cleared');
   } catch(e) { showToast('Clear failed', 'error'); }
+}
+
+// ─── BRIDGE Tab (LORACLE v2) ────────────────────────────────────────────────
+
+var _bridgeState = { cfg: null, dirty: false, lastEventTs: 0, pollTimer: null };
+
+function bridgeActivate() {
+  if (!_bridgeState.cfg) bridgeReloadConfig();
+  bridgePollStats();
+  bridgePollEvents();
+  if (!_bridgeState.pollTimer) {
+    _bridgeState.pollTimer = setInterval(function() {
+      if (App.view !== 'bridge') { clearInterval(_bridgeState.pollTimer); _bridgeState.pollTimer = null; return; }
+      bridgePollStats();
+      bridgePollEvents();
+    }, 2500);
+  }
+}
+
+async function bridgeReloadConfig() {
+  try {
+    var r = await fetch('/api/bridge/config');
+    var d = await r.json();
+    _bridgeState.cfg = { enabled: !!d.enabled, rules: Array.isArray(d.rules) ? d.rules.slice() : [] };
+    _bridgeState.dirty = false;
+    document.getElementById('bridge-enabled').checked = _bridgeState.cfg.enabled;
+    bridgeUpdateBadge();
+    bridgeRenderRules();
+    bridgeSetStatus('');
+  } catch(e) { bridgeSetStatus('load failed: ' + e, 'error'); }
+}
+
+function bridgeUpdateBadge() {
+  var badge = document.getElementById('bridge-enabled-badge');
+  var on = _bridgeState.cfg && _bridgeState.cfg.enabled;
+  badge.textContent = on ? 'ON' : 'OFF';
+  badge.classList.toggle('on', !!on);
+}
+
+function bridgeMarkDirty() {
+  _bridgeState.dirty = true;
+  bridgeSetStatus('unsaved changes — press APPLY');
+  // Reflect toggle immediately in the in-memory cfg so add-rule works
+  if (_bridgeState.cfg) _bridgeState.cfg.enabled = document.getElementById('bridge-enabled').checked;
+  bridgeUpdateBadge();
+}
+
+function bridgeRenderRules() {
+  var list = document.getElementById('bridge-rules-list');
+  if (!_bridgeState.cfg || !_bridgeState.cfg.rules.length) {
+    list.innerHTML = '<div class="lo-bridge-hint">No rules yet — click + ADD RULE to start relaying channel traffic across networks.</div>';
+    return;
+  }
+  list.innerHTML = _bridgeState.cfg.rules.map(function(r, i) {
+    var src = r.source === 'meshcore' ? 'meshcore' : 'meshtastic';
+    var chan = (r.channel === null || r.channel === undefined) ? '' : String(r.channel);
+    var mode = r.mode === 'always' || r.mode === 'ai-gated' ? r.mode : 'off';
+    return (
+      '<div class="lo-bridge-rule" data-idx="' + i + '">' +
+        '<select onchange="bridgeUpdateRule(' + i + ', \'source\', this.value)">' +
+          '<option value="meshtastic"' + (src === 'meshtastic' ? ' selected' : '') + '>meshtastic</option>' +
+          '<option value="meshcore"' + (src === 'meshcore' ? ' selected' : '') + '>meshcore</option>' +
+        '</select>' +
+        '<span style="color:var(--lo-faint)">ch</span>' +
+        '<input type="number" min="0" max="7" style="width:48px" value="' + escapeHtml(chan) + '" ' +
+          'placeholder="any" oninput="bridgeUpdateRule(' + i + ', \'channel\', this.value)">' +
+        '<select onchange="bridgeUpdateRule(' + i + ', \'mode\', this.value)">' +
+          '<option value="off"' + (mode === 'off' ? ' selected' : '') + '>off</option>' +
+          '<option value="always"' + (mode === 'always' ? ' selected' : '') + '>always</option>' +
+          '<option value="ai-gated"' + (mode === 'ai-gated' ? ' selected' : '') + '>ai-gated</option>' +
+        '</select>' +
+        '<button class="lo-bridge-rule-del" onclick="bridgeDeleteRule(' + i + ')">\u00d7</button>' +
+      '</div>'
+    );
+  }).join('');
+}
+
+function bridgeAddRule() {
+  if (!_bridgeState.cfg) _bridgeState.cfg = { enabled: false, rules: [] };
+  _bridgeState.cfg.rules.push({ source: 'meshtastic', channel: 0, mode: 'always' });
+  bridgeMarkDirty();
+  bridgeRenderRules();
+}
+
+function bridgeDeleteRule(idx) {
+  _bridgeState.cfg.rules.splice(idx, 1);
+  bridgeMarkDirty();
+  bridgeRenderRules();
+}
+
+function bridgeUpdateRule(idx, field, value) {
+  var rule = _bridgeState.cfg.rules[idx];
+  if (!rule) return;
+  if (field === 'channel') {
+    if (value === '' || value === null) rule.channel = null;
+    else {
+      var n = parseInt(value, 10);
+      rule.channel = isNaN(n) ? null : n;
+    }
+  } else {
+    rule[field] = value;
+  }
+  bridgeMarkDirty();
+}
+
+async function bridgeSaveConfig() {
+  if (!_bridgeState.cfg) return;
+  bridgeSetStatus('saving...');
+  try {
+    var r = await fetch('/api/bridge/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_bridgeState.cfg),
+    });
+    var d = await r.json();
+    if (d.error) throw new Error(d.error);
+    _bridgeState.cfg = d.config || _bridgeState.cfg;
+    _bridgeState.dirty = false;
+    bridgeSetStatus('applied \u2713');
+    bridgeUpdateBadge();
+    bridgeRenderRules();
+  } catch(e) { bridgeSetStatus('save failed: ' + e, 'error'); }
+}
+
+function bridgeSetStatus(msg, level) {
+  var el = document.getElementById('bridge-save-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = (level === 'error') ? '#e74c3c' : 'var(--lo-faint)';
+}
+
+async function bridgePollStats() {
+  try {
+    var r = await fetch('/api/bridge/stats');
+    var d = await r.json();
+    document.getElementById('bridge-relayed').textContent = d.relayed || 0;
+    document.getElementById('bridge-dropped').textContent = d.dropped || 0;
+    document.getElementById('bridge-dedup').textContent = d.dedup_size || 0;
+  } catch(e) {}
+}
+
+async function bridgePollEvents() {
+  try {
+    var r = await fetch('/api/bridge/events?since=' + encodeURIComponent(_bridgeState.lastEventTs || 0));
+    var d = await r.json();
+    var events = d.events || [];
+    if (events.length) {
+      events.forEach(function(e) {
+        if (e.timestamp > _bridgeState.lastEventTs) _bridgeState.lastEventTs = e.timestamp;
+      });
+      bridgeRenderFlow(events);
+    } else if (!_bridgeState.lastEventTs && !document.getElementById('bridge-flow-log').children.length) {
+      document.getElementById('bridge-flow-log').innerHTML = '<div class="lo-bridge-flow-empty">No relays yet. Messages will appear here when the bridge forwards them.</div>';
+    }
+  } catch(e) {}
+}
+
+function bridgeRenderFlow(events) {
+  var box = document.getElementById('bridge-flow-log');
+  // Clear empty-state if present
+  if (box.querySelector('.lo-bridge-flow-empty')) box.innerHTML = '';
+  // Prepend newest events
+  var html = events.slice().reverse().map(function(e) {
+    var time = formatTime(e.timestamp);
+    var dir = (e.source === 'meshtastic' ? 'mt\u2192mc' : 'mc\u2192mt');
+    var sender = e.sender_display || e.sender || '';
+    var text = (e.text || '').replace(/^\[.+?\]\s*/, '');
+    return (
+      '<div class="lo-bridge-flow-row">' +
+        '<span class="time">' + escapeHtml(time) + '</span>' +
+        '<span class="dir">' + dir + '</span>' +
+        '<span class="sender">' + escapeHtml(sender) + '</span>' +
+        '<span class="text">' + escapeHtml(text) + '</span>' +
+      '</div>'
+    );
+  }).join('');
+  box.insertAdjacentHTML('afterbegin', html);
+  // Cap at 200 rows to match server-side ring buffer
+  var rows = box.querySelectorAll('.lo-bridge-flow-row');
+  for (var i = 200; i < rows.length; i++) rows[i].remove();
 }
 
 // Submit on Enter (Shift+Enter for newline handled by browser if we ever use textarea)
