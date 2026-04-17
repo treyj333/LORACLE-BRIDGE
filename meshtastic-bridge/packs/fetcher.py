@@ -81,6 +81,15 @@ def fetch_document(
                         progress_callback(doc_id, downloaded, total)
 
             sha = hasher.hexdigest()
+            if downloaded == 0:
+                # Server returned 200 but an empty body — treat as failure so
+                # we retry (and so ingestion doesn't choke on an empty file).
+                logger.warning(f"[{doc_id}] Empty response body — treating as failure")
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+                raise ValueError(f"{url} returned 0 bytes")
             logger.info(f"[{doc_id}] Downloaded {filename}: {downloaded} bytes, sha256={sha[:12]}...")
             return FetchResult(True, doc_id, dest_path, sha, downloaded)
 

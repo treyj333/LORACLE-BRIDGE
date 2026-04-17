@@ -19,6 +19,7 @@ class PackDocument:
     sha256: Optional[str] = None
     required: bool = True
     attribution: Optional[str] = None
+    note: Optional[str] = None
 
 
 @dataclass
@@ -34,12 +35,19 @@ class PackManifest:
     estimated_size_mb: int
     estimated_install_time_seconds: int
     documents: List[PackDocument]
+    notes: Optional[str] = None
 
     @staticmethod
     def from_file(path: str) -> "PackManifest":
         with open(path) as f:
             data = json.load(f)
-        docs = [PackDocument(**d) for d in data.get("documents", [])]
+        # Tolerate unknown keys on document entries so older bridges can still load
+        # manifests with forward-compatible fields.
+        doc_fields = {f.name for f in PackDocument.__dataclass_fields__.values()}
+        docs = [
+            PackDocument(**{k: v for k, v in d.items() if k in doc_fields})
+            for d in data.get("documents", [])
+        ]
         return PackManifest(
             id=data["id"],
             version=data["version"],
@@ -52,6 +60,7 @@ class PackManifest:
             estimated_size_mb=data.get("estimated_size_mb", 0),
             estimated_install_time_seconds=data.get("estimated_install_time_seconds", 0),
             documents=docs,
+            notes=data.get("notes"),
         )
 
     def to_dict(self) -> dict:

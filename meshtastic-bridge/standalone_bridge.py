@@ -320,6 +320,13 @@ class StandaloneBridge:
         pub.subscribe(self._on_position, "meshtastic.receive.position")
         pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
         pub.subscribe(self._on_traceroute, "meshtastic.receive.traceroute")
+        # NodeInfo broadcasts — fires when a node announces its identity. Without this,
+        # a node that only broadcasts NodeInfo + telemetry (never text / position) would
+        # stay invisible until the 30s nodeDB rescan catches it.
+        try:
+            pub.subscribe(self._on_user, "meshtastic.receive.user")
+        except Exception as e:
+            logger.debug(f"user topic subscribe failed: {e}")
 
         self._running = True
 
@@ -912,6 +919,7 @@ class StandaloneBridge:
             sender = packet.get("fromId", "")
             if not sender:
                 return
+            self._known_nodes.add(sender)  # ensure node is visible to frontend
             self._record_packet_meta(sender, packet)
             parsed = self._extract_position(packet.get("decoded", {}).get("position", {}))
             if parsed is None:
@@ -942,6 +950,7 @@ class StandaloneBridge:
             sender = packet.get("fromId", "")
             if not sender:
                 return
+            self._known_nodes.add(sender)  # ensure node is visible to frontend
             telemetry = packet.get("decoded", {}).get("telemetry", {})
             dm = telemetry.get("deviceMetrics", {})
             if dm:
@@ -966,10 +975,42 @@ class StandaloneBridge:
         except Exception as e:
             logger.debug(f"Error processing telemetry: {e}")
 
+    def _on_user(self, packet, interface):
+        """Handle NodeInfo (user) broadcast — captures identity of newly-announcing nodes.
+
+        Without this subscription, a brand-new node that sends only NodeInfo + telemetry
+        (the typical first packets a radio broadcasts on boot) would stay invisible to the
+        UI until the 30-second nodeDB rescan caught it.
+        """
+        try:
+            sender = packet.get("fromId", "")
+            if not sender:
+                return
+            self._known_nodes.add(sender)
+            self._record_packet_meta(sender, packet)
+            user = packet.get("decoded", {}).get("user", {})
+            short = user.get("shortName") or user.get("short_name")
+            long_name = user.get("longName") or user.get("long_name")
+            hw_model = user.get("hwModel") or user.get("hw_model")
+            meta = self._node_meta.setdefault(sender, {})
+            if short:
+                meta["short_name"] = short
+            if long_name:
+                meta["long_name"] = long_name
+            if hw_model:
+                meta["hw_model"] = str(hw_model)
+                # Also cache into device_metrics so the HW color toggle picks it up immediately
+                self._device_metrics.setdefault(sender, {})["hw_model"] = str(hw_model)
+            logger.info(f"NodeInfo from {sender}: {short or '?'} / {long_name or '?'}")
+        except Exception as e:
+            logger.debug(f"Error processing user packet: {e}")
+
     def _on_traceroute(self, packet, interface):
         """Handle traceroute response — store the route."""
         try:
             sender = packet.get("fromId", "")
+            if sender:
+                self._known_nodes.add(sender)  # ensure node is visible to frontend
             decoded = packet.get("decoded", {})
             route_back = decoded.get("traceroute", {}).get("route", [])
             route_towards = decoded.get("traceroute", {}).get("routeBack", [])

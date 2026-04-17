@@ -4,6 +4,35 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 14:00] — Node-population fix + AI chat tab + send status + livelier sim + HTML docs
+
+- What changed:
+  - **New-node population bug**: Nodes that announced themselves via NodeInfo, telemetry, or traceroute packets never entered `_known_nodes`, so they were invisible until the 30s nodeDB rescan caught them (or forever if they never sent a text/position). Fixed by adding `self._known_nodes.add(sender)` to `_on_position`, `_on_telemetry`, `_on_traceroute`, and subscribing to a new `_on_user` handler on `meshtastic.receive.user` (NodeInfo broadcasts). `_on_user` also captures short_name/long_name/hw_model so labels and HW colors populate immediately.
+  - **Map tab interaction**: Clicking a marker now opens the same thread panel used by the mesh canvas (via a new `_openMapNode(nid)` helper) instead of showing a popup with a two-click "Open" link. Marker tooltip replaces the popup. Favorited nodes on the map show a gold ring (`.lo-map-marker.fav`). Map markers use the resolved canvas label (custom_name → long → short).
+  - **Message status**: `/api/threads/<id>/send` now inserts the outbound message with `delivery_status='sending'` up-front, then transitions to `sent` on success or `failed` if Meshtastic raises. Frontend `renderDeliveryStatus()` covers five states — sending (pulsing ⧗), sent (→), acked (✓), delivered (✓✓), failed (✗) — with a distinct CSS color/animation per state. `floatSend` is now optimistic: the message appears in the thread instantly with `sending` before the POST returns, then reconciles with server truth.
+  - **AI chat tab**: New top-level "AI" tab lets the user chat with the local Ollama model directly from the dashboard — no radio required. Keyed off a reserved node id `__dashboard_ai__` so its history is isolated from mesh conversations. Endpoints: `POST /api/ai_chat`, `GET /api/ai_chat/history`, `POST /api/ai_chat/clear`. Uses the existing `OllamaClient.chat()` with its system prompt.
+  - **HW color on by default**: New installs start with HW-model coloring enabled. localStorage is only consulted to let a user explicitly turn it off.
+  - **Emergency-Preparedness pack install fixes**:
+    - Added HTML/HTM support to the RAG extractor via the existing `_strip_html()` helper + BeautifulSoup — the Ready.gov, CDC, and NHC docs now ingest cleanly instead of erroring "Unsupported file type: .html".
+    - Fetcher now rejects zero-byte downloads (treats as retryable failure + removes the empty file) so `irp.fas.org`'s intermittent empty responses don't poison the install.
+    - `extractors.extract_file` now pre-checks for zero-byte files with a clear error.
+    - Bumped manifest to v1.1.0 — marked FEMA P-320, FM 4-25.11, and both Hesperian Health docs as `required: false` (their upstream URLs move without redirect and 404 frequently), so those failures don't trip the installer's "less than 50% of required docs succeeded" abort gate.
+    - `PackDocument` dataclass gained an optional `note` field for per-doc caveats; `from_file` now tolerates unknown keys so forward-compatible manifests don't break older bridges.
+  - **Livelier mesh simulation**: Tuned the d3 force sim so nodes feel "alive" at rest — `alphaDecay` 0.04 → 0.012 (slower cool-down), `velocityDecay` 0.5 → 0.32 (momentum carries), `alphaMin` 0.002 (never freezes). Added a custom `jitter` force (~0.35 strength × alpha) that applies small random velocity kicks to non-self nodes each tick, and a 6-second reheat interval that nudges alpha back up if it drops below 0.08. Self-node and any `fx`-pinned nodes are excluded from jitter.
+- Why:
+  - The user reported new nodes weren't populating after the bridge was running — confirmed by code read that NodeInfo/telemetry-only nodes never hit any tracking set. The pack download logs showed a broken install path (dead URLs + no HTML support + 0-byte files). The map tab had only tooltip-level interaction vs the mesh tab's full thread panel. They also asked for clearer message state and a local AI chat surface — and wanted the canvas to feel more alive.
+- Impact on project goals:
+  - New nodes appear in the UI the moment their first packet lands, regardless of packet type. The Emergency-Preparedness pack installs on the happy path for the docs whose URLs still work, and HTML docs (Ready.gov, CDC) now actually ingest. Map-tab and mesh-tab interaction parity means the app now has a consistent "click a node to work with it" affordance across all views. The AI tab gives users a zero-radio on-ramp to the local LLM — useful for offline reference queries that don't need to traverse the mesh.
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — NodeInfo subscription, `_known_nodes.add` in position/telemetry/traceroute handlers, new `_on_user` handler
+  - `meshtastic-bridge/dashboard.py` — `_openMapNode`, map marker rebind, sending/sent/failed status flow, optimistic `floatSend`, AI tab HTML/CSS/JS, `/api/ai_chat*` endpoints, HW color default flip, `_jitterForce` + reheat timer, simulation config tune
+  - `meshtastic-bridge/rag/extractors.py` — HTML/HTM support + empty-file pre-check + `extract_html` helper
+  - `meshtastic-bridge/packs/fetcher.py` — zero-byte response treated as retryable failure
+  - `meshtastic-bridge/packs/manifest.py` — `note` field on PackDocument, `notes` field on PackManifest, forward-compatible unknown-key tolerance
+  - `meshtastic-bridge/packs/bundled/emergency-preparedness-v1.json` — v1.1.0, marked four best-effort docs as optional
+
+---
+
 ## [2026-04-17 11:00] — Hardware-debug pass + favorites/rename + richer node interaction
 
 - What changed:

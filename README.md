@@ -158,9 +158,10 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 
 - **Rename a node**: double-click its name in the panel header, or hit the **RENAME** button. Nicknames persist across sessions and override the default short-name everywhere (canvas, sidebar, thread list).
 - **Favorite a node**: hit the **★ FAV** button. Favorites float to the top of the node sidebar and show a gold star on the canvas.
-- **Color nodes by device type**: hit the **HW COLOR** button in the HUD — T-Beam, Heltec, RAK, T-Deck, Station, Nano each get a distinct color. A legend appears under the HUD listing the models in view. Preference persists across sessions.
+- **Color nodes by device type**: the **HW COLOR** button in the HUD is **on by default** — T-Beam, Heltec, RAK, T-Deck, Station, Nano each get a distinct color. A legend appears under the HUD listing the models in view. Toggle off and your preference persists across sessions.
+- **Message send status**: outbound messages show a pill next to the text — ⧗ (sending, pulsing), → (sent), ✓ (radio ACK), ✓✓ (delivered), ✗ (failed). Failures are surfaced in-UI instead of vanishing silently.
 
-**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view. A toast fires whenever a new node comes online mid-session.
+**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view. Nodes gently drift and breathe when the mesh is idle. A toast fires whenever a new node comes online mid-session.
 
 ### Views
 
@@ -168,7 +169,8 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 |------|-------------|
 | **MESH** | Default — the live force-directed mesh canvas with all nodes and links |
 | **TRAFFIC** | Same canvas, emphasis on active packet flow (inactive nodes dim) |
-| **MAP** | Geographic Leaflet map with node markers, auto-fit bounds, coverage heatmap layer |
+| **MAP** | Geographic Leaflet map with node markers, auto-fit bounds, coverage heatmap layer — click any marker to open the same thread panel used on the mesh canvas |
+| **AI** | Direct chat with the local Ollama model — no radio needed. Useful for quick reference queries when you're not using the mesh. History is isolated from per-node conversations |
 | **CONFIG** | Full settings: connection, channels, radio, model, routing, RAG, knowledge packs, data, appearance |
 
 ### Node List Sidebar

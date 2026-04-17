@@ -1,6 +1,6 @@
 {
   "id": "emergency-preparedness",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Emergency Preparedness",
   "description": "Curated U.S. emergency response documents covering weather, medical, survival, and navigation. Public domain and Creative Commons licensed.",
   "categories": ["weather", "medical", "survival", "navigation"],
@@ -9,6 +9,7 @@
   "homepage": "https://github.com/treyj333/LORACLE-BRIDGE",
   "estimated_size_mb": 280,
   "estimated_install_time_seconds": 180,
+  "notes": "Some upstream publishers move PDFs around without redirect — docs marked required:false are best-effort and don't block the install if fetch fails. Drop your own PDFs into the CONTEXT FILES/ folder to extend the knowledge base.",
   "documents": [
     {
       "id": "fema-p320",
@@ -20,7 +21,8 @@
       "publisher": "FEMA",
       "size_bytes_estimate": 4500000,
       "sha256": null,
-      "required": true
+      "required": false,
+      "note": "FEMA URL moves frequently — best-effort fetch"
     },
     {
       "id": "fm-21-76",
@@ -44,7 +46,8 @@
       "publisher": "U.S. Department of the Army",
       "size_bytes_estimate": 5800000,
       "sha256": null,
-      "required": true
+      "required": false,
+      "note": "Upstream sporadically serves empty responses — best-effort fetch"
     },
     {
       "id": "fm-3-25-26",
@@ -68,8 +71,9 @@
       "publisher": "Hesperian Health Guides",
       "size_bytes_estimate": 48000000,
       "sha256": null,
-      "required": true,
-      "attribution": "Werner, D. (2021). Where There Is No Doctor. Hesperian Health Guides. https://hesperian.org"
+      "required": false,
+      "attribution": "Werner, D. (2021). Where There Is No Doctor. Hesperian Health Guides. https://hesperian.org",
+      "note": "Hesperian moves direct-PDF URLs — download manually from https://store.hesperian.org and drop into CONTEXT FILES/ if needed"
     },
     {
       "id": "where-there-is-no-dentist",

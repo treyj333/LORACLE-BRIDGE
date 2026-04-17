@@ -816,9 +816,15 @@ def api_thread_send(thread_id):
     if not _bridge.interface or not _bridge._is_interface_alive():
         return jsonify({"error": "Radio not connected"}), 503
 
+    # Insert with status='sending' up-front so the message shows in history
+    # immediately — the UI then transitions it to 'sent' or 'failed'.
+    msg_id = _bridge._message_store.insert(
+        contact_id=thread_id, direction="out", author="human",
+        text=text, protocol=contact["protocol"],
+        delivery_status="sending",
+    )
     try:
         want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
-        # Send via the proven interface path (not RadioManager)
         is_channel = "channel:" in thread_id
         if is_channel:
             ch_num = int(thread_id.split(":")[-1])
@@ -826,15 +832,15 @@ def api_thread_send(thread_id):
             _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=ch_num, wantAck=want_ack)
         else:
             _bridge.interface.sendText(text, destinationId=thread_id, wantAck=want_ack)
-
-        msg_id = _bridge._message_store.insert(
-            contact_id=thread_id, direction="out", author="human",
-            text=text, protocol=contact["protocol"],
-        )
+        _bridge._message_store.update_status(msg_id, "sent")
         record_message("out", thread_id, text)
-        return jsonify({"ok": True, "msg_id": msg_id})
+        return jsonify({"ok": True, "msg_id": msg_id, "status": "sent"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        try:
+            _bridge._message_store.update_status(msg_id, "failed")
+        except Exception:
+            pass
+        return jsonify({"error": str(e), "msg_id": msg_id, "status": "failed"}), 500
 
 
 @app.route("/api/threads/<path:thread_id>/ai-toggle", methods=["POST"])
@@ -858,6 +864,57 @@ def api_thread_favorite(thread_id):
         return jsonify({"error": "Contact not found"}), 404
     new_val = _bridge._contact_store.toggle_favorite(thread_id)
     return jsonify({"ok": True, "is_favorite": bool(new_val)})
+
+
+_DASHBOARD_AI_NODE_ID = "__dashboard_ai__"
+
+
+@app.route("/api/ai_chat", methods=["POST"])
+def api_ai_chat():
+    """Local AI chat from the dashboard AI tab. Proxies to Ollama with a
+    dedicated conversation history keyed off a reserved node id so it doesn't
+    mix with mesh traffic."""
+    if _bridge is None or not getattr(_bridge, "ollama", None):
+        return jsonify({"error": "Ollama not available"}), 503
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Empty message"}), 400
+    if len(message) > 4000:
+        return jsonify({"error": "Message too long (max 4000 chars)"}), 400
+    try:
+        response = _bridge.ollama.chat(
+            node_id=_DASHBOARD_AI_NODE_ID,
+            message=message,
+        )
+        return jsonify({"ok": True, "response": response, "model": _bridge.ollama.model})
+    except Exception as e:
+        logger.exception("AI chat error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai_chat/history", methods=["GET"])
+def api_ai_chat_history():
+    """Return the current dashboard AI conversation so the UI can re-render it on reload."""
+    if _bridge is None or not getattr(_bridge, "ollama", None):
+        return jsonify({"messages": []})
+    try:
+        hist = list(_bridge.ollama._history.get(_DASHBOARD_AI_NODE_ID, []))
+        return jsonify({"messages": hist})
+    except Exception:
+        return jsonify({"messages": []})
+
+
+@app.route("/api/ai_chat/clear", methods=["POST"])
+def api_ai_chat_clear():
+    """Reset the dashboard AI conversation history."""
+    if _bridge is None or not getattr(_bridge, "ollama", None):
+        return jsonify({"ok": True})
+    try:
+        _bridge.ollama.clear_history(_DASHBOARD_AI_NODE_ID)
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.route("/api/threads/<path:thread_id>/rename", methods=["POST"])
@@ -1640,6 +1697,13 @@ button::-moz-focus-inner { border: 0; }
 .lo-fw-msg-arrow.out { color: var(--lo-ink); }
 .lo-fw-msg-arrow.ai { color: var(--lo-accent); }
 .lo-fw-msg-body { color: var(--lo-ink); word-break: break-word; }
+.lo-msg-status { display: inline-block; margin-left: 4px; font-size: 9px; letter-spacing: 0; }
+.lo-msg-status.sending { color: var(--lo-faint); animation: lo-msg-pulse 1.2s ease-in-out infinite; }
+.lo-msg-status.sent { color: var(--lo-dim); }
+.lo-msg-status.acked { color: var(--lo-accent-2); }
+.lo-msg-status.delivered { color: var(--lo-accent-2); font-weight: 500; }
+.lo-msg-status.failed { color: #e74c3c; }
+@keyframes lo-msg-pulse { 0%, 100% { opacity: 0.4 } 50% { opacity: 1 } }
 .lo-fw-empty { padding: 12px; text-align: center; color: var(--lo-faint); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
 .lo-fw-composer {
   display: flex; align-items: center; gap: 6px; padding: 8px 12px;
@@ -1729,8 +1793,54 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
 /* ── Map View ─────────────────────────────────────────────────────────────── */
 #map-view { background: var(--lo-bg-deep); }
-.lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); }
-.lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); }
+/* ── AI Chat View ─────────────────────────────────────────────────────── */
+.lo-ai-view {
+  position: absolute; inset: 36px 0 26px 0; z-index: 5;
+  background: var(--lo-bg); color: var(--lo-ink);
+  display: flex; flex-direction: column;
+}
+.lo-ai-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; border-bottom: 1px solid var(--lo-divider-strong);
+  flex-shrink: 0;
+}
+.lo-ai-title { display: flex; align-items: baseline; gap: 10px; font-size: 12px; letter-spacing: 0.14em; }
+.lo-ai-model { font-size: 10px; color: var(--lo-accent); letter-spacing: 0.08em; }
+.lo-ai-actions { display: flex; gap: 6px; }
+.lo-ai-messages {
+  flex: 1; overflow-y: auto; padding: 14px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.lo-ai-empty { color: var(--lo-dim); font-size: 11px; text-align: center; padding: 40px 20px; }
+.lo-ai-msg {
+  max-width: 640px; padding: 8px 12px; border: 1px solid var(--lo-divider);
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.lo-ai-msg.user { align-self: flex-end; border-color: var(--lo-divider-strong); background: var(--lo-bg-deep); }
+.lo-ai-msg.ai { align-self: flex-start; border-left: 2px solid var(--lo-accent); }
+.lo-ai-msg.ai.thinking { color: var(--lo-dim); font-style: italic; }
+.lo-ai-msg.ai.error { border-left-color: #e74c3c; color: #e74c3c; }
+.lo-ai-composer {
+  display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+  border-top: 1px solid var(--lo-divider-strong); flex-shrink: 0;
+}
+.lo-ai-composer .lo-prompt { color: var(--lo-accent); font-size: 14px; font-weight: 500; }
+.lo-ai-composer input {
+  flex: 1; background: transparent; border: none; color: var(--lo-ink);
+  font: inherit; font-size: 13px; outline: none; padding: 4px 0;
+  caret-color: var(--lo-accent);
+}
+.lo-ai-composer input::placeholder { color: var(--lo-faint); }
+.lo-ai-composer .lo-send {
+  background: var(--lo-ink); color: var(--lo-bg); border: none; padding: 5px 14px;
+  font-family: inherit; font-size: 10px; font-weight: 500; letter-spacing: 0.12em;
+  text-transform: uppercase; cursor: pointer;
+}
+.lo-ai-composer .lo-send:disabled { opacity: 0.4; cursor: default; }
+
+.lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); cursor: pointer; }
+.lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); cursor: default; }
+.lo-map-marker.fav { border-color: #f1c40f; box-shadow: 0 0 0 2px rgba(241,196,15,0.35); }
 .lo-map-label { font-family: var(--font-mono); font-size: 9px; color: var(--lo-ink); background: var(--lo-bg); padding: 1px 4px; border: 1px solid var(--lo-divider); white-space: nowrap; margin-top: 2px; }
 
 /* ── Node List Sidebar ────────────────────────────────────────────────────── */
@@ -1781,6 +1891,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <button class="active" data-view="mesh" onclick="setView('mesh')">MESH</button>
     <button data-view="traffic" onclick="setView('traffic')">TRAFFIC</button>
     <button data-view="map" onclick="setView('map')">MAP</button>
+    <button data-view="ai" onclick="setView('ai')">AI</button>
     <button data-view="config" onclick="setView('config')">CONFIG</button>
   </div>
   <div class="lo-tools">
@@ -1837,6 +1948,30 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <div id="map-view" style="display:none;position:absolute;inset:36px 0 26px 0;z-index:5"></div>
 <div id="map-controls" style="display:none;position:absolute;top:42px;right:12px;z-index:500">
   <button class="btn btn-sm" onclick="toggleCoverageLayer()" title="Toggle coverage heatmap">COVERAGE</button>
+</div>
+
+<!-- ── AI Chat View ───────────────────────────────────────────────────────── -->
+<div id="ai-view" class="lo-ai-view" style="display:none">
+  <div class="lo-ai-header">
+    <div class="lo-ai-title">
+      <span>LOCAL AI CHAT</span>
+      <span class="lo-ai-model" id="ai-model-label">--</span>
+    </div>
+    <div class="lo-ai-actions">
+      <button class="btn btn-sm" onclick="aiClearHistory()" title="Start a fresh conversation">CLEAR</button>
+    </div>
+  </div>
+  <div class="lo-ai-messages" id="ai-messages">
+    <div class="lo-ai-empty">
+      <div>Chat with your local AI model running on this computer.</div>
+      <div style="margin-top:4px;color:var(--lo-faint);font-size:10px">No radio needed — conversation stays entirely on-device.</div>
+    </div>
+  </div>
+  <form class="lo-ai-composer" id="ai-composer" onsubmit="event.preventDefault(); aiSend();">
+    <span class="lo-prompt">&gt;</span>
+    <input type="text" id="ai-input" placeholder="ask anything..." autocomplete="off">
+    <button type="submit" class="lo-send" id="ai-send-btn">SEND</button>
+  </form>
 </div>
 
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
@@ -2250,6 +2385,29 @@ var App = {
 // ─── Utilities ─────────────────────────────────────────────────────────────
 
 function escapeHtml(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+// Render a delivery-status pill for outbound messages.
+//  - sending: ⧗ in-flight
+//  - sent:    → (single arrow)
+//  - acked:   ✓ radio acked
+//  - delivered: ✓✓ recipient confirmed
+//  - failed:  ✗ send failed
+// Inbound messages get no status.
+function renderDeliveryStatus(m) {
+  if (!m || m.direction !== 'out') return '';
+  var ds = m.delivery_status;
+  if (!ds) return '';
+  var map = {
+    'sending':   { glyph: '\u29d7', cls: 'sending', title: 'Sending…' },
+    'sent':      { glyph: '\u2192',  cls: 'sent',    title: 'Sent over radio' },
+    'acked':     { glyph: '\u2713',  cls: 'acked',   title: 'Radio ACK' },
+    'delivered': { glyph: '\u2713\u2713', cls: 'delivered', title: 'Delivered' },
+    'failed':    { glyph: '\u2717',  cls: 'failed',  title: 'Send failed' },
+  };
+  var info = map[ds];
+  if (!info) return '';
+  return ' <span class="lo-msg-status ' + info.cls + '" title="' + info.title + '">' + info.glyph + '</span>';
+}
 function formatUptime(s) { var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h>0?h+'h '+m+'m':m>0?m+'m '+sec+'s':sec+'s'; }
 function formatTime(ts) { return new Date(ts*1000).toLocaleTimeString(); }
 function relativeTime(ts) { var d=Math.floor(Date.now()/1000-ts); return d<10?'now':d<60?d+'s':d<3600?Math.floor(d/60)+'m':d<86400?Math.floor(d/3600)+'h':Math.floor(d/86400)+'d'; }
@@ -2295,11 +2453,15 @@ function setView(view) {
   document.getElementById('canvas-wrap').style.display = isCanvas ? '' : 'none';
   document.getElementById('map-view').style.display = (view === 'map') ? '' : 'none';
   document.getElementById('map-controls').style.display = (view === 'map') ? '' : 'none';
-  document.querySelector('.lo-ribbon').style.display = (view === 'config') ? 'none' : '';
+  var aiView = document.getElementById('ai-view');
+  if (aiView) aiView.style.display = (view === 'ai') ? '' : 'none';
+  // Hide the ribbon on config + AI (neither cares about per-packet activity)
+  document.querySelector('.lo-ribbon').style.display = (view === 'config' || view === 'ai') ? 'none' : '';
   document.getElementById('config-view').classList.toggle('active', view === 'config');
   document.getElementById('hud').style.display = isCanvas ? '' : 'none';
   if (view === 'config' && !App.configLoaded) { App.configLoaded = true; loadConfigData(); }
   if (view === 'map') initMap();
+  if (view === 'ai') aiActivate();
   if (isCanvas) resizeCanvas();
 }
 
@@ -2517,16 +2679,47 @@ function buildGraph(state) {
   App.nodes = nodes;
   App.links = links;
 
-  // Rebuild simulation — uniform short link distance for clean tree
+  // Rebuild simulation — uniform short link distance for clean tree.
+  // Tuned for a "breathing, alive" feel: longer cool-down, lighter damping,
+  // and a small jitter force so nodes drift gently even at rest.
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
     .force('charge', d3.forceManyBody().strength(-60).distanceMax(300))
     .force('center', d3.forceCenter(cx, cy).strength(0.02))
     .force('link', d3.forceLink(links).distance(60).strength(0.4))
     .force('collision', d3.forceCollide(25))
-    .alphaDecay(0.04)
-    .velocityDecay(0.5)
+    .force('jitter', _jitterForce(0.35))
+    .alphaDecay(0.012)          // slower cool-down → longer visible motion
+    .velocityDecay(0.32)         // less damping → momentum carries farther
+    .alphaMin(0.002)             // keep simulating at very low heat instead of freezing
     .on('tick', function() {});
+  // Kick the simulation back to life periodically so the graph always feels alive.
+  if (!App._reheatTimer) {
+    App._reheatTimer = setInterval(function() {
+      if (App.simulation && App.view !== 'config' && App.view !== 'ai') {
+        // Small, continuous reheat — not a full restart — so nodes drift without thrashing.
+        if (App.simulation.alpha() < 0.08) App.simulation.alpha(0.12).restart();
+      }
+    }, 6000);
+  }
+}
+
+// Custom force: per-tick random-walk drift on non-self nodes. Keeps the graph
+// alive even when topology hasn't changed. Strength is velocity per tick.
+function _jitterForce(strength) {
+  var nodes;
+  function force(alpha) {
+    if (!nodes) return;
+    var s = strength * alpha;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.isSelf || n.fx !== undefined) continue;
+      n.vx = (n.vx || 0) + (Math.random() - 0.5) * s;
+      n.vy = (n.vy || 0) + (Math.random() - 0.5) * s;
+    }
+  }
+  force.initialize = function(_nodes) { nodes = _nodes; };
+  return force;
 }
 
 function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0; return Math.abs(h); }
@@ -2653,13 +2846,14 @@ function renderHwLegend() {
   el.style.display = 'block';
 }
 
-// Restore toggle from localStorage on load
+// HW color is ON by default — localStorage is only consulted to let a user turn it OFF.
 (function() {
   try {
-    if (localStorage.getItem('loracle-hwcolor') === '1') {
-      App.colorByHwModel = true;
-    }
-  } catch(e) {}
+    var v = localStorage.getItem('loracle-hwcolor');
+    App.colorByHwModel = (v === null) ? true : (v === '1');
+  } catch(e) {
+    App.colorByHwModel = true;
+  }
 })();
 
 // Base node radius — keep in sync with the sizing logic in renderCanvas so
@@ -3069,14 +3263,10 @@ async function loadFloatData(nodeId) {
     msgsEl.innerHTML = msgs.map(function(m) {
       var ac = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
       var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
-      var status = '';
-      if (m.direction === 'out' && m.delivery_status) {
-        var ds = m.delivery_status;
-        status = ds === 'acked' ? ' \u2713' : ds === 'delivered' ? ' \u2713\u2713' : ds === 'failed' ? ' \u2717' : '';
-      }
       return '<div class="lo-fw-msg"><span class="lo-fw-msg-time">' + formatTime(m.timestamp) +
         '</span><span class="lo-fw-msg-arrow ' + ac + '">' + arrow +
-        '</span><span class="lo-fw-msg-body">' + escapeHtml(m.text) + status + '</span></div>';
+        '</span><span class="lo-fw-msg-body">' + escapeHtml(m.text) +
+        renderDeliveryStatus(m) + '</span></div>';
     }).join('');
     msgsEl.scrollTop = msgsEl.scrollHeight;
   }
@@ -3100,15 +3290,38 @@ async function floatSend(nodeId, inputEl) {
   var text = inputEl.value.trim();
   if (!text) return;
   inputEl.value = '';
+  // Optimistic render so the message appears instantly with a "sending" pill.
+  var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
+  var msgsEl = document.getElementById('fw-g-' + eid);
+  var optimisticId = 'opt-' + Date.now();
+  if (msgsEl) {
+    var empty = msgsEl.querySelector('.lo-fw-empty');
+    if (empty) empty.remove();
+    var nowS = Date.now() / 1000;
+    var row = document.createElement('div');
+    row.className = 'lo-fw-msg';
+    row.id = optimisticId;
+    row.innerHTML = '<span class="lo-fw-msg-time">' + formatTime(nowS) +
+      '</span><span class="lo-fw-msg-arrow out">\u2192</span>' +
+      '<span class="lo-fw-msg-body">' + escapeHtml(text) +
+      renderDeliveryStatus({direction: 'out', delivery_status: 'sending'}) + '</span>';
+    msgsEl.appendChild(row);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
   var d = await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/send', {text: text});
   if (d && d.ok) {
     var isChannel = nodeId.indexOf('channel:') !== -1;
     showToast(isChannel ? 'Broadcast on CH ' + (nodeId.split(':').pop() || '0') : 'Sent to ' + nodeId.slice(-6));
   } else {
-    // callApi already showed an error toast — just let the user retry
+    // callApi already showed an error toast — restore the text, mark the optimistic row as failed.
     inputEl.value = text;
+    var failedRow = document.getElementById(optimisticId);
+    if (failedRow) {
+      var body = failedRow.querySelector('.lo-fw-msg-body');
+      if (body) body.innerHTML = escapeHtml(text) + renderDeliveryStatus({direction: 'out', delivery_status: 'failed'});
+    }
   }
-  loadFloatData(nodeId);
+  loadFloatData(nodeId);  // reconciles with server truth (replaces optimistic row)
 }
 
 async function floatTrace(nodeId) {
@@ -3227,6 +3440,107 @@ function updateRibbon(state) {
   });
   document.getElementById('ribbon-stats').textContent = state.message_count + ' msgs \u00b7 ' + (state.node_count || 0) + ' nodes';
 }
+
+// ─── AI Chat Tab ───────────────────────────────────────────────────────────
+
+var _aiSending = false;
+
+function aiActivate() {
+  // First-time activation: focus the input and sync the model label.
+  var modelEl = document.getElementById('ai-model-label');
+  if (modelEl && App.state && App.state.model) modelEl.textContent = App.state.model;
+  var input = document.getElementById('ai-input');
+  if (input) setTimeout(function() { input.focus(); }, 50);
+  // Pull any existing history once per session load.
+  if (!App._aiHistoryLoaded) {
+    App._aiHistoryLoaded = true;
+    aiLoadHistory();
+  }
+}
+
+async function aiLoadHistory() {
+  try {
+    var r = await fetch('/api/ai_chat/history');
+    var d = await r.json();
+    var msgs = (d && d.messages) || [];
+    if (msgs.length === 0) return;
+    var box = document.getElementById('ai-messages');
+    var empty = box.querySelector('.lo-ai-empty');
+    if (empty) empty.remove();
+    msgs.forEach(function(m) {
+      _aiAppend(m.role === 'user' ? 'user' : 'ai', m.content);
+    });
+    box.scrollTop = box.scrollHeight;
+  } catch(e) {}
+}
+
+function _aiAppend(role, text, opts) {
+  opts = opts || {};
+  var box = document.getElementById('ai-messages');
+  if (!box) return null;
+  var empty = box.querySelector('.lo-ai-empty');
+  if (empty) empty.remove();
+  var div = document.createElement('div');
+  div.className = 'lo-ai-msg ' + role + (opts.thinking ? ' thinking' : '') + (opts.error ? ' error' : '');
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+async function aiSend() {
+  if (_aiSending) return;
+  var input = document.getElementById('ai-input');
+  var btn = document.getElementById('ai-send-btn');
+  var text = (input.value || '').trim();
+  if (!text) return;
+  _aiSending = true;
+  btn.disabled = true;
+  input.value = '';
+  _aiAppend('user', text);
+  var thinking = _aiAppend('ai', 'Thinking...', {thinking: true});
+  try {
+    var r = await fetch('/api/ai_chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text}),
+    });
+    var d = await r.json();
+    if (thinking) thinking.remove();
+    if (r.ok && d && d.response) {
+      _aiAppend('ai', d.response);
+    } else {
+      _aiAppend('ai', (d && d.error) || 'AI request failed', {error: true});
+    }
+  } catch(e) {
+    if (thinking) thinking.remove();
+    _aiAppend('ai', 'Network error contacting Ollama', {error: true});
+  } finally {
+    _aiSending = false;
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+async function aiClearHistory() {
+  if (!confirm('Clear the local AI chat history?')) return;
+  try {
+    await fetch('/api/ai_chat/clear', {method: 'POST'});
+    var box = document.getElementById('ai-messages');
+    box.innerHTML = '<div class="lo-ai-empty"><div>Conversation cleared.</div><div style="margin-top:4px;color:var(--lo-faint);font-size:10px">Start a new chat below.</div></div>';
+    showToast('AI history cleared');
+  } catch(e) { showToast('Clear failed', 'error'); }
+}
+
+// Submit on Enter (Shift+Enter for newline handled by browser if we ever use textarea)
+document.addEventListener('keydown', function(e) {
+  if (App.view !== 'ai') return;
+  if (e.key !== 'Enter') return;
+  var input = document.getElementById('ai-input');
+  if (document.activeElement !== input) return;
+  e.preventDefault();
+  aiSend();
+});
 
 // ─── Poll Loop ─────────────────────────────────────────────────────────────
 
@@ -3470,21 +3784,30 @@ function updateMapMarkers() {
     var isSelf = (selfId && nid === selfId);
     var m = meta[nid] || {};
     var d = dm[nid] || {};
-    var label = nid.length > 8 ? nid.slice(-6) : nid;
+    // Use the resolved canvas label (custom_name → long → short) so map and mesh agree
+    var canvasNode = (App.nodes || []).find(function(x) { return x.id === nid; });
+    var label = (canvasNode && canvasNode.label) || (nid.length > 8 ? nid.slice(-6) : nid);
+    var isFav = !!(canvasNode && canvasNode.isFavorite);
     var hops = (typeof m.hops === 'number') ? (m.hops === 0 ? 'direct' : m.hops + 'h') : '';
     var batt = (d.battery !== undefined) ? ' ' + d.battery + '%' : '';
-    var popupHtml = '<b>' + escapeHtml(label) + '</b>' + (hops ? ' &middot; ' + hops : '') + batt +
-      '<br>' + pos.lat.toFixed(5) + ', ' + pos.lon.toFixed(5) +
-      (isSelf ? '' : '<br><a href="#" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(nid) + '\'}));return false">Open</a>');
+    var tooltipHtml = (isFav ? '\u2605 ' : '') + escapeHtml(label) +
+      (hops ? ' \u00b7 ' + hops : '') + batt +
+      (isSelf ? '' : '\n(click to open)');
 
     if (_mapMarkers[nid]) {
-      _mapMarkers[nid].setLatLng(ll).setPopupContent(popupHtml);
+      _mapMarkers[nid].setLatLng(ll);
+      _mapMarkers[nid].setTooltipContent(tooltipHtml);
+      // Update click binding so rename/favorite changes are reflected
+      _mapMarkers[nid].off('click');
+      if (!isSelf) _mapMarkers[nid].on('click', function() { _openMapNode(nid); });
     } else {
       var icon = L.divIcon({
-        className: 'lo-map-marker' + (isSelf ? ' self' : ''),
+        className: 'lo-map-marker' + (isSelf ? ' self' : '') + (isFav ? ' fav' : ''),
         iconSize: [10, 10], iconAnchor: [5, 5]
       });
-      var marker = L.marker(ll, {icon: icon}).addTo(_map).bindPopup(popupHtml);
+      var marker = L.marker(ll, {icon: icon}).addTo(_map);
+      marker.bindTooltip(tooltipHtml, {direction: 'top', offset: [0, -6]});
+      if (!isSelf) marker.on('click', function() { _openMapNode(nid); });
       var labelMarker = L.marker(ll, {
         icon: L.divIcon({className: 'lo-map-label', html: escapeHtml(label), iconSize: null, iconAnchor: [-6, -2]}),
         interactive: false
@@ -3498,6 +3821,16 @@ function updateMapMarkers() {
     _map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
     App._mapFitted = true;
   }
+}
+
+// Open the same thread panel used on the mesh canvas when a map marker is clicked.
+// If buildGraph hasn't run yet for this node, synthesize a minimal node object.
+function _openMapNode(nid) {
+  var node = (App.nodes || []).find(function(x) { return x.id === nid; });
+  if (!node) {
+    node = { id: nid, label: nid.length > 8 ? nid.slice(-6) : nid, isSelf: false, isChannel: false };
+  }
+  openFloatWindow(node);
 }
 
 async function toggleCoverageLayer() {

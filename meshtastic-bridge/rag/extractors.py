@@ -10,7 +10,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".zim", ".txt", ".md", ".text", ".rst"}
+SUPPORTED_EXTENSIONS = {".pdf", ".zim", ".txt", ".md", ".text", ".rst", ".html", ".htm"}
 
 
 def extract_file(file_path):
@@ -20,7 +20,7 @@ def extract_file(file_path):
         file_path: Path to the file.
 
     Returns:
-        For PDFs/text: a single string.
+        For PDFs/text/HTML: a single string.
         For ZIM files: a list of dicts [{"title": str, "text": str}].
 
     Raises:
@@ -30,6 +30,9 @@ def extract_file(file_path):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
+    if os.path.getsize(file_path) == 0:
+        raise ValueError(f"Cannot open empty file: filename={file_path!r}")
+
     ext = os.path.splitext(file_path)[1].lower()
 
     if ext == ".pdf":
@@ -38,11 +41,24 @@ def extract_file(file_path):
         return extract_zim(file_path)
     elif ext in (".txt", ".md", ".text", ".rst"):
         return extract_text(file_path)
+    elif ext in (".html", ".htm"):
+        return extract_html(file_path)
     else:
         raise ValueError(
             f"Unsupported file type: {ext}. "
             f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
+
+
+def extract_html(file_path):
+    """Extract visible text from an HTML file (strips script/style/nav/etc)."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        html = f.read()
+    text = _strip_html(html)
+    cleaned = _clean_text(text)
+    if not cleaned.strip():
+        logger.warning(f"No visible text extracted from HTML: {file_path}")
+    return cleaned
 
 
 def extract_pdf(file_path):
