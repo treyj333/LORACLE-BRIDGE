@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from standalone_bridge import StandaloneBridge, MAX_TRACKED_NODES, OVERFLOW_TTL
+from standalone_bridge import StandaloneBridge, MAX_TRACKED_NODES, OVERFLOW_TTL, _parse_second_radio
 
 
 def _make_bridge():
@@ -89,6 +89,52 @@ class TestOverflowTTL(unittest.TestCase):
 
         self.assertNotIn("!stale", bridge._overflow)
         self.assertIn("!fresh", bridge._overflow)
+
+
+class TestParseSecondRadio(unittest.TestCase):
+    """Verify --second-radio spec parsing handles valid + invalid inputs."""
+
+    def test_none_and_empty(self):
+        self.assertIsNone(_parse_second_radio(None))
+        self.assertIsNone(_parse_second_radio(""))
+
+    def test_serial(self):
+        cfg = _parse_second_radio("meshcore:serial:/dev/ttyUSB1")
+        self.assertEqual(cfg["protocol"], "meshcore")
+        self.assertEqual(cfg["transport"], "serial")
+        self.assertEqual(cfg["serial_port"], "/dev/ttyUSB1")
+
+    def test_tcp_with_port(self):
+        cfg = _parse_second_radio("meshcore:tcp:192.168.1.50:4000")
+        self.assertEqual(cfg["transport"], "tcp")
+        self.assertEqual(cfg["tcp_host"], "192.168.1.50")
+        self.assertEqual(cfg["tcp_port"], 4000)
+
+    def test_tcp_default_port(self):
+        cfg = _parse_second_radio("meshcore:tcp:mc.local")
+        self.assertEqual(cfg["tcp_host"], "mc.local")
+        self.assertEqual(cfg["tcp_port"], 4000)
+
+    def test_tcp_bad_port(self):
+        self.assertIsNone(_parse_second_radio("meshcore:tcp:host:notaport"))
+
+    def test_ble_with_addr(self):
+        cfg = _parse_second_radio("meshcore:ble:AA:BB:CC:DD:EE:FF")
+        self.assertEqual(cfg["transport"], "ble")
+        self.assertEqual(cfg["ble_address"], "AA:BB:CC:DD:EE:FF")
+
+    def test_ble_no_addr(self):
+        cfg = _parse_second_radio("meshcore:ble:")
+        self.assertEqual(cfg["transport"], "ble")
+        self.assertIsNone(cfg["ble_address"])
+
+    def test_unsupported_primary_protocol(self):
+        self.assertIsNone(_parse_second_radio("meshtastic:serial:/dev/ttyUSB0"))
+
+    def test_malformed(self):
+        self.assertIsNone(_parse_second_radio("meshcore"))
+        self.assertIsNone(_parse_second_radio("meshcore:serial"))
+        self.assertIsNone(_parse_second_radio("nonsense"))
 
 
 if __name__ == "__main__":

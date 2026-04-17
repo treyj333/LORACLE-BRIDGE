@@ -24,7 +24,7 @@ import queue
 import sys
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import meshtastic
 import meshtastic.serial_interface
@@ -47,7 +47,7 @@ from ollama_client import OllamaClient, auto_select_model, MODEL_PROFILES, get_s
 from protocol import chunk_message
 from dashboard import (
     start_dashboard, record_message, update_state, set_bridge,
-    register_addon_tab, register_addon_api_route,
+    register_addon_tab, register_addon_api_route, _emit_sse,
 )
 from addons import load_addons
 from coverage_logger import CoverageLogger
@@ -55,6 +55,9 @@ from greeter import GreeterService, DEFAULT_GREETING
 from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
 from radio.manager import RadioManager
 from radio.meshtastic_backend import MeshtasticBackend
+from bridge import DEFAULT_CONFIG as BRIDGE_DEFAULT_CONFIG, Relay, build_policy
+from bridge.rate_limit import RelayRateLimiter
+from db.bridge_events import BridgeEventStore
 from routing import Tier, parse_prefix, route, USAGE_HINT, ModelNotConfiguredError
 from routing.tiers import load_tiers, save_tiers, ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY
 from db import init_db, migrate_from_json, ContactStore, MessageStore, SettingsStore
@@ -145,6 +148,51 @@ def auto_detect_serial_port() -> Optional[str]:
     return candidates[0] if candidates else None
 
 
+# Maps Protocol enum short values ("mt", "mc") to DB-column strings
+# ("meshtastic", "meshcore"). Keeps the DB schema stable while the radio
+# abstraction uses the short form in unified IDs.
+_PROTOCOL_SHORT_TO_DB = {"mt": "meshtastic", "mc": "meshcore"}
+
+
+def _parse_second_radio(spec: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a --second-radio spec like 'meshcore:serial:/dev/ttyUSB1'
+    or 'meshcore:tcp:192.168.1.1:4000' into a config dict.
+
+    Returns None on empty/invalid input.
+    """
+    if not spec:
+        return None
+    # Only split the first two colons; transport params may contain colons (tcp host:port)
+    parts = spec.split(":", 2)
+    if len(parts) < 3:
+        return None
+    protocol, transport, params = parts[0].lower(), parts[1].lower(), parts[2]
+    if protocol not in ("meshcore",):
+        return None  # meshtastic secondary not supported yet (primary radio is meshtastic)
+    cfg: Dict[str, Any] = {"protocol": protocol, "transport": transport}
+    if transport == "serial":
+        if not params:
+            return None
+        cfg["serial_port"] = params
+        return cfg
+    if transport == "tcp":
+        if ":" in params:
+            host, port_str = params.rsplit(":", 1)
+            try:
+                cfg["tcp_port"] = int(port_str)
+            except ValueError:
+                return None
+            cfg["tcp_host"] = host
+        else:
+            cfg["tcp_host"] = params
+            cfg["tcp_port"] = 4000  # meshcore default
+        return cfg
+    if transport == "ble":
+        cfg["ble_address"] = params or None
+        return cfg
+    return None
+
+
 class StandaloneBridge:
     """LORACLE BRIDGE — LoRa + Oracle mesh AI bridge."""
 
@@ -169,6 +217,7 @@ class StandaloneBridge:
         public_talk: bool = True,
         protocol: str = "auto",
         ai_replies_enabled: bool = True,
+        second_radio: Optional[str] = None,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -186,6 +235,12 @@ class StandaloneBridge:
         self._request_queue: queue.Queue = queue.Queue()
         self._start_time = time.time()
         self._ai_replies_enabled = ai_replies_enabled
+        self._second_radio_config = _parse_second_radio(second_radio)
+        if second_radio and self._second_radio_config is None:
+            logger.warning(
+                f"Ignoring invalid --second-radio spec: {second_radio!r} "
+                "(expected 'meshcore:serial:/dev/…', 'meshcore:tcp:host[:port]', or 'meshcore:ble:[addr]')"
+            )
 
         # ── SQLite persistence ────────────────────────────────────────────
         self._db = init_db(DB_PATH)
@@ -217,6 +272,38 @@ class StandaloneBridge:
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
         self.public_talk = public_talk  # respond on public channels when addressed
+
+        # ── Bridge relay (LORACLE v2 Phase 2 + Phase 5) ─────────────────
+        # Cross-protocol relay between Meshtastic and MeshCore. The relay
+        # observes every incoming message, applies policy/dedup/loop
+        # guards + rate-limit + audit log, re-broadcasts to the other
+        # network with a sender prefix. Config lives in SettingsStore
+        # and hot-swaps via API.
+        self._bridge_config = self._load_bridge_config()
+        self._bridge_events: List[dict] = []  # ring buffer for BRIDGE tab
+        # Phase 5: persistent audit log for every successful relay.
+        self._bridge_event_store = BridgeEventStore(self._db)
+        try:
+            pruned = self._bridge_event_store.prune()
+            if pruned:
+                logger.info(f"Pruned {pruned} stale bridge_events rows")
+        except Exception as e:
+            logger.debug(f"bridge_events prune skipped: {e}")
+        # Phase 5: per-direction sliding-window rate limiter. Defaults
+        # (30 events / 60s) are defense-tech-mesh-friendly; operators
+        # can tune via bridge_config keys rate_limit_max / rate_limit_window_s.
+        rl_max = int(self._bridge_config.get("rate_limit_max", 30) or 30)
+        rl_window = float(self._bridge_config.get("rate_limit_window_s", 60.0) or 60.0)
+        self._bridge_rate_limiter = RelayRateLimiter(
+            max_events=max(1, rl_max), window_seconds=max(1.0, rl_window)
+        )
+        self._relay = Relay(
+            send_fn=self._bridge_send,
+            policy=build_policy(self._bridge_config),
+            identity_fn=self._bridge_sender_display,
+            on_relay=self._on_bridge_relay,
+            rate_limiter=self._bridge_rate_limiter,
+        )
 
         # Coverage logger — append-only JSONL of (ts, node, lat, lon, rssi, snr) samples
         coverage_path = os.path.join(
@@ -342,6 +429,12 @@ class StandaloneBridge:
         threading.Thread(target=self._radio_connection_loop, daemon=True).start()
         # Node sync loop
         threading.Thread(target=self._node_sync_loop, daemon=True).start()
+
+        # Secondary radio (MeshCore via RadioManager) — optional, only if
+        # --second-radio was passed and the spec parsed cleanly.
+        if self._second_radio_config:
+            threading.Thread(target=self._connect_secondary_radio, daemon=True).start()
+            threading.Thread(target=self._secondary_radio_ingest_loop, daemon=True).start()
 
         # Start addons
         for addon in self._addons:
@@ -681,6 +774,171 @@ class StandaloneBridge:
             logger.debug(f"Could not load BLE config: {e}")
         return None
 
+    def _persist_incoming(
+        self,
+        protocol: str,
+        sender: str,
+        text: str,
+        channel: int,
+        is_dm: bool,
+        rssi: Optional[int] = None,
+        snr: Optional[float] = None,
+        hops: Optional[int] = None,
+    ) -> None:
+        """Persist an incoming text message to SQLite. Protocol-agnostic.
+
+        Called by the Meshtastic pubsub path (_on_receive) and the
+        secondary-radio ingest loop (_secondary_radio_ingest_loop). Both
+        pass a protocol string ("meshtastic" or "meshcore") that ends up
+        on the contacts and messages rows.
+        """
+        try:
+            self._contact_store.upsert(
+                contact_id=sender, protocol=protocol,
+                backend_id=sender, short_name=sender[-6:] if len(sender) > 6 else sender,
+                rssi=rssi, snr=snr, hops=hops,
+            )
+            if is_dm:
+                self._message_store.insert(
+                    contact_id=sender, direction="in", author="human",
+                    text=text, protocol=protocol,
+                    hops_traveled=hops, rx_rssi=rssi, rx_snr=snr,
+                )
+                self._contact_store.increment_unread(sender)
+            else:
+                chan_id = f"{protocol}:channel:{channel}"
+                chan_name = f"Channel {channel}"
+                self._contact_store.upsert(
+                    contact_id=chan_id, protocol=protocol,
+                    backend_id=chan_id, short_name=chan_name,
+                    long_name=chan_name, is_channel=True,
+                    channel_idx=channel, channel_name=chan_name,
+                )
+                self._message_store.insert(
+                    contact_id=chan_id, direction="in", author="human",
+                    text=f"{sender}: {text}", protocol=protocol,
+                    hops_traveled=hops, rx_rssi=rssi, rx_snr=snr,
+                    is_channel_msg=True,
+                )
+                self._contact_store.increment_unread(chan_id)
+        except Exception as e:
+            logger.debug(f"DB persist error: {e}")
+
+    # ── Bridge relay helpers (LORACLE v2 Phase 2) ────────────────────────
+
+    def _load_bridge_config(self) -> Dict[str, Any]:
+        """Read bridge config from SettingsStore, falling back to defaults.
+
+        Returns a fresh copy of DEFAULT_CONFIG if the key is unset. Shape
+        is documented in bridge/config.py.
+        """
+        try:
+            cfg = self._settings_store.get("bridge_config", None)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception as e:
+            logger.debug(f"Could not load bridge_config: {e}")
+        return dict(BRIDGE_DEFAULT_CONFIG)
+
+    def _save_bridge_config(self, cfg: Dict[str, Any]) -> None:
+        """Persist bridge config and hot-swap the relay's policy.
+
+        Accepts an already-validated dict (validation lives in the API
+        endpoint). Raises if the settings write fails.
+        """
+        self._settings_store.set("bridge_config", cfg)
+        self._bridge_config = cfg
+        self._relay.set_policy(build_policy(cfg))
+        logger.info(f"Bridge config updated: enabled={cfg.get('enabled')} "
+                    f"rules={len(cfg.get('rules', []))}")
+
+    def _bridge_send(self, dest_protocol: str, text: str, channel: int) -> None:
+        """Protocol-agnostic broadcast used as the relay's send_fn.
+
+        Meshtastic goes through the live ``self.interface`` (the proven
+        pubsub path). MeshCore goes through RadioManager. Raises on any
+        delivery failure so the relay records a drop instead of a
+        successful delivery.
+        """
+        if dest_protocol == "meshtastic":
+            if not self.interface or not self._is_interface_alive():
+                raise ConnectionError("primary meshtastic interface not alive")
+            self.interface.sendText(
+                text,
+                destinationId=BROADCAST_ADDR,
+                channelIndex=channel,
+                wantAck=False,
+            )
+        elif dest_protocol == "meshcore":
+            # "mc:" with empty native_id tells RadioManager to pick the
+            # MeshCore backend and broadcast on the given channel.
+            self._radio_manager.send("mc:", text, channel=channel, is_dm=False)
+        else:
+            raise ValueError(f"unknown bridge destination protocol: {dest_protocol!r}")
+
+    def _bridge_sender_display(self, source_protocol: str, sender: str) -> str:
+        """Pick the most human-readable name for a bridged sender.
+
+        Preference: custom_name → long_name → short_name → last-6 of the
+        native id. Falls back gracefully if the contact isn't in the DB
+        yet (first-ever message from that node).
+        """
+        try:
+            contact = self._contact_store.get(sender)
+            if contact:
+                for key in ("custom_name", "long_name", "short_name"):
+                    val = contact.get(key)
+                    if val:
+                        return str(val)
+        except Exception as e:
+            logger.debug(f"sender-display lookup error: {e}")
+        return sender[-6:] if len(sender) > 6 else sender
+
+    def _on_bridge_relay(self, event: Dict[str, Any]) -> None:
+        """Handle a successful relay: ring buffer + SSE + audit log + addons.
+
+        Four things happen here:
+          1. Bounded in-memory buffer for the BRIDGE tab's fast path.
+          2. SSE push so clients don't have to poll.
+          3. Persistent audit log in the bridge_events SQLite table.
+          4. Each addon's on_bridged_message() hook is fired — lets
+             Sentinel/Triage/Brief observe cross-protocol traffic.
+
+        Exceptions in any path are logged and swallowed so one broken
+        consumer can't break the relay loop.
+        """
+        event["timestamp"] = time.time()
+        self._bridge_events.append(event)
+        if len(self._bridge_events) > 200:
+            # Trim to the last 200 — bounded buffer for dashboard polling.
+            del self._bridge_events[:-200]
+        try:
+            _emit_sse("bridge.relay", {"event": event})
+        except Exception as e:
+            logger.debug(f"[bridge] SSE emit error: {e}")
+        # Persist to audit log (Phase 5).
+        try:
+            self._bridge_event_store.insert(
+                source_protocol=event.get("source", ""),
+                dest_protocol=event.get("dest", ""),
+                channel=int(event.get("channel", 0)),
+                sender=event.get("sender", ""),
+                sender_display=event.get("sender_display"),
+                text=event.get("text", ""),
+                outcome="relayed",
+                timestamp=event["timestamp"],
+            )
+        except Exception as e:
+            logger.debug(f"[bridge] audit-log insert error: {e}")
+        # Fire addon hook (Phase 5).
+        for addon in self._addons:
+            try:
+                addon.on_bridged_message(event)
+            except Exception as e:
+                logger.warning(
+                    f"Addon {addon.name} on_bridged_message error: {e}"
+                )
+
     def _on_receive(self, packet, interface):
         """Handle incoming text message from the mesh."""
         try:
@@ -688,6 +946,7 @@ class StandaloneBridge:
             to_id = packet.get("toId", "")
             text = packet.get("decoded", {}).get("text", "")
             channel = packet.get("channel", 0)
+            protocol = "meshtastic"
 
             # Record hop metadata for every packet, even if we ignore the text
             self._record_packet_meta(sender, packet)
@@ -770,50 +1029,29 @@ class StandaloneBridge:
             logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
             record_message("in", sender, text.strip())
 
-            # Persist to SQLite
+            # Extract packet metadata for persistence + coverage logging
+            rssi_val = packet.get("rxRssi")
+            snr_val = packet.get("rxSnr")
+            hop_start = packet.get("hopStart")
+            hop_limit = packet.get("hopLimit")
+            hops = None
+            if hop_start is not None and hop_limit is not None:
+                h = int(hop_start) - int(hop_limit)
+                if 0 <= h <= 30:
+                    hops = h
+
+            # Persist to SQLite via shared helper (also used by secondary-radio ingest)
+            self._persist_incoming(
+                protocol, sender, text.strip(), channel, is_dm,
+                rssi=rssi_val, snr=snr_val, hops=hops,
+            )
+
+            # Bridge relay observation — may re-broadcast to MeshCore.
+            # Policy/dedup/loop-guard decisions all live inside the Relay.
             try:
-                rssi_val = packet.get("rxRssi")
-                snr_val = packet.get("rxSnr")
-                hop_start = packet.get("hopStart")
-                hop_limit = packet.get("hopLimit")
-                hops = None
-                if hop_start is not None and hop_limit is not None:
-                    h = int(hop_start) - int(hop_limit)
-                    if 0 <= h <= 30:
-                        hops = h
-                # Always upsert the sender as a DM contact
-                self._contact_store.upsert(
-                    contact_id=sender, protocol="meshtastic",
-                    backend_id=sender, short_name=sender[-6:] if len(sender) > 6 else sender,
-                    rssi=rssi_val, snr=snr_val, hops=hops,
-                )
-                if is_dm:
-                    # DM: store under sender's contact
-                    self._message_store.insert(
-                        contact_id=sender, direction="in", author="human",
-                        text=text.strip(), protocol="meshtastic",
-                        hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
-                    )
-                    self._contact_store.increment_unread(sender)
-                else:
-                    # Channel message: store under channel contact
-                    chan_id = f"meshtastic:channel:{channel}"
-                    chan_name = f"Channel {channel}"
-                    self._contact_store.upsert(
-                        contact_id=chan_id, protocol="meshtastic",
-                        backend_id=chan_id, short_name=chan_name,
-                        long_name=chan_name, is_channel=True,
-                        channel_idx=channel, channel_name=chan_name,
-                    )
-                    self._message_store.insert(
-                        contact_id=chan_id, direction="in", author="human",
-                        text=f"{sender}: {text.strip()}", protocol="meshtastic",
-                        hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
-                        is_channel_msg=True,
-                    )
-                    self._contact_store.increment_unread(chan_id)
+                self._relay.observe(protocol, sender, text.strip(), channel, is_dm)
             except Exception as e:
-                logger.debug(f"DB persist error: {e}")
+                logger.warning(f"[bridge] relay.observe(meshtastic) error: {e}")
 
             # Coverage sample — log signal strength against the sender's last
             # known position, if we have one and the packet carries RSSI/SNR.
@@ -833,7 +1071,7 @@ class StandaloneBridge:
                 except Exception as e:
                     logger.warning(f"Addon {addon.name} on_message error: {e}")
 
-            self._request_queue.put((sender, text.strip(), channel, is_dm))
+            self._request_queue.put(("meshtastic", sender, text.strip(), channel, is_dm))
 
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
@@ -1039,6 +1277,7 @@ class StandaloneBridge:
             nodes = getattr(self.interface, "nodes", None)
             if not nodes:
                 return
+            protocol = "meshtastic"
             # First-ever startup safety net: silently mark every node already
             # in the radio's nodeDB as "known" so we don't blast the entire
             # mesh on initial deployment. Idempotent — only does work once.
@@ -1066,7 +1305,7 @@ class StandaloneBridge:
                     if meta and "hops" in meta:
                         hops = meta["hops"]
                     self._contact_store.upsert(
-                        contact_id=key, protocol="meshtastic",
+                        contact_id=key, protocol=protocol,
                         backend_id=key, short_name=short_name,
                         long_name=long_name, hops=hops,
                     )
@@ -1108,6 +1347,116 @@ class StandaloneBridge:
         except Exception as e:
             logger.debug(f"Could not read nodeDB positions: {e}")
 
+    def _connect_secondary_radio(self):
+        """Construct and register a secondary MeshCore backend via _radio_manager.
+
+        Runs in a background thread (see start()). MeshCoreBackend.connect()
+        can block up to 30s, so keep this off the main thread. On failure,
+        logs an error and returns — the rest of the bridge keeps running
+        on the primary Meshtastic radio.
+        """
+        cfg = self._second_radio_config
+        if not cfg:
+            return
+        if cfg.get("protocol") != "meshcore":
+            logger.warning(
+                f"Unsupported secondary-radio protocol: {cfg.get('protocol')!r}"
+            )
+            return
+        try:
+            from radio.meshcore_backend import MeshCoreBackend
+        except ImportError:
+            logger.warning(
+                "meshcore library not installed — skipping secondary radio. "
+                "Install with: pip install meshcore>=2.2.1"
+            )
+            return
+        try:
+            backend = MeshCoreBackend(
+                connection_type=cfg["transport"],
+                serial_port=cfg.get("serial_port"),
+                tcp_host=cfg.get("tcp_host", "192.168.1.1"),
+                tcp_port=cfg.get("tcp_port", 4000),
+                ble_address=cfg.get("ble_address"),
+            )
+            self._radio_manager.add_backend(backend)
+            logger.info(
+                f"Secondary radio connected: meshcore via {cfg['transport']}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to connect secondary meshcore radio: {e}")
+
+    def _secondary_radio_ingest_loop(self):
+        """Drain _radio_manager's message queue and feed into _request_queue.
+
+        Runs forever in a background thread (see start()). Skips meshtastic
+        messages — those flow through the proven pubsub path in _on_receive
+        — so this loop in practice only processes meshcore traffic. Kept
+        generic for when the primary path is eventually unified.
+        """
+        while self._running:
+            msg = self._radio_manager.get_message(timeout=1.0)
+            if msg is None:
+                continue
+            try:
+                db_protocol = _PROTOCOL_SHORT_TO_DB.get(msg.protocol.value)
+                if db_protocol is None:
+                    logger.warning(
+                        f"Unknown protocol from radio_manager: {msg.protocol!r}"
+                    )
+                    continue
+                if db_protocol == "meshtastic":
+                    # Handled by pubsub in _on_receive; skip to avoid double-persist
+                    continue
+
+                sender = msg.node.backend_native_id
+                text = (msg.text or "").strip()
+                channel = msg.channel if msg.channel is not None else 0
+                is_dm = msg.is_dm
+
+                if not text:
+                    continue
+
+                now = time.time()
+                last = self._node_last_active.get(sender)
+                if last is not None and (now - last) < RATE_LIMIT_SECS:
+                    logger.info(
+                        f"Rate-limited {sender}/{db_protocol} "
+                        f"({now - last:.0f}s < {RATE_LIMIT_SECS}s cooldown)"
+                    )
+                    continue
+
+                self._known_nodes.add(sender)
+                self._node_count = len(self._known_nodes)
+                ch_label = "DM" if is_dm else f"ch{channel}"
+                logger.info(
+                    f"[{db_protocol}] Received from {sender} ({ch_label}): {text[:100]}"
+                )
+                record_message("in", sender, text)
+
+                self._persist_incoming(
+                    db_protocol, sender, text, channel, is_dm,
+                    rssi=msg.rssi, snr=msg.snr, hops=msg.hops_traveled,
+                )
+
+                # Bridge relay observation — may re-broadcast to Meshtastic.
+                try:
+                    self._relay.observe(db_protocol, sender, text, channel, is_dm)
+                except Exception as e:
+                    logger.warning(f"[bridge] relay.observe({db_protocol}) error: {e}")
+
+                for addon in self._addons:
+                    try:
+                        addon.on_message(sender, text, msg.raw_packet or {})
+                    except Exception as e:
+                        logger.warning(
+                            f"Addon {addon.name} on_message error: {e}"
+                        )
+
+                self._request_queue.put((db_protocol, sender, text, channel, is_dm))
+            except Exception as e:
+                logger.error(f"Error in secondary radio ingest: {e}")
+
     def _get_self_node_id(self) -> Optional[str]:
         """Best-effort derive the local node id in '!hex' form. Returns None
         if the meshtastic-python interface hasn't surfaced it yet.
@@ -1134,7 +1483,7 @@ class StandaloneBridge:
         """Process queued messages through Ollama and send responses."""
         while self._running:
             try:
-                node_id, text, channel, is_dm = self._request_queue.get(timeout=1)
+                protocol, node_id, text, channel, is_dm = self._request_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
@@ -1150,7 +1499,7 @@ class StandaloneBridge:
                     )
                     # For channel messages, check channel's AI state
                     if not is_dm:
-                        chan_id = f"meshtastic:channel:{channel}"
+                        chan_id = f"{protocol}:channel:{channel}"
                         effective_ai = self._contact_store.get_effective_ai(
                             chan_id, self._ai_replies_enabled
                         )
@@ -1192,7 +1541,7 @@ class StandaloneBridge:
                             )
                         except ModelNotConfiguredError as e:
                             response = str(e)
-                            self._send_response(node_id, response, channel=0, is_dm=True)
+                            self._send_response(node_id, response, channel=0, is_dm=True, protocol=protocol)
                             record_message("out", node_id, response)
                             continue
                         except Exception as e:
@@ -1201,7 +1550,7 @@ class StandaloneBridge:
                         logger.info(f"Processing query from {node_id} [{chosen_tier.value.upper()}] → {chosen_model}")
 
                         # Send acknowledgment as DM to sender
-                        self._send_raw(node_id, "Thinking...", channel=0, is_dm=True)
+                        self._send_raw(node_id, "Thinking...", channel=0, is_dm=True, protocol=protocol)
 
                         # RAG: tier-aware context size
                         context_messages = None
@@ -1243,7 +1592,7 @@ class StandaloneBridge:
 
                 if not is_dm:
                     # Channel message → AI reply goes to sender as DM
-                    originating_channel = f"meshtastic:channel:{channel}"
+                    originating_channel = f"{protocol}:channel:{channel}"
                     logger.info(f"Channel AI redirect: replying to {node_id} as DM (from ch{channel})")
 
                 # Send response as DM to sender (never to channel)
@@ -1254,7 +1603,7 @@ class StandaloneBridge:
                     author = "ai" if elapsed > 0 else "human"
                     self._message_store.insert(
                         contact_id=reply_contact_id, direction="out", author=author,
-                        text=response, protocol="meshtastic",
+                        text=response, protocol=protocol,
                         originating_channel_id=originating_channel,
                     )
                 except Exception as e:
@@ -1264,11 +1613,11 @@ class StandaloneBridge:
                     node_count=self._node_count,
                     known_nodes=list(self._known_nodes),
                 )
-                self._send_response(node_id, response, channel=0, is_dm=reply_is_dm)
+                self._send_response(node_id, response, channel=0, is_dm=reply_is_dm, protocol=protocol)
 
             except Exception as e:
                 logger.error(f"Error processing message from {node_id}: {e}")
-                self._send_response(node_id, f"Error: {e}", channel=0, is_dm=True)
+                self._send_response(node_id, f"Error: {e}", channel=0, is_dm=True, protocol=protocol)
 
     def _init_commands(self):
         """Register built-in commands into the command registry."""
@@ -1421,13 +1770,35 @@ class StandaloneBridge:
             self.interface = None
         self._connect_radio()
 
-    def _send_raw(self, node_id: str, text: str, channel: int = 0, is_dm: bool = True):
+    def _send_raw(
+        self,
+        node_id: str,
+        text: str,
+        channel: int = 0,
+        is_dm: bool = True,
+        protocol: str = "meshtastic",
+    ):
         """Send a short status message (no pager, no overflow).
 
         Used for 'Thinking...' and other ephemeral status indicators.
         Replies on the same channel the original message came from.
         Includes a post-TX settle delay so the radio returns to RX mode.
+
+        When ``protocol == "meshcore"``, routes via the RadioManager using
+        the unified ``mc:`` prefix instead of the Meshtastic interface.
         """
+        if protocol == "meshcore":
+            try:
+                self._radio_manager.send(
+                    f"mc:{node_id}", text, channel=channel, is_dm=is_dm,
+                )
+                ch_label = "DM" if is_dm else f"ch{channel}"
+                logger.info(f"[meshcore] Status to {node_id} ({ch_label}): {text}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to send meshcore status to {node_id}: {e}"
+                )
+            return
         if not self.interface or not self._is_interface_alive():
             logger.warning(
                 f"Status drop to {node_id}: interface not alive ({text[:40]!r})"
@@ -1445,7 +1816,14 @@ class StandaloneBridge:
         except Exception as e:
             logger.warning(f"Failed to send status to {node_id}: {e}")
 
-    def _send_response(self, node_id: str, content: str, channel: int = 0, is_dm: bool = True):
+    def _send_response(
+        self,
+        node_id: str,
+        content: str,
+        channel: int = 0,
+        is_dm: bool = True,
+        protocol: str = "meshtastic",
+    ):
         """Send a single plain-text response over the mesh.
 
         The Meshtastic app groups messages by sender and only shows the latest,
@@ -1455,7 +1833,42 @@ class StandaloneBridge:
 
         Replies on the same channel the original message came from:
         DMs get a DM back, public channel messages get a public reply.
+
+        When ``protocol == "meshcore"``, routes via the RadioManager using
+        the unified ``mc:`` prefix. Phase 1 behavior: meshcore sends use a
+        simple truncation at MAX_LORA_TEXT — no paging / overflow /
+        !more support yet (deferred to Phase 2 of LORACLE v2).
         """
+        if protocol == "meshcore":
+            content_bytes = content.encode("utf-8")
+            if len(content_bytes) > MAX_LORA_TEXT:
+                truncated = content
+                while (
+                    len(truncated.encode("utf-8")) > MAX_LORA_TEXT
+                    and len(truncated) > 1
+                ):
+                    truncated = truncated[:-1]
+                message = truncated
+                logger.info(
+                    f"[meshcore] Response truncated to {len(message)} chars "
+                    "(Phase 1: no paging)"
+                )
+            else:
+                message = content
+            try:
+                self._radio_manager.send(
+                    f"mc:{node_id}", message, channel=channel, is_dm=is_dm,
+                )
+                ch_label = "DM" if is_dm else f"ch{channel}"
+                logger.info(
+                    f"[meshcore] Sent to {node_id} ({ch_label}): "
+                    f"{len(message.encode('utf-8'))} bytes"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to send meshcore response to {node_id}: {e}"
+                )
+            return
         if not self.interface:
             logger.error("No radio interface — cannot send")
             return
@@ -1923,6 +2336,7 @@ def main():
         public_talk=args.public_talk,
         protocol=args.protocol,
         ai_replies_enabled=ai_replies,
+        second_radio=args.second_radio,
     )
 
     # Pull the better model in background after bridge starts
