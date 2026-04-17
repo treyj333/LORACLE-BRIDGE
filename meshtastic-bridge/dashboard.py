@@ -1040,6 +1040,68 @@ def api_routing_config_set():
         return jsonify({"error": str(e)}), 500
 
 
+# ─── Bridge endpoints (LORACLE v2 Phase 2) ──────────────────────────────────
+
+@app.route("/api/bridge/config", methods=["GET"])
+def api_bridge_config():
+    """Return the current bridge-relay config (enabled + per-channel rules)."""
+    if _bridge is None or not hasattr(_bridge, "_bridge_config"):
+        return jsonify({"enabled": False, "rules": []})
+    return jsonify(_bridge._bridge_config)
+
+
+@app.route("/api/bridge/config", methods=["POST"])
+def api_bridge_config_set():
+    """Update the bridge-relay config. Hot-swaps the live Relay's policy."""
+    if _bridge is None or not hasattr(_bridge, "_save_bridge_config"):
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    # Minimal shape validation; deeper validation lives in bridge/config.py
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected JSON object"}), 400
+    cfg = {
+        "enabled": bool(data.get("enabled", False)),
+        "rules": data.get("rules") or [],
+    }
+    if not isinstance(cfg["rules"], list):
+        return jsonify({"error": "rules must be a list"}), 400
+    try:
+        _bridge._save_bridge_config(cfg)
+        return jsonify({"ok": True, "config": cfg})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bridge/stats", methods=["GET"])
+def api_bridge_stats():
+    """Return live relay counters (relayed, dropped, dedup cache size)."""
+    if _bridge is None or not hasattr(_bridge, "_relay"):
+        return jsonify({"relayed": 0, "dropped": 0, "dedup_size": 0})
+    try:
+        return jsonify(_bridge._relay.stats())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/bridge/events", methods=["GET"])
+def api_bridge_events():
+    """Return the recent bridge events (ring buffer, up to last 200).
+
+    Optional ``since`` query param (unix timestamp) returns only events
+    newer than that — lets the BRIDGE tab poll incrementally without
+    re-rendering the whole log.
+    """
+    if _bridge is None or not hasattr(_bridge, "_bridge_events"):
+        return jsonify({"events": []})
+    since_raw = request.args.get("since")
+    try:
+        since = float(since_raw) if since_raw else 0.0
+    except ValueError:
+        since = 0.0
+    events = [e for e in _bridge._bridge_events if e.get("timestamp", 0) > since]
+    return jsonify({"events": events})
+
+
 @app.route("/api/routing/classify", methods=["POST"])
 def api_routing_classify():
     """Test the classifier on a query (no LLM call)."""

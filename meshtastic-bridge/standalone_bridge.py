@@ -55,6 +55,7 @@ from greeter import GreeterService, DEFAULT_GREETING
 from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
 from radio.manager import RadioManager
 from radio.meshtastic_backend import MeshtasticBackend
+from bridge import DEFAULT_CONFIG as BRIDGE_DEFAULT_CONFIG, Relay, build_policy
 from routing import Tier, parse_prefix, route, USAGE_HINT, ModelNotConfiguredError
 from routing.tiers import load_tiers, save_tiers, ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY
 from db import init_db, migrate_from_json, ContactStore, MessageStore, SettingsStore
@@ -269,6 +270,20 @@ class StandaloneBridge:
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
         self.public_talk = public_talk  # respond on public channels when addressed
+
+        # ── Bridge relay (LORACLE v2 Phase 2) ─────────────────────────────
+        # Cross-protocol relay between Meshtastic and MeshCore. The relay
+        # observes every incoming message, applies policy/dedup/loop
+        # guards, and re-broadcasts to the other network with a sender
+        # prefix. Config lives in SettingsStore and hot-swaps via API.
+        self._bridge_config = self._load_bridge_config()
+        self._bridge_events: List[dict] = []  # ring buffer for BRIDGE tab
+        self._relay = Relay(
+            send_fn=self._bridge_send,
+            policy=build_policy(self._bridge_config),
+            identity_fn=self._bridge_sender_display,
+            on_relay=self._on_bridge_relay,
+        )
 
         # Coverage logger — append-only JSONL of (ts, node, lat, lon, rssi, snr) samples
         coverage_path = os.path.join(
@@ -789,6 +804,88 @@ class StandaloneBridge:
         except Exception as e:
             logger.debug(f"DB persist error: {e}")
 
+    # ── Bridge relay helpers (LORACLE v2 Phase 2) ────────────────────────
+
+    def _load_bridge_config(self) -> Dict[str, Any]:
+        """Read bridge config from SettingsStore, falling back to defaults.
+
+        Returns a fresh copy of DEFAULT_CONFIG if the key is unset. Shape
+        is documented in bridge/config.py.
+        """
+        try:
+            cfg = self._settings_store.get("bridge_config", None)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception as e:
+            logger.debug(f"Could not load bridge_config: {e}")
+        return dict(BRIDGE_DEFAULT_CONFIG)
+
+    def _save_bridge_config(self, cfg: Dict[str, Any]) -> None:
+        """Persist bridge config and hot-swap the relay's policy.
+
+        Accepts an already-validated dict (validation lives in the API
+        endpoint). Raises if the settings write fails.
+        """
+        self._settings_store.set("bridge_config", cfg)
+        self._bridge_config = cfg
+        self._relay.set_policy(build_policy(cfg))
+        logger.info(f"Bridge config updated: enabled={cfg.get('enabled')} "
+                    f"rules={len(cfg.get('rules', []))}")
+
+    def _bridge_send(self, dest_protocol: str, text: str, channel: int) -> None:
+        """Protocol-agnostic broadcast used as the relay's send_fn.
+
+        Meshtastic goes through the live ``self.interface`` (the proven
+        pubsub path). MeshCore goes through RadioManager. Raises on any
+        delivery failure so the relay records a drop instead of a
+        successful delivery.
+        """
+        if dest_protocol == "meshtastic":
+            if not self.interface or not self._is_interface_alive():
+                raise ConnectionError("primary meshtastic interface not alive")
+            self.interface.sendText(
+                text,
+                destinationId=BROADCAST_ADDR,
+                channelIndex=channel,
+                wantAck=False,
+            )
+        elif dest_protocol == "meshcore":
+            # "mc:" with empty native_id tells RadioManager to pick the
+            # MeshCore backend and broadcast on the given channel.
+            self._radio_manager.send("mc:", text, channel=channel, is_dm=False)
+        else:
+            raise ValueError(f"unknown bridge destination protocol: {dest_protocol!r}")
+
+    def _bridge_sender_display(self, source_protocol: str, sender: str) -> str:
+        """Pick the most human-readable name for a bridged sender.
+
+        Preference: custom_name → long_name → short_name → last-6 of the
+        native id. Falls back gracefully if the contact isn't in the DB
+        yet (first-ever message from that node).
+        """
+        try:
+            contact = self._contact_store.get(sender)
+            if contact:
+                for key in ("custom_name", "long_name", "short_name"):
+                    val = contact.get(key)
+                    if val:
+                        return str(val)
+        except Exception as e:
+            logger.debug(f"sender-display lookup error: {e}")
+        return sender[-6:] if len(sender) > 6 else sender
+
+    def _on_bridge_relay(self, event: Dict[str, Any]) -> None:
+        """Capture relay events into a bounded ring buffer for the UI.
+
+        Also persisted to SQLite in Phase 5; the in-memory buffer gives
+        the BRIDGE tab a fast recent-events view without hitting the DB.
+        """
+        event["timestamp"] = time.time()
+        self._bridge_events.append(event)
+        if len(self._bridge_events) > 200:
+            # Trim to the last 200 — bounded buffer for dashboard polling.
+            del self._bridge_events[:-200]
+
     def _on_receive(self, packet, interface):
         """Handle incoming text message from the mesh."""
         try:
@@ -895,6 +992,13 @@ class StandaloneBridge:
                 protocol, sender, text.strip(), channel, is_dm,
                 rssi=rssi_val, snr=snr_val, hops=hops,
             )
+
+            # Bridge relay observation — may re-broadcast to MeshCore.
+            # Policy/dedup/loop-guard decisions all live inside the Relay.
+            try:
+                self._relay.observe(protocol, sender, text.strip(), channel, is_dm)
+            except Exception as e:
+                logger.warning(f"[bridge] relay.observe(meshtastic) error: {e}")
 
             # Coverage sample — log signal strength against the sender's last
             # known position, if we have one and the packet carries RSSI/SNR.
@@ -1281,6 +1385,12 @@ class StandaloneBridge:
                     db_protocol, sender, text, channel, is_dm,
                     rssi=msg.rssi, snr=msg.snr, hops=msg.hops_traveled,
                 )
+
+                # Bridge relay observation — may re-broadcast to Meshtastic.
+                try:
+                    self._relay.observe(db_protocol, sender, text, channel, is_dm)
+                except Exception as e:
+                    logger.warning(f"[bridge] relay.observe({db_protocol}) error: {e}")
 
                 for addon in self._addons:
                     try:
