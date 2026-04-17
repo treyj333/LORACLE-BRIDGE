@@ -56,6 +56,8 @@ from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode
 from radio.manager import RadioManager
 from radio.meshtastic_backend import MeshtasticBackend
 from bridge import DEFAULT_CONFIG as BRIDGE_DEFAULT_CONFIG, Relay, build_policy
+from bridge.rate_limit import RelayRateLimiter
+from db.bridge_events import BridgeEventStore
 from routing import Tier, parse_prefix, route, USAGE_HINT, ModelNotConfiguredError
 from routing.tiers import load_tiers, save_tiers, ROUTING_AUTO_KEY, ROUTING_SHOW_TAG_KEY
 from db import init_db, migrate_from_json, ContactStore, MessageStore, SettingsStore
@@ -271,18 +273,36 @@ class StandaloneBridge:
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
         self.public_talk = public_talk  # respond on public channels when addressed
 
-        # ── Bridge relay (LORACLE v2 Phase 2) ─────────────────────────────
+        # ── Bridge relay (LORACLE v2 Phase 2 + Phase 5) ─────────────────
         # Cross-protocol relay between Meshtastic and MeshCore. The relay
         # observes every incoming message, applies policy/dedup/loop
-        # guards, and re-broadcasts to the other network with a sender
-        # prefix. Config lives in SettingsStore and hot-swaps via API.
+        # guards + rate-limit + audit log, re-broadcasts to the other
+        # network with a sender prefix. Config lives in SettingsStore
+        # and hot-swaps via API.
         self._bridge_config = self._load_bridge_config()
         self._bridge_events: List[dict] = []  # ring buffer for BRIDGE tab
+        # Phase 5: persistent audit log for every successful relay.
+        self._bridge_event_store = BridgeEventStore(self._db)
+        try:
+            pruned = self._bridge_event_store.prune()
+            if pruned:
+                logger.info(f"Pruned {pruned} stale bridge_events rows")
+        except Exception as e:
+            logger.debug(f"bridge_events prune skipped: {e}")
+        # Phase 5: per-direction sliding-window rate limiter. Defaults
+        # (30 events / 60s) are defense-tech-mesh-friendly; operators
+        # can tune via bridge_config keys rate_limit_max / rate_limit_window_s.
+        rl_max = int(self._bridge_config.get("rate_limit_max", 30) or 30)
+        rl_window = float(self._bridge_config.get("rate_limit_window_s", 60.0) or 60.0)
+        self._bridge_rate_limiter = RelayRateLimiter(
+            max_events=max(1, rl_max), window_seconds=max(1.0, rl_window)
+        )
         self._relay = Relay(
             send_fn=self._bridge_send,
             policy=build_policy(self._bridge_config),
             identity_fn=self._bridge_sender_display,
             on_relay=self._on_bridge_relay,
+            rate_limiter=self._bridge_rate_limiter,
         )
 
         # Coverage logger — append-only JSONL of (ts, node, lat, lon, rssi, snr) samples
@@ -875,12 +895,17 @@ class StandaloneBridge:
         return sender[-6:] if len(sender) > 6 else sender
 
     def _on_bridge_relay(self, event: Dict[str, Any]) -> None:
-        """Capture relay events into a bounded ring buffer + emit SSE.
+        """Handle a successful relay: ring buffer + SSE + audit log + addons.
 
-        The in-memory buffer feeds ``GET /api/bridge/events`` (polling
-        fallback). The SSE push lets the BRIDGE tab update instantly
-        without waiting for the next poll. Phase 5 will add persistent
-        SQLite storage for the bridge_events audit log.
+        Four things happen here:
+          1. Bounded in-memory buffer for the BRIDGE tab's fast path.
+          2. SSE push so clients don't have to poll.
+          3. Persistent audit log in the bridge_events SQLite table.
+          4. Each addon's on_bridged_message() hook is fired — lets
+             Sentinel/Triage/Brief observe cross-protocol traffic.
+
+        Exceptions in any path are logged and swallowed so one broken
+        consumer can't break the relay loop.
         """
         event["timestamp"] = time.time()
         self._bridge_events.append(event)
@@ -891,6 +916,28 @@ class StandaloneBridge:
             _emit_sse("bridge.relay", {"event": event})
         except Exception as e:
             logger.debug(f"[bridge] SSE emit error: {e}")
+        # Persist to audit log (Phase 5).
+        try:
+            self._bridge_event_store.insert(
+                source_protocol=event.get("source", ""),
+                dest_protocol=event.get("dest", ""),
+                channel=int(event.get("channel", 0)),
+                sender=event.get("sender", ""),
+                sender_display=event.get("sender_display"),
+                text=event.get("text", ""),
+                outcome="relayed",
+                timestamp=event["timestamp"],
+            )
+        except Exception as e:
+            logger.debug(f"[bridge] audit-log insert error: {e}")
+        # Fire addon hook (Phase 5).
+        for addon in self._addons:
+            try:
+                addon.on_bridged_message(event)
+            except Exception as e:
+                logger.warning(
+                    f"Addon {addon.name} on_bridged_message error: {e}"
+                )
 
     def _on_receive(self, packet, interface):
         """Handle incoming text message from the mesh."""

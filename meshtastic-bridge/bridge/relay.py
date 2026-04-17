@@ -22,6 +22,7 @@ from typing import Callable, List, Optional
 from bridge.dedup import RelayDedupCache
 from bridge.identity import format_bridged, looks_bridged
 from bridge.policy import Policy
+from bridge.rate_limit import RelayRateLimiter
 
 logger = logging.getLogger("bridge.relay")
 
@@ -62,14 +63,20 @@ class Relay:
         dedup: Optional[RelayDedupCache] = None,
         identity_fn: Optional[Callable[[str, str], str]] = None,
         on_relay: Optional[Callable[[dict], None]] = None,
+        rate_limiter: Optional[RelayRateLimiter] = None,
     ):
         self._send = send_fn
         self._policy = policy
         self._dedup = dedup if dedup is not None else RelayDedupCache()
         self._identity_fn = identity_fn
         self._on_relay = on_relay
+        # Phase 5: per-direction rate limiter. Passing None disables
+        # rate limiting — some tests and the Phase 2 integration path
+        # opt out. Production always gets a limiter from the bridge.
+        self._rate_limiter = rate_limiter
         self._relay_count = 0
         self._drop_count = 0
+        self._rate_limited_count = 0
 
     def set_policy(self, policy: Policy) -> None:
         """Hot-swap policy (for live config reloads). Thread-safe enough —
@@ -138,6 +145,23 @@ class Relay:
                 )
                 continue
 
+            # Phase 5: rate limit. Sliding window per direction+channel.
+            # Force-relay bypasses the limit — if someone is spamming
+            # !urgent, let the dedup handle noise rather than dropping
+            # the third urgent message of a real incident.
+            if (
+                self._rate_limiter is not None
+                and not force_relay
+                and not self._rate_limiter.allow(source_protocol, dest, channel)
+            ):
+                self._rate_limited_count += 1
+                self._drop_count += 1
+                logger.info(
+                    f"[bridge] rate-limited {source_protocol}->{dest} ch{channel} "
+                    f"from {sender}"
+                )
+                continue
+
             sender_display = (
                 self._identity_fn(source_protocol, sender)
                 if self._identity_fn is not None
@@ -176,9 +200,16 @@ class Relay:
         return delivered
 
     def stats(self) -> dict:
-        """Counters for the BRIDGE UI tab (Phase 3)."""
-        return {
+        """Counters for the BRIDGE UI tab (Phase 3+)."""
+        s = {
             "relayed": self._relay_count,
             "dropped": self._drop_count,
+            "rate_limited": self._rate_limited_count,
             "dedup_size": self._dedup.size(),
         }
+        if self._rate_limiter is not None:
+            max_events, window = self._rate_limiter.limits()
+            s["rate_limit_max"] = max_events
+            s["rate_limit_window_s"] = window
+            s["rate_limit_current"] = self._rate_limiter.snapshot()
+        return s

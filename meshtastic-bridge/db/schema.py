@@ -86,6 +86,22 @@ CREATE TABLE IF NOT EXISTS pack_documents (
   PRIMARY KEY (pack_id, doc_id),
   FOREIGN KEY (pack_id) REFERENCES installed_packs(pack_id)
 );
+
+CREATE TABLE IF NOT EXISTS bridge_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp REAL NOT NULL,
+  source_protocol TEXT NOT NULL,
+  dest_protocol TEXT NOT NULL,
+  channel INTEGER NOT NULL,
+  sender TEXT NOT NULL,
+  sender_display TEXT,
+  text TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('relayed', 'blocked', 'rate_limited', 'deduped', 'loop_guard')),
+  force_relay INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_bridge_events_ts ON bridge_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_bridge_events_outcome ON bridge_events(outcome, timestamp DESC);
 """
 
 

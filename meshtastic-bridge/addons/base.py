@@ -71,6 +71,29 @@ class Addon:
         """
         pass
 
+    def on_bridged_message(self, event: dict):
+        """Called after the v2 cross-protocol bridge relays a message.
+
+        This fires once per successful relay — Sentinel / Triage / Brief /
+        any custom addon can observe traffic crossing between networks
+        without having to subscribe via SSE or poll the API.
+
+        Args:
+            event: dict with keys:
+                source: str        — "meshtastic" or "meshcore"
+                dest: str          — opposite network
+                channel: int       — destination channel index
+                sender: str        — raw native id on the source network
+                sender_display: str — human-friendly name used in the prefix
+                text: str          — the relayed text (with [mt-...] prefix already applied)
+                timestamp: float   — unix time the relay happened
+
+        Default is a no-op — addons that don't care about cross-protocol
+        traffic can ignore this hook. Safe to raise — the bridge catches
+        and logs exceptions without breaking the relay path.
+        """
+        pass
+
     def on_start(self):
         """Called after the bridge is fully initialized and running."""
         pass

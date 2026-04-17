@@ -1083,6 +1083,32 @@ def api_bridge_stats():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/bridge/history", methods=["GET"])
+def api_bridge_history():
+    """Return persistent bridge-relay audit log (Phase 5 bridge_events table).
+
+    Query params: ``limit`` (default 100, max 1000), ``since`` (unix ts,
+    optional), ``outcome`` (relayed/blocked/rate_limited/etc, optional).
+    """
+    if _bridge is None or not hasattr(_bridge, "_bridge_event_store"):
+        return jsonify({"events": [], "counts": {}})
+    limit = min(int(request.args.get("limit", 100)), 1000)
+    since_raw = request.args.get("since")
+    outcome = request.args.get("outcome") or None
+    try:
+        since = float(since_raw) if since_raw else None
+    except ValueError:
+        since = None
+    try:
+        events = _bridge._bridge_event_store.recent(
+            limit=limit, outcome=outcome, since=since
+        )
+        counts = _bridge._bridge_event_store.count(since=since)
+        return jsonify({"events": events, "counts": counts})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/bridge/events", methods=["GET"])
 def api_bridge_events():
     """Return the recent bridge events (ring buffer, up to last 200).
