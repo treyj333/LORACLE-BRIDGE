@@ -512,6 +512,14 @@ From CONFIG > CONNECTION (visible when connected):
 - **REBOOT** — restart the radio device
 - **SHUTDOWN** — power off the radio (requires manual restart)
 
+### Disconnect Alerts
+
+If the radio drops off the USB/TCP/BLE connection, a **red toast alert** appears immediately at the bottom-right of the dashboard: *"⚠ RADIO DISCONNECTED — USB connection lost"*. When it comes back online, you'll see *"✓ Radio reconnected"*. The connection dot in the title bar also flips from green to grey. If the disconnection lasts more than 10 seconds, the CONNECT modal reappears so you can switch to a different transport.
+
+### Onboarding Tour
+
+First-time visitors see a **5-minute guided walkthrough** covering all dashboard features. You can replay it any time from **CONFIG > APPEARANCE > LAUNCH TOUR**. Keyboard shortcuts: `←` previous step, `→` next step, `ESC` skip.
+
 ### Channel Management
 
 CONFIG > CHANNELS shows all active radio channels with:
