@@ -2353,6 +2353,7 @@ function buildGraph(state) {
       }
       node = {
         id: nid, label: shortId, hops: hops, isChannel: isChannel, isMC: isMC,
+        birthTime: performance.now(),
         x: startX, y: startY,
         rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
         lat: pos.lat || null, lon: pos.lon || null,
@@ -2545,12 +2546,23 @@ function renderCanvas() {
       freshness = 0.25;
     }
 
+    // Entrance animation — scale up over first few seconds
+    var entrance = 1.0;
+    if (node.birthTime && !node.isSelf) {
+      var ageMs = performance.now() - node.birthTime;
+      var entranceDur = freshness > 0.5 ? 3000 : 800;
+      if (ageMs < entranceDur) {
+        var t = ageMs / entranceDur;
+        entrance = t < 0.5 ? (2 * t * t) : (1 - Math.pow(-2 * t + 2, 2) / 2);
+      }
+    }
+
     var breath = Math.sin(App.breathPhase + i * 0.7) * (0.1 + 0.2 * freshness) + 1;
     var mcColor = '#9b59b6';
     var r = node.isSelf ? 10 : (node.isChannel ? 9 : 4 + freshness * 2);
-    var baseR = r * breath;
+    var baseR = r * breath * entrance;
 
-    if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : (0.3 + 0.7 * freshness);
+    if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : ((0.3 + 0.7 * freshness) * entrance);
 
     if (node.isChannel) {
       // Channel — double ring with broadcast icon
