@@ -2296,14 +2296,18 @@ function buildGraph(state) {
     var hops = (typeof m.hops === 'number') ? m.hops : null;
     var shortId = nid.length > 8 ? nid.slice(-4) : nid;
     var isChannel = nid.indexOf('channel:') !== -1;
-    if (isChannel) shortId = 'CH ' + (nid.split(':').pop() || '0');
+    var isMC = nid.indexOf('mc:') === 0;
+    if (isChannel) {
+      var chNum = nid.split(':').pop() || '0';
+      shortId = (chNum === '0') ? 'PUBLIC' : 'CH ' + chNum;
+    }
 
     // Reuse existing position if available
     var existing = oldNodeMap[nid];
     var node;
     if (existing) {
       node = existing;
-      node.hops = hops; node.isChannel = isChannel; node.label = shortId;
+      node.hops = hops; node.isChannel = isChannel; node.isMC = isMC; node.label = shortId;
       node.rssi = m.rssi || pos.rssi || null;
       node.snr = m.snr || pos.snr || null;
       node.lat = pos.lat || null; node.lon = pos.lon || null;
@@ -2319,7 +2323,7 @@ function buildGraph(state) {
       var jitterR = baseR * scatter;
       var jitterA = angle + ((hashStr(nid + 'a') % 90) - 45) * Math.PI / 180;
       node = {
-        id: nid, label: shortId, hops: hops, isChannel: isChannel,
+        id: nid, label: shortId, hops: hops, isChannel: isChannel, isMC: isMC,
         x: cx + Math.cos(jitterA) * jitterR,
         y: cy + Math.sin(jitterA) * jitterR,
         rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
@@ -2333,35 +2337,36 @@ function buildGraph(state) {
 
   // Links — chain nodes by hop tier (realistic mesh topology)
   var links = [];
-  var tiers = {};
+  var tiers = {0: [], 1: [], 2: [], 3: [], 4: []};
+  var unknowns = [];
   nodes.forEach(function(n) {
     if (n.isSelf) return;
     var h = (n.hops !== null && n.hops >= 0) ? Math.min(n.hops, 4) : -1;
-    if (!tiers[h]) tiers[h] = [];
-    tiers[h].push(n);
+    if (h >= 0) tiers[h].push(n);
+    else unknowns.push(n);
   });
+
   // Direct nodes (hops 0-1) link to MY NODE
-  (tiers[0] || []).concat(tiers[1] || []).forEach(function(n) {
+  tiers[0].concat(tiers[1]).forEach(function(n) {
     links.push({ source: nodeMap['__self__'], target: n });
   });
-  // Higher hop tiers link to nearest node in previous tier
+
+  // Higher hop tiers link to a parent in previous tier (hash-based for stability)
   for (var tier = 2; tier <= 4; tier++) {
-    var targets = tiers[tier] || [];
-    var parents = (tier === 2) ? (tiers[0] || []).concat(tiers[1] || []) : (tiers[tier - 1] || []);
+    var parents = (tier === 2) ? tiers[0].concat(tiers[1]) : tiers[tier - 1];
     if (parents.length === 0) parents = [nodeMap['__self__']];
-    targets.forEach(function(n) {
-      var best = parents[0], bestDist = Infinity;
-      parents.forEach(function(p) {
-        var dx = n.x - p.x, dy = n.y - p.y;
-        var d = dx*dx + dy*dy;
-        if (d < bestDist) { best = p; bestDist = d; }
-      });
-      links.push({ source: best, target: n });
+    tiers[tier].forEach(function(n) {
+      var parent = parents[hashStr(n.id) % parents.length];
+      links.push({ source: parent, target: n });
     });
   }
-  // Unknown hop nodes link to MY NODE
-  (tiers[-1] || []).forEach(function(n) {
-    links.push({ source: nodeMap['__self__'], target: n });
+
+  // Unknown hop nodes — distribute among all known nodes (not just center)
+  var allKnown = tiers[0].concat(tiers[1], tiers[2], tiers[3], tiers[4]);
+  if (allKnown.length === 0) allKnown = [nodeMap['__self__']];
+  unknowns.forEach(function(n) {
+    var parent = allKnown[hashStr(n.id) % allKnown.length];
+    links.push({ source: parent, target: n });
   });
 
   App.nodes = nodes;
@@ -2487,11 +2492,12 @@ function renderCanvas() {
     var nodeActive = !isTraffic || node.isSelf || activeNodes[node.id];
     if (isTraffic && !nodeActive) ctx.globalAlpha = 0.15;
     var breath = Math.sin(App.breathPhase + i * 0.7) * 0.3 + 1;
-    var r = node.isSelf ? 10 : (node.isChannel ? 8 : 5);
+    var mcColor = '#9b59b6';
+    var r = node.isSelf ? 10 : (node.isChannel ? 12 : 5);
     var baseR = r * breath;
 
     if (node.isChannel) {
-      // Hexagon
+      // Hexagon — larger and more visible for public channels
       ctx.beginPath();
       for (var a = 0; a < 6; a++) {
         var angle = Math.PI / 3 * a - Math.PI / 6;
@@ -2500,8 +2506,11 @@ function renderCanvas() {
         if (a === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
       ctx.closePath();
-      ctx.fillStyle = accent2; ctx.fill();
-      ctx.strokeStyle = accent2; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = accent2; ctx.globalAlpha = 0.3; ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
+      // Broadcast icon inside
+      ctx.font = '500 10px "IBM Plex Mono"'; ctx.textAlign = 'center';
+      ctx.fillStyle = accent2; ctx.fillText('\u25C9', node.x, node.y + 3.5);
     } else if (node.isSelf) {
       // MY NODE — orange with sonar ring
       var sonarR = 10 + (App.breathPhase * 8 % 30);
@@ -2512,22 +2521,22 @@ function renderCanvas() {
       ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
       ctx.fillStyle = accent; ctx.fill();
     } else {
-      // Regular peer
-      // Signal halo
+      // Regular peer — purple for MeshCore, teal for Meshtastic
+      var peerColor = node.isMC ? mcColor : accent2;
       if (node.hops !== null) {
         ctx.beginPath(); ctx.arc(node.x, node.y, baseR + 6, 0, Math.PI * 2);
-        ctx.strokeStyle = accent2; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.15;
+        ctx.strokeStyle = peerColor; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.15;
         ctx.stroke(); ctx.globalAlpha = 1;
       }
       ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
-      ctx.fillStyle = accent2; ctx.fill();
+      ctx.fillStyle = peerColor; ctx.fill();
     }
 
     // Label
     ctx.font = '500 9px "IBM Plex Mono"';
     ctx.textAlign = 'center';
-    ctx.fillStyle = node.isSelf ? accent : dim;
-    ctx.fillText(node.label, node.x, node.y + baseR + 12);
+    ctx.fillStyle = node.isSelf ? accent : (node.isChannel ? accent2 : (node.isMC ? mcColor : dim));
+    ctx.fillText(node.isChannel ? '\u25C9 ' + node.label : node.label, node.x, node.y + baseR + 12);
 
     // Hop label
     if (!node.isSelf && node.hops !== null) {
