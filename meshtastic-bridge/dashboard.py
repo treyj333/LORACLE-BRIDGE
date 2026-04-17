@@ -2500,113 +2500,61 @@ function renderCanvas() {
   ctx.beginPath(); ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy + 30); ctx.stroke();
   ctx.setLineDash([]);
 
-  // Draw links — fade with target node freshness
-  var nowLinks = Date.now() / 1000;
+  // Draw links
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
-    var hops = t.hops;
-    // Link freshness matches the staler of the two endpoints
-    var tAge = (t.lastHeard && !t.isSelf && !t.isChannel) ? (nowLinks - t.lastHeard) : 0;
-    var linkFresh = Math.max(0.15, 1.0 - tAge / 3600);
     ctx.beginPath();
     ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
     var linkActive = isTraffic && (activeNodes[t.id] || false);
     ctx.strokeStyle = linkActive ? accent : (t.isMC ? '#9b59b6' : accent2);
-    ctx.lineWidth = linkActive ? 2.5 : (0.3 + linkFresh * 1.2);
-    ctx.globalAlpha = isTraffic ? (linkActive ? 0.8 : 0.06) : (0.08 + 0.25 * linkFresh);
-    if (linkFresh < 0.4) ctx.setLineDash([2, 4]);
+    ctx.lineWidth = linkActive ? 2 : 0.8;
+    ctx.globalAlpha = isTraffic ? (linkActive ? 0.7 : 0.05) : 0.25;
     ctx.stroke();
-    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
-
-    // Hop count label on the link midpoint
-    if (hops !== null && linkFresh > 0.4) {
-      var mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
-      ctx.font = '500 8px "IBM Plex Mono"';
-      ctx.textAlign = 'center';
-      ctx.globalAlpha = 0.3 + 0.5 * linkFresh;
-      ctx.fillStyle = faint;
-      ctx.fillText(hops === 0 ? 'DIRECT' : hops + 'H', mx, my - 3);
-      ctx.globalAlpha = 1;
-    }
   });
 
   // Draw nodes
   var nowSecs = Date.now() / 1000;
   App.nodes.forEach(function(node, i) {
-    var nodeActive = !isTraffic || node.isSelf || activeNodes[node.id];
-    if (isTraffic && !nodeActive) ctx.globalAlpha = 0.15;
+    ctx.globalAlpha = 1;
 
-    // Freshness: 1.0 = just heard, 0.25 = 1hr+ stale. Self/channel always fresh.
+    // Freshness: 1.0 = just heard, 0.25 = 1hr+ stale
     var freshness = 1.0;
     if (!node.isSelf && !node.isChannel && node.lastHeard) {
-      var age = nowSecs - node.lastHeard;
-      freshness = Math.max(0.25, 1.0 - age / 3600);
-    } else if (!node.isSelf && !node.isChannel && !node.lastHeard) {
+      freshness = Math.max(0.25, Math.min(1.0, 1.0 - (nowSecs - node.lastHeard) / 3600));
+    } else if (!node.isSelf && !node.isChannel) {
       freshness = 0.25;
     }
 
-    // Entrance animation — scale up over first few seconds
-    var entrance = 1.0;
-    if (node.birthTime && !node.isSelf) {
-      var ageMs = performance.now() - node.birthTime;
-      var entranceDur = freshness > 0.5 ? 3000 : 800;
-      if (ageMs < entranceDur) {
-        var t = ageMs / entranceDur;
-        entrance = t < 0.5 ? (2 * t * t) : (1 - Math.pow(-2 * t + 2, 2) / 2);
-      }
-    }
-
-    var breath = Math.sin(App.breathPhase + i * 0.7) * (0.1 + 0.2 * freshness) + 1;
     var mcColor = '#9b59b6';
-    var r = node.isSelf ? 10 : (node.isChannel ? 9 : 4 + freshness * 2);
-    var baseR = r * breath * entrance;
+    var nodeAlpha = node.isSelf || node.isChannel ? 1 : (0.3 + 0.7 * freshness);
+    if (isTraffic && !node.isSelf && !activeNodes[node.id]) nodeAlpha = 0.1;
+    var r = node.isSelf ? 8 : (node.isChannel ? 7 : Math.round(3 + freshness * 3));
 
-    if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : ((0.3 + 0.7 * freshness) * entrance);
+    ctx.globalAlpha = nodeAlpha;
 
     if (node.isChannel) {
-      // Channel — double ring with broadcast icon
-      ctx.beginPath(); ctx.arc(node.x, node.y, baseR + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = accent2; ctx.lineWidth = 1; ctx.globalAlpha = 0.3; ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = accent2; ctx.globalAlpha = 0.15;
-      ctx.fill(); ctx.globalAlpha = 1;
     } else if (node.isSelf) {
-      // MY NODE — orange with sonar ring
-      var sonarR = 10 + (App.breathPhase * 8 % 30);
-      var sonarAlpha = Math.max(0, 1 - sonarR / 40);
-      ctx.beginPath(); ctx.arc(node.x, node.y, sonarR, 0, Math.PI * 2);
-      ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.globalAlpha = sonarAlpha;
-      ctx.stroke(); ctx.globalAlpha = 1;
-      ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.fillStyle = accent; ctx.fill();
     } else {
-      // Regular peer — purple for MeshCore, teal for Meshtastic
-      var peerColor = node.isMC ? mcColor : accent2;
-      if (freshness > 0.5) {
-        ctx.beginPath(); ctx.arc(node.x, node.y, baseR + 6, 0, Math.PI * 2);
-        ctx.strokeStyle = peerColor; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.1 * freshness;
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 0.3 + 0.7 * freshness;
-      ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
-      ctx.fillStyle = peerColor; ctx.fill();
+      ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = node.isMC ? mcColor : accent2; ctx.fill();
     }
 
-    // Label — fades with freshness
-    ctx.globalAlpha = node.isSelf || node.isChannel ? 1 : (0.3 + 0.7 * freshness);
+    // Label
     ctx.font = '500 9px "IBM Plex Mono"';
     ctx.textAlign = 'center';
     ctx.fillStyle = node.isSelf ? accent : (node.isChannel ? accent2 : (node.isMC ? mcColor : dim));
-    ctx.fillText(node.isChannel ? '\u25C9 ' + node.label : node.label, node.x, node.y + baseR + 12);
+    ctx.fillText(node.isChannel ? '\u25C9 ' + node.label : node.label, node.x, node.y + r + 12);
 
     // Hop label
     if (!node.isSelf && node.hops !== null) {
       ctx.font = '400 8px "IBM Plex Mono"';
       ctx.fillStyle = faint;
-      ctx.fillText(node.hops === 0 ? 'direct' : node.hops + 'h', node.x, node.y + baseR + 21);
+      ctx.fillText(node.hops === 0 ? 'direct' : node.hops + 'h', node.x, node.y + r + 21);
     }
 
     // Selected highlight
@@ -2619,15 +2567,17 @@ function renderCanvas() {
     if (!node.isSelf && App.state && App.state.device_metrics) {
       var ndm = App.state.device_metrics[node.id];
       if (ndm && ndm.battery !== undefined && ndm.battery <= 20) {
-        ctx.beginPath(); ctx.arc(node.x - baseR - 2, node.y - baseR - 2, 3, 0, Math.PI * 2);
+        ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(node.x - r - 2, node.y - r - 2, 3, 0, Math.PI * 2);
         ctx.fillStyle = '#c0392b'; ctx.fill();
       }
     }
 
     // Unread badge
     if (!node.isSelf && App.unreadCounts[node.id] > 0) {
+      ctx.globalAlpha = 1;
       var uc = App.unreadCounts[node.id];
-      var bx = node.x + baseR + 2, by = node.y - baseR - 2;
+      var bx = node.x + r + 2, by = node.y - r - 2;
       ctx.beginPath(); ctx.arc(bx, by, 6, 0, Math.PI * 2);
       ctx.fillStyle = accent; ctx.fill();
       ctx.font = '500 7px "IBM Plex Mono"';
