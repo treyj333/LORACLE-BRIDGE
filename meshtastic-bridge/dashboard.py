@@ -2635,6 +2635,8 @@ async function refreshNodes() {
 // ─── Init ──────────────────────────────────────────────────────────────────
 
 initCanvas();
+// Always show connect modal on load — poll will auto-hide if connected
+showConnectModal();
 poll();
 setInterval(poll, 2000);
 </script>
