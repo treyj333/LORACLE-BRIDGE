@@ -2363,72 +2363,62 @@ function buildGraph(state) {
     nodeMap[nid] = node;
   });
 
-  // Links — GPS-proximity chains
-  // Each node links to the closest node with fewer hops (or closest GPS neighbor)
+  // Links — tree topology, one parent per node
+  // Strategy: sort all peers by hop count, link each to the single
+  // geographically closest node that's already linked (fewer hops preferred).
+  // This builds a clean tree with no crossing — O(n log n) via pre-sorted arrays.
   var links = [];
-  function gpsDist(a, b) {
+  var linked = {'__self__': true};
+  var linkedList = [nodeMap['__self__']];
+
+  function gpsDeg(a, b) {
     if (!a.lat || !b.lat) return Infinity;
     var dlat = a.lat - b.lat, dlon = a.lon - b.lon;
-    return Math.sqrt(dlat * dlat + dlon * dlon);
+    return dlat * dlat + dlon * dlon;
   }
-  var linked = {};
-  // Sort by hops (known first, direct first) then unknowns
-  var sorted = nodes.filter(function(n) { return !n.isSelf && !n.isChannel; }).sort(function(a, b) {
-    var ha = (a.hops !== null) ? a.hops : 99;
-    var hb = (b.hops !== null) ? b.hops : 99;
+
+  // Sort peers: known hops first (ascending), unknowns last
+  var peers = nodes.filter(function(n) { return !n.isSelf && !n.isChannel; });
+  peers.sort(function(a, b) {
+    var ha = (a.hops !== null) ? a.hops : 999;
+    var hb = (b.hops !== null) ? b.hops : 999;
     return ha - hb;
   });
 
-  sorted.forEach(function(n) {
-    // Direct nodes link to self
-    if (n.hops !== null && n.hops <= 1) {
-      links.push({ source: nodeMap['__self__'], target: n, gpsDist: 0 });
-      linked[n.id] = true;
-      return;
-    }
-    // Find best parent: closest GPS node with fewer hops (or any linked node)
-    var best = null, bestDist = Infinity;
-    var candidates = [nodeMap['__self__']];
-    sorted.forEach(function(c) {
-      if (c.id === n.id || !linked[c.id]) return;
-      if (n.hops !== null && c.hops !== null && c.hops >= n.hops) return;
-      candidates.push(c);
+  peers.forEach(function(n) {
+    var best = nodeMap['__self__'], bestScore = Infinity;
+    // Only check the last 20 linked nodes (nearest in link order = closest hops)
+    var check = linkedList.slice(-20);
+    check.forEach(function(c) {
+      var d = gpsDeg(n, c);
+      if (d < bestScore) { best = c; bestScore = d; }
     });
-    candidates.forEach(function(c) {
-      var d = gpsDist(n, c);
-      if (d < bestDist) { best = c; bestDist = d; }
-    });
-    // No GPS match — use hash-based assignment among linked nodes
-    if (!best || bestDist === Infinity) {
-      var pool = Object.keys(linked).map(function(id) { return nodeMap[id]; }).filter(Boolean);
-      if (pool.length > 0) best = pool[hashStr(n.id) % pool.length];
-      else best = nodeMap['__self__'];
+    // No GPS on either side — hash-assign to a linked node
+    if (bestScore === Infinity) {
+      best = linkedList[hashStr(n.id) % linkedList.length];
     }
-    links.push({ source: best, target: n, gpsDist: bestDist });
+    links.push({ source: best, target: n });
     linked[n.id] = true;
+    linkedList.push(n);
   });
 
-  // Channels link to self
+  // Channels link to MY NODE
   nodes.forEach(function(n) {
-    if (n.isChannel) links.push({ source: nodeMap['__self__'], target: n, gpsDist: 0 });
+    if (n.isChannel) links.push({ source: nodeMap['__self__'], target: n });
   });
 
   App.nodes = nodes;
   App.links = links;
 
-  // Rebuild simulation — link distance proportional to GPS distance
+  // Rebuild simulation — uniform short link distance for clean tree
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
-    .force('charge', d3.forceManyBody().strength(-100))
+    .force('charge', d3.forceManyBody().strength(-60).distanceMax(300))
     .force('center', d3.forceCenter(cx, cy).strength(0.02))
-    .force('link', d3.forceLink(links).distance(function(l) {
-      if (l.gpsDist === 0 || l.gpsDist === Infinity) return 100;
-      // Scale GPS degrees to pixels (0.001° ≈ ~110m → ~60px)
-      return Math.max(50, Math.min(200, l.gpsDist * 60000));
-    }).strength(0.3))
-    .force('collision', d3.forceCollide(40))
+    .force('link', d3.forceLink(links).distance(60).strength(0.4))
+    .force('collision', d3.forceCollide(25))
     .alphaDecay(0.04)
-    .velocityDecay(0.45)
+    .velocityDecay(0.5)
     .on('tick', function() {});
 }
 
@@ -2553,13 +2543,14 @@ function renderCanvas() {
 
     var breath = Math.sin(App.breathPhase + i * 0.7) * (0.1 + 0.2 * freshness) + 1;
     var mcColor = '#9b59b6';
-    var r = node.isSelf ? 10 : (node.isChannel ? 12 : 4 + freshness * 2);
+    var r = node.isSelf ? 10 : (node.isChannel ? 9 : 4 + freshness * 2);
     var baseR = r * breath;
 
     if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : (0.3 + 0.7 * freshness);
 
     if (node.isChannel) {
-      // Hexagon — larger and more visible for public channels
+      // Hexagon — public channels
+      ctx.save();
       ctx.beginPath();
       for (var a = 0; a < 6; a++) {
         var angle = Math.PI / 3 * a - Math.PI / 6;
@@ -2568,10 +2559,11 @@ function renderCanvas() {
         if (a === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
       ctx.closePath();
-      ctx.fillStyle = accent2; ctx.globalAlpha = 0.3; ctx.fill();
-      ctx.globalAlpha = 1; ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
-      ctx.font = '500 10px "IBM Plex Mono"'; ctx.textAlign = 'center';
-      ctx.fillStyle = accent2; ctx.fillText('\u25C9', node.x, node.y + 3.5);
+      ctx.globalAlpha = 0.2; ctx.fillStyle = accent2; ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = accent2; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.font = '500 9px "IBM Plex Mono"'; ctx.textAlign = 'center';
+      ctx.fillStyle = accent2; ctx.fillText('\u25C9', node.x, node.y + 3);
+      ctx.restore();
     } else if (node.isSelf) {
       // MY NODE — orange with sonar ring
       var sonarR = 10 + (App.breathPhase * 8 % 30);
