@@ -2505,39 +2505,58 @@ function renderCanvas() {
   ctx.beginPath(); ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy + 30); ctx.stroke();
   ctx.setLineDash([]);
 
-  // Draw links with hop labels
+  // Draw links — fade with target node freshness
+  var nowLinks = Date.now() / 1000;
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
     var hops = t.hops;
+    // Link freshness matches the staler of the two endpoints
+    var tAge = (t.lastHeard && !t.isSelf && !t.isChannel) ? (nowLinks - t.lastHeard) : 0;
+    var linkFresh = Math.max(0.15, 1.0 - tAge / 3600);
     ctx.beginPath();
     ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
     var linkActive = isTraffic && (activeNodes[t.id] || false);
-    ctx.strokeStyle = linkActive ? accent : accent2;
-    ctx.lineWidth = linkActive ? 2.5 : (hops === 0 ? 2 : (hops !== null && hops <= 2 ? 1 : 0.5));
-    ctx.globalAlpha = isTraffic ? (linkActive ? 0.8 : 0.08) : 0.3;
-    if (hops !== null && hops > 2) { ctx.setLineDash([3, 5]); }
+    ctx.strokeStyle = linkActive ? accent : (t.isMC ? '#9b59b6' : accent2);
+    ctx.lineWidth = linkActive ? 2.5 : (0.3 + linkFresh * 1.2);
+    ctx.globalAlpha = isTraffic ? (linkActive ? 0.8 : 0.06) : (0.08 + 0.25 * linkFresh);
+    if (linkFresh < 0.4) ctx.setLineDash([2, 4]);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
     // Hop count label on the link midpoint
-    if (hops !== null) {
+    if (hops !== null && linkFresh > 0.4) {
       var mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
       ctx.font = '500 8px "IBM Plex Mono"';
       ctx.textAlign = 'center';
+      ctx.globalAlpha = 0.3 + 0.5 * linkFresh;
       ctx.fillStyle = faint;
       ctx.fillText(hops === 0 ? 'DIRECT' : hops + 'H', mx, my - 3);
+      ctx.globalAlpha = 1;
     }
   });
 
   // Draw nodes
+  var nowSecs = Date.now() / 1000;
   App.nodes.forEach(function(node, i) {
     var nodeActive = !isTraffic || node.isSelf || activeNodes[node.id];
     if (isTraffic && !nodeActive) ctx.globalAlpha = 0.15;
-    var breath = Math.sin(App.breathPhase + i * 0.7) * 0.3 + 1;
+
+    // Freshness: 1.0 = just heard, 0.25 = 1hr+ stale. Self/channel always fresh.
+    var freshness = 1.0;
+    if (!node.isSelf && !node.isChannel && node.lastHeard) {
+      var age = nowSecs - node.lastHeard;
+      freshness = Math.max(0.25, 1.0 - age / 3600);
+    } else if (!node.isSelf && !node.isChannel && !node.lastHeard) {
+      freshness = 0.25;
+    }
+
+    var breath = Math.sin(App.breathPhase + i * 0.7) * (0.1 + 0.2 * freshness) + 1;
     var mcColor = '#9b59b6';
-    var r = node.isSelf ? 10 : (node.isChannel ? 12 : 5);
+    var r = node.isSelf ? 10 : (node.isChannel ? 12 : 4 + freshness * 2);
     var baseR = r * breath;
+
+    if (!node.isSelf && !node.isChannel) ctx.globalAlpha = (isTraffic && !nodeActive) ? 0.1 : (0.3 + 0.7 * freshness);
 
     if (node.isChannel) {
       // Hexagon — larger and more visible for public channels
@@ -2551,7 +2570,6 @@ function renderCanvas() {
       ctx.closePath();
       ctx.fillStyle = accent2; ctx.globalAlpha = 0.3; ctx.fill();
       ctx.globalAlpha = 1; ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
-      // Broadcast icon inside
       ctx.font = '500 10px "IBM Plex Mono"'; ctx.textAlign = 'center';
       ctx.fillStyle = accent2; ctx.fillText('\u25C9', node.x, node.y + 3.5);
     } else if (node.isSelf) {
@@ -2566,16 +2584,18 @@ function renderCanvas() {
     } else {
       // Regular peer — purple for MeshCore, teal for Meshtastic
       var peerColor = node.isMC ? mcColor : accent2;
-      if (node.hops !== null) {
+      if (freshness > 0.5) {
         ctx.beginPath(); ctx.arc(node.x, node.y, baseR + 6, 0, Math.PI * 2);
-        ctx.strokeStyle = peerColor; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.15;
-        ctx.stroke(); ctx.globalAlpha = 1;
+        ctx.strokeStyle = peerColor; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.1 * freshness;
+        ctx.stroke();
       }
+      ctx.globalAlpha = 0.3 + 0.7 * freshness;
       ctx.beginPath(); ctx.arc(node.x, node.y, baseR, 0, Math.PI * 2);
       ctx.fillStyle = peerColor; ctx.fill();
     }
 
-    // Label
+    // Label — fades with freshness
+    ctx.globalAlpha = node.isSelf || node.isChannel ? 1 : (0.3 + 0.7 * freshness);
     ctx.font = '500 9px "IBM Plex Mono"';
     ctx.textAlign = 'center';
     ctx.fillStyle = node.isSelf ? accent : (node.isChannel ? accent2 : (node.isMC ? mcColor : dim));
