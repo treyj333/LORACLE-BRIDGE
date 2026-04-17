@@ -4,6 +4,32 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 16:30] — LORACLE Bridge v2 Phase 1: dual-radio Meshtastic + MeshCore (software-complete)
+
+- What changed:
+  - **New source-of-truth document**: `LORACLE_BRIDGE_V2_FSD.md` at worktree root — living coordination file with phased plan, decisions log, progress log, and explicit "update on every change" instructions for agents across context windows. Scope: keep LORACLE's UI + AI layer; add MeshCore bridging like AkitaBridge but AI-enhanced. Decisions locked for v2: per-channel allowlist bridge policy (AI-gated as upgrade in Phase 4), branch not fork, rely on upstream `meshcore` lib over porting Akita's serial variants.
+  - **Protocol parameterization in `standalone_bridge.py`**: 9 hardcoded `protocol="meshtastic"` strings and 3 hardcoded `f"meshtastic:channel:{channel}"` format strings replaced with a local/unpacked `protocol` variable. `_on_receive`, `_load_nodedb_positions`, and `_processing_loop` all derive protocol dynamically. `_request_queue` payload extended to 5-tuple `(protocol, sender, text, channel, is_dm)` so the processing loop knows which network to route a reply through.
+  - **`--second-radio` now actually wired**: module-level `_parse_second_radio(spec)` helper supports `meshcore:serial:/dev/ttyUSB1`, `meshcore:tcp:HOST[:PORT]`, `meshcore:ble:[ADDR]`. `StandaloneBridge.__init__` accepts `second_radio` param and stores parsed config; `main()` passes `args.second_radio` through; `start()` spawns a background connect thread + ingest thread when a valid config is present. (Previously the flag was only saved to settings and did nothing.)
+  - **New `_persist_incoming` helper method** (protocol-agnostic SQLite DB writes) extracted from `_on_receive` — shared between the Meshtastic pubsub path and the new MeshCore ingest loop. Single DB-write path across both networks.
+  - **New `_connect_secondary_radio` method**: constructs `MeshCoreBackend` from the parsed config and registers via `_radio_manager.add_backend()`. Import-guarded against missing `meshcore` lib (logs warning, no-op), exception-guarded for connection failures (logs error, bridge continues on primary radio).
+  - **New `_secondary_radio_ingest_loop` method**: drains `_radio_manager.get_message()` queue, converts `Protocol` enum (`"mc"`) to DB name (`"meshcore"`) via new `_PROTOCOL_SHORT_TO_DB` dict, rate-limits, persists via `_persist_incoming`, notifies addons, and enqueues onto the shared `_request_queue`. Skips meshtastic-tagged messages to avoid double-persist (pubsub path owns those).
+  - **Protocol-aware send path**: `_send_raw` / `_send_response` accept `protocol="meshtastic"` parameter. When `"meshcore"`, routes via `_radio_manager.send(f"mc:{node_id}", …)` instead of `self.interface`. MeshCore sends use simple truncation at `MAX_LORA_TEXT` for Phase 1 — no paging / `!more` (Phase 2 defers). All 4 send call sites in `_processing_loop` pass protocol from the queue unpack.
+  - **UI protocol badge**: `renderNodeList` in `dashboard.py` carries `isMC` through item mapping and renders a small purple `mc` badge next to MeshCore contacts. Meshtastic is the default (no badge = less visual clutter). New CSS classes `.lo-ns-proto` / `.lo-ns-proto-mc`.
+  - **9 new unit tests** for `_parse_second_radio` covering valid serial/TCP/BLE specs, default ports, malformed inputs, unsupported primary protocol. 198/198 tests pass.
+  - **README.md**: expanded "Supported Protocols" section with dual-radio usage examples (serial / TCP / BLE), Phase 1 limitation callouts (no cross-network bridging yet, truncation instead of paging on MeshCore, best-effort addon compat), and pointer to the FSD for the v2 roadmap.
+- Why:
+  - User reviewed an initial scoping analysis comparing LORACLE's architecture to AkitaBridge and asked for a concrete plan for a v2 that keeps LORACLE's UI + AI layer but adds Meshtastic ⇄ MeshCore bridging. The pitch: a dumb bridge is Akita — an AI-gated cross-protocol mesh relay is meaningfully differentiated for the defense-tech portfolio narrative (Anduril / Palantir / SOCOM). Audit revealed LORACLE was already ~90% there — `RadioManager` + `MeshCoreBackend` + multi-protocol DB schema already existed but `RadioManager` was deliberately disconnected (see the now-deprecated comment at standalone_bridge.py:338-341 warning against fighting with the proven `_radio_connection_loop`). Phase 1 wires the second backend through without disturbing the primary Meshtastic pubsub path; Phase 2 (deferred) adds the actual cross-network relay and policy layer.
+- Impact on project goals:
+  - LORACLE now runs as a true dual-backend bridge. Operators on Meshtastic and MeshCore networks can send DMs and channel messages to the same AI, with both persisted in the same SQLite, surfaced through the same dashboard, and visually distinguishable via the `mc` badge. This is the foundation for v2 Phase 2 (cross-protocol relay) and Phase 4 (AI-gated bridging — the differentiator). Zero behavior change when `--second-radio` is not provided: the existing Meshtastic-only path is identical to v1. The `LORACLE_BRIDGE_V2_FSD.md` gives any future agent (or a fresh context window) a clear picture of what's done, what's next, and what design decisions were locked in — so v2 development can continue without re-deriving context.
+- Files modified:
+  - `LORACLE_BRIDGE_V2_FSD.md` — new file (worktree root)
+  - `meshtastic-bridge/standalone_bridge.py` — protocol parameterization, `_parse_second_radio`, `_persist_incoming`, `_connect_secondary_radio`, `_secondary_radio_ingest_loop`, protocol-aware send methods, `second_radio` init param, main() wiring
+  - `meshtastic-bridge/dashboard.py` — `mc` badge in `renderNodeList`, CSS classes for protocol badge
+  - `meshtastic-bridge/tests/test_bridge_data_structures.py` — 9 new unit tests for `_parse_second_radio`
+  - `README.md` — dual-radio section with usage examples + Phase 1 limitations
+
+---
+
 ## [2026-04-17 14:00] — Node-population fix + AI chat tab + send status + livelier sim + HTML docs
 
 - What changed:

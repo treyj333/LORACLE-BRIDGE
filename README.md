@@ -196,17 +196,34 @@ LORACLE Bridge supports two mesh radio protocols:
 | Protocol | Library | Radios | Status |
 |----------|---------|--------|--------|
 | **Meshtastic** | `meshtastic>=2.3.0` | T-Beam, Heltec, RAK, etc. | Full support (serial, TCP, BLE) |
-| **MeshCore** | `meshcore>=2.2.1` | MeshCore companion devices | DM support (serial, TCP, BLE). Requires Python 3.10+. |
+| **MeshCore** | `meshcore>=2.2.1` | MeshCore companion devices | Secondary-radio support via `--second-radio` (serial, TCP, BLE). Requires Python 3.10+. |
 
-You can run **both simultaneously** with `--second-radio`:
+### Dual-Radio Mode (LORACLE v2)
+
+You can run **both radios simultaneously** — Meshtastic as the primary and MeshCore as a secondary — by passing `--second-radio`:
 
 ```bash
+# Meshtastic on /dev/ttyUSB0 + MeshCore on /dev/ttyUSB1 (serial)
 ./mesh-llm.sh --second-radio meshcore:serial:/dev/ttyUSB1
+
+# Or MeshCore over TCP
+./mesh-llm.sh --second-radio meshcore:tcp:192.168.1.50:4000
+
+# Or MeshCore over BLE
+./mesh-llm.sh --second-radio meshcore:ble:AA:BB:CC:DD:EE:FF
 ```
 
-New CLI flags:
-- `--protocol <auto|meshtastic|meshcore>` — override protocol detection for the primary radio
-- `--second-radio protocol:transport:params` — connect a second radio
+Messages from both networks land in the same dashboard. The node list shows an `mc` badge next to MeshCore contacts so you can tell them apart.
+
+**Current Phase 1 limitations** (see `LORACLE_BRIDGE_V2_FSD.md` for the full roadmap):
+
+- **No cross-network bridging yet** — a message on Meshtastic does *not* relay to MeshCore (that's Phase 2). v1 is multi-backend only.
+- **MeshCore sends truncate** at the Meshtastic byte budget (233 bytes) — no `!more` paging yet.
+- **Addon compatibility** on MeshCore messages is best-effort; addons written for Meshtastic packet dicts may log warnings.
+
+CLI flags:
+- `--protocol <auto|meshtastic|meshcore>` — primary-radio protocol detection
+- `--second-radio protocol:transport:params` — connect a second radio (see examples above)
 - `--ai-replies <on|off>` — toggle AI auto-replies globally
 
 ---

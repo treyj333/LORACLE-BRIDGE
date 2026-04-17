@@ -1858,6 +1858,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-ns-row .lo-ns-hops { color: var(--lo-faint); font-size: 9px; }
 .lo-ns-row .lo-ns-heard { color: var(--lo-faint); font-size: 9px; }
 .lo-ns-row .lo-ns-badge { background: var(--lo-accent); color: var(--lo-bg); font-size: 8px; font-weight: 500; padding: 1px 4px; min-width: 14px; text-align: center; }
+.lo-ns-proto { display: inline-block; font-size: 8px; font-weight: 600; padding: 1px 4px; margin-right: 4px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: baseline; }
+.lo-ns-proto-mc { background: #9b59b6; color: #fff; }
 
 /* ── Onboarding ───────────────────────────────────────────────────────────── */
 .lo-onboarding { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; }
@@ -3862,7 +3864,7 @@ function renderNodeList() {
     if (filter && n.label.toLowerCase().indexOf(filter) === -1 && n.id.toLowerCase().indexOf(filter) === -1) return false;
     return true;
   }).map(function(n) {
-    return { id: n.id, label: n.label, hops: n.hops, lastHeard: n.lastHeard || 0, unread: App.unreadCounts[n.id] || 0, isFavorite: !!n.isFavorite };
+    return { id: n.id, label: n.label, hops: n.hops, lastHeard: n.lastHeard || 0, unread: App.unreadCounts[n.id] || 0, isFavorite: !!n.isFavorite, isMC: !!n.isMC };
   });
   items.sort(function(a, b) {
     // Favorites always float to the top within the chosen sort
@@ -3877,8 +3879,10 @@ function renderNodeList() {
     var heard = n.lastHeard ? relativeTime(n.lastHeard) : '--';
     var badge = n.unread > 0 ? '<span class="lo-ns-badge">' + n.unread + '</span>' : '';
     var star = n.isFavorite ? '<span style="color:#f1c40f;margin-right:3px">\u2605</span>' : '';
+    // Protocol badge — only show for MeshCore; Meshtastic is the default (no badge = less clutter)
+    var protoTag = n.isMC ? '<span class="lo-ns-proto lo-ns-proto-mc" title="MeshCore">mc</span>' : '';
     return '<div class="lo-ns-row" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(n.id) + '\'}))">' +
-      '<span class="lo-ns-name">' + star + escapeHtml(n.label) + '</span>' +
+      '<span class="lo-ns-name">' + star + protoTag + escapeHtml(n.label) + '</span>' +
       '<span class="lo-ns-hops">' + hops + '</span>' +
       '<span class="lo-ns-heard">' + heard + '</span>' +
       badge + '</div>';
