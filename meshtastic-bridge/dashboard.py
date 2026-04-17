@@ -1655,7 +1655,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div class="lo-section-body">
       <div class="lo-form-row">
         <span class="lo-form-label">MAX LENGTH</span>
-        <input type="range" id="cfg-max-len" min="50" max="1000" value="200" oninput="document.getElementById('cfg-max-len-val').textContent=this.value" style="flex:1">
+        <input type="range" id="cfg-max-len" min="50" max="1000" value="200" oninput="document.getElementById('cfg-max-len-val').textContent=this.value;markConfigDirty()" style="flex:1">
         <span class="lo-form-hint" id="cfg-max-len-val">200</span>
       </div>
       <div class="lo-form-row">
@@ -1665,7 +1665,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div class="lo-form-row" style="align-items:flex-start">
         <span class="lo-form-label">SYSTEM PROMPT</span>
         <div class="lo-form-control">
-          <textarea id="cfg-prompt" rows="4"></textarea>
+          <textarea id="cfg-prompt" rows="4" oninput="markConfigDirty()"></textarea>
           <div style="display:flex;justify-content:space-between;margin-top:4px">
             <span style="font-size:10px;color:var(--lo-faint)" id="cfg-prompt-count"></span>
             <button class="btn btn-sm" onclick="cfgSavePrompt()">SAVE PROMPT</button>
@@ -1680,7 +1680,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <details class="lo-section">
     <summary class="lo-section-head">KNOWLEDGE BASE</summary>
     <div class="lo-section-body">
-      <div class="lo-form-row"><span class="lo-form-label">RAG</span><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-rag-toggle" onchange="cfgToggleRag(this.checked)"> Enabled</label><span class="lo-form-hint" id="cfg-rag-stats"></span></div>
+      <div class="lo-form-row"><span class="lo-form-label">RAG</span><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-rag-toggle" checked onchange="cfgToggleRag(this.checked)"> Enabled</label><span class="lo-form-hint" id="cfg-rag-stats"></span></div>
       <div class="lo-form-row"><span class="lo-form-label">ADD URL</span><div class="lo-form-control"><div style="display:flex;gap:4px"><input type="url" id="cfg-url-input" placeholder="https://..."><button class="btn btn-sm" onclick="cfgIngestUrl()">INGEST</button></div><div id="cfg-url-status" style="font-size:10px;margin-top:4px"></div></div></div>
       <div class="lo-form-row"><span class="lo-form-label">UPLOAD FILE</span><input type="file" id="cfg-file-upload" onchange="cfgUploadFile()" style="font-size:11px"></div>
       <div class="lo-form-row" style="align-items:flex-start"><span class="lo-form-label">DOCUMENTS</span><div class="lo-form-control" id="cfg-rag-docs"><span style="color:var(--lo-faint)">Loading...</span></div></div>
@@ -1909,7 +1909,16 @@ function setTheme(theme) { document.documentElement.setAttribute('data-theme', t
 
 // ─── View Switching ────────────────────────────────────────────────────────
 
+var _configDirty = false;
+
+function markConfigDirty() { _configDirty = true; }
+
 function setView(view) {
+  // Warn if leaving CONFIG with unsaved changes
+  if (App.view === 'config' && view !== 'config' && _configDirty) {
+    if (!confirm('You have unsaved changes in CONFIG. Leave without applying?')) return;
+    _configDirty = false;
+  }
   App.view = view;
   document.querySelectorAll('.lo-filters button').forEach(function(b) { b.classList.toggle('active', b.dataset.view === view); });
   document.getElementById('canvas-wrap').style.display = (view === 'config') ? 'none' : '';
@@ -2089,6 +2098,16 @@ function renderCanvas() {
   ctx.clearRect(0, 0, w, h);
 
   var cx = w/2, cy = h/2;
+  var isTraffic = App.view === 'traffic';
+
+  // In TRAFFIC mode, build a set of node IDs with recent messages
+  var activeNodes = {};
+  if (isTraffic && App.state && App.state.messages) {
+    var now = Date.now() / 1000;
+    App.state.messages.forEach(function(m) {
+      if (now - m.ts < 300) activeNodes[m.node] = true; // last 5 min
+    });
+  }
 
   // Draw hop rings
   ctx.strokeStyle = divider;
@@ -2107,9 +2126,10 @@ function renderCanvas() {
     var hops = t.hops;
     ctx.beginPath();
     ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
-    ctx.strokeStyle = accent2;
-    ctx.lineWidth = hops === 0 ? 2 : (hops !== null && hops <= 2 ? 1 : 0.5);
-    ctx.globalAlpha = 0.3;
+    var linkActive = isTraffic && (activeNodes[t.id] || false);
+    ctx.strokeStyle = linkActive ? accent : accent2;
+    ctx.lineWidth = linkActive ? 2.5 : (hops === 0 ? 2 : (hops !== null && hops <= 2 ? 1 : 0.5));
+    ctx.globalAlpha = isTraffic ? (linkActive ? 0.8 : 0.08) : 0.3;
     if (hops !== null && hops > 2) { ctx.setLineDash([3, 5]); }
     ctx.stroke();
     ctx.setLineDash([]);
@@ -2127,6 +2147,8 @@ function renderCanvas() {
 
   // Draw nodes
   App.nodes.forEach(function(node, i) {
+    var nodeActive = !isTraffic || node.isSelf || activeNodes[node.id];
+    if (isTraffic && !nodeActive) ctx.globalAlpha = 0.15;
     var breath = Math.sin(App.breathPhase + i * 0.7) * 0.3 + 1;
     var r = node.isSelf ? 10 : (node.isChannel ? 8 : 5);
     var baseR = r * breath;
@@ -2183,6 +2205,7 @@ function renderCanvas() {
       ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.stroke(); ctx.setLineDash([]);
     }
+    ctx.globalAlpha = 1; // reset after each node
   });
 }
 
@@ -2519,8 +2542,8 @@ async function cfgRefreshModels() {
   document.getElementById('cfg-model-cur').textContent = d.current;
 }
 async function cfgSwitchModel() { var m = document.getElementById('cfg-model-sel').value; var d = await callApi('POST', '/api/model', {model: m}); if (d && d.ok) { showToast('Model: ' + d.model); cfgRefreshModels(); } }
-async function cfgSavePrompt() { var d = await callApi('POST', '/api/system-prompt', {prompt: document.getElementById('cfg-prompt').value}); if (d && d.ok) showToast('Prompt saved'); }
-async function cfgApplySettings() { var d = await callApi('POST', '/api/config', { max_response_length: parseInt(document.getElementById('cfg-max-len').value), compression_enabled: document.getElementById('cfg-compression').checked }); if (d && d.ok) showToast('Settings applied'); }
+async function cfgSavePrompt() { var d = await callApi('POST', '/api/system-prompt', {prompt: document.getElementById('cfg-prompt').value}); if (d && d.ok) { showToast('Prompt saved'); _configDirty = false; } }
+async function cfgApplySettings() { var d = await callApi('POST', '/api/config', { max_response_length: parseInt(document.getElementById('cfg-max-len').value), compression_enabled: document.getElementById('cfg-compression').checked }); if (d && d.ok) { showToast('Settings applied'); _configDirty = false; } }
 async function cfgToggleAiReplies(on) { await callApi('POST', '/api/ai-replies', {enabled: on}); }
 async function cfgToggleRag(on) { await callApi('POST', '/api/rag/toggle', {enabled: on}); }
 async function cfgIngestUrl() { var url = document.getElementById('cfg-url-input').value.trim(); if (!url) return; var st = document.getElementById('cfg-url-status'); st.textContent = 'Fetching...'; var d = await callApi('POST', '/api/rag/ingest-url', {url: url}); if (d && d.ok) { st.innerHTML = '<span style="color:var(--lo-accent-2)">\u2713 ' + escapeHtml(d.filename) + '</span>'; document.getElementById('cfg-url-input').value = ''; cfgLoadRagDocs(); } else { st.innerHTML = '<span style="color:#c0392b">Error</span>'; } }
@@ -2535,7 +2558,7 @@ async function cfgClearAllMessages() { if (!confirm('Delete ALL messages? This c
 async function cfgFactoryReset() { if (!confirm('FACTORY RESET\\n\\nErase all data? CONTEXT FILES/ preserved.\\n\\nRestart required after reset.')) return; if (!confirm('Are you sure?')) return; var d = await callApi('POST', '/api/factory-reset'); if (d && d.ok) showToast('Reset complete. Restart the bridge.'); cfgLoadDbStats(); }
 async function cfgLoadRouting() { try { var d = await callApi('GET', '/api/routing/config'); if (!d) return; document.getElementById('cfg-routing-auto').checked = d.auto_enabled !== false; document.getElementById('cfg-routing-tag').checked = d.show_tier_tag !== false; if (d.tiers) { if (d.tiers.tiny) { document.getElementById('cfg-tier-tiny').value = d.tiers.tiny.model; document.getElementById('cfg-tier-tiny-on').checked = d.tiers.tiny.enabled; } if (d.tiers.std) { document.getElementById('cfg-tier-std').value = d.tiers.std.model; document.getElementById('cfg-tier-std-on').checked = d.tiers.std.enabled; } if (d.tiers.big) { document.getElementById('cfg-tier-big').value = d.tiers.big.model; document.getElementById('cfg-tier-big-on').checked = d.tiers.big.enabled; } } } catch(e) {} }
 async function cfgSetRouting(key, val) { var p = {}; if (key === 'auto') p.auto_enabled = val; if (key === 'tag') p.show_tier_tag = val; await callApi('POST', '/api/routing/config', p); }
-async function cfgSaveTiers() { var t = { tiny: {model: document.getElementById('cfg-tier-tiny').value, enabled: document.getElementById('cfg-tier-tiny-on').checked}, std: {model: document.getElementById('cfg-tier-std').value, enabled: document.getElementById('cfg-tier-std-on').checked}, big: {model: document.getElementById('cfg-tier-big').value, enabled: document.getElementById('cfg-tier-big-on').checked} }; var d = await callApi('POST', '/api/routing/config', {tiers: t}); if (d && d.ok) showToast('Tiers saved'); }
+async function cfgSaveTiers() { var t = { tiny: {model: document.getElementById('cfg-tier-tiny').value, enabled: document.getElementById('cfg-tier-tiny-on').checked}, std: {model: document.getElementById('cfg-tier-std').value, enabled: document.getElementById('cfg-tier-std-on').checked}, big: {model: document.getElementById('cfg-tier-big').value, enabled: document.getElementById('cfg-tier-big-on').checked} }; var d = await callApi('POST', '/api/routing/config', {tiers: t}); if (d && d.ok) { showToast('Tiers saved'); _configDirty = false; } }
 var _classifierTimer = null;
 function cfgTestClassifier(q) { clearTimeout(_classifierTimer); var el = document.getElementById('cfg-test-result'); if (!q.trim()) { el.textContent = ''; return; } _classifierTimer = setTimeout(async function() { var d = await callApi('POST', '/api/routing/classify', {query: q}); if (d) el.textContent = 'Route: [' + d.tier.toUpperCase() + '] \u00b7 model: ' + d.model; }, 200); }
 async function cfgLoadPacks() { try { var d = await callApi('GET', '/api/packs'); if (!d || !d.packs) return; var el = document.getElementById('cfg-packs-list'); el.innerHTML = d.packs.map(function(p) { var st = p.installed ? '<span style="color:var(--lo-accent-2)">INSTALLED</span>' : '<span style="color:var(--lo-faint)">NOT INSTALLED</span>'; return '<div style="padding:8px 0;border-bottom:1px solid var(--lo-divider);cursor:pointer" onclick="cfgShowPack(\'' + escapeHtml(p.id) + '\')"><div style="display:flex;justify-content:space-between"><span style="color:var(--lo-ink);font-weight:500">' + escapeHtml(p.name) + '</span><span style="font-size:9px">' + st + ' \u00b7 ~' + p.estimated_size_mb + 'MB</span></div><div style="font-size:10px;color:var(--lo-dim);margin-top:2px">' + escapeHtml(p.description).substring(0,80) + '</div></div>'; }).join(''); } catch(e) {} }
