@@ -2500,6 +2500,24 @@ function renderCanvas() {
   ctx.beginPath(); ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy + 30); ctx.stroke();
   ctx.setLineDash([]);
 
+  // Build a quick lookup of recent messages per node (last 8s for pulse animations)
+  var recentMsgs = {};
+  if (App.state && App.state.messages) {
+    var ns = Date.now() / 1000;
+    App.state.messages.forEach(function(m) {
+      var age = ns - m.ts;
+      if (age < 8) {
+        if (!recentMsgs[m.node] || recentMsgs[m.node].age > age) {
+          recentMsgs[m.node] = { age: age, dir: m.dir };
+        }
+      }
+    });
+  }
+
+  // Build node->link map for quick path lookup (target -> link)
+  var linkByTarget = {};
+  App.links.forEach(function(l) { linkByTarget[l.target.id] = l; });
+
   // Draw links
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
@@ -2510,6 +2528,60 @@ function renderCanvas() {
     ctx.lineWidth = linkActive ? 2 : 0.8;
     ctx.globalAlpha = isTraffic ? (linkActive ? 0.7 : 0.05) : 0.25;
     ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+
+  // Signal pulses along links — ~2s to travel from end to end
+  Object.keys(recentMsgs).forEach(function(nodeId) {
+    var msg = recentMsgs[nodeId];
+    // Walk from the triggered node back to self, animating along each link in the path
+    var current = nodeId;
+    var segments = [];
+    var safety = 10;
+    while (current && current !== '__self__' && safety-- > 0) {
+      var link = linkByTarget[current];
+      if (!link) break;
+      segments.push(link);
+      current = link.source.id === '__self__' ? '__self__' : link.source.id;
+    }
+    if (segments.length === 0) return;
+
+    // Each segment takes ~0.8s, total path duration
+    var perSeg = 0.8;
+    var totalDur = segments.length * perSeg;
+    if (msg.age > totalDur) return;
+
+    // Which segment is the pulse currently on?
+    var segIdx = Math.floor(msg.age / perSeg);
+    if (segIdx >= segments.length) return;
+    var segProgress = (msg.age % perSeg) / perSeg;
+
+    // Direction: 'in' = incoming (from node toward self), 'out' = outgoing (from self toward node)
+    var seg = segments[segIdx];
+    var from, to;
+    if (msg.dir === 'in') {
+      // Start from triggered node, head toward self — walk segments in order
+      from = seg.target; to = seg.source;
+    } else {
+      // Outgoing: start from self, head toward node — reverse segment order
+      var outIdx = segments.length - 1 - segIdx;
+      seg = segments[outIdx];
+      from = seg.source; to = seg.target;
+      segProgress = (msg.age % perSeg) / perSeg;
+    }
+
+    var px = from.x + (to.x - from.x) * segProgress;
+    var py = from.y + (to.y - from.y) * segProgress;
+    var pulseColor = msg.dir === 'in' ? accent2 : accent;
+    var pulseAlpha = Math.max(0, 1 - msg.age / totalDur);
+
+    ctx.globalAlpha = pulseAlpha;
+    ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fillStyle = pulseColor; ctx.fill();
+    // Glow trail
+    ctx.globalAlpha = pulseAlpha * 0.4;
+    ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalAlpha = 1;
   });
 
@@ -2529,7 +2601,23 @@ function renderCanvas() {
     var mcColor = '#9b59b6';
     var nodeAlpha = node.isSelf || node.isChannel ? 1 : (0.3 + 0.7 * freshness);
     if (isTraffic && !node.isSelf && !activeNodes[node.id]) nodeAlpha = 0.1;
-    var r = node.isSelf ? 8 : (node.isChannel ? 7 : Math.round(3 + freshness * 3));
+
+    // Entrance fade-in (opacity only, no scale — safer than scale animation)
+    var entranceAlpha = 1;
+    if (node.birthTime && !node.isSelf) {
+      var ageMs = performance.now() - node.birthTime;
+      var dur = freshness > 0.5 ? 2000 : 600;
+      if (ageMs < dur) entranceAlpha = ageMs / dur;
+    }
+    nodeAlpha *= entranceAlpha;
+
+    // Subtle breathing — fresh nodes only, clamped to ±1px
+    var breathPx = 0;
+    if (!node.isSelf && !node.isChannel && freshness > 0.5) {
+      breathPx = Math.sin(App.breathPhase + i * 0.6) * freshness;
+    }
+    var baseR = node.isSelf ? 8 : (node.isChannel ? 7 : 3 + Math.round(freshness * 3));
+    var r = Math.max(2, Math.min(12, baseR + breathPx));
 
     ctx.globalAlpha = nodeAlpha;
 
@@ -2537,6 +2625,16 @@ function renderCanvas() {
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
     } else if (node.isSelf) {
+      // Sonar ring — clamped radius
+      var sonarPhase = (App.breathPhase * 2) % 4;
+      var sonarR = Math.min(28, 10 + sonarPhase * 5);
+      var sonarAlpha = Math.max(0, 1 - sonarPhase / 4);
+      if (sonarAlpha > 0) {
+        ctx.globalAlpha = sonarAlpha * 0.6;
+        ctx.beginPath(); ctx.arc(node.x, node.y, sonarR, 0, Math.PI * 2);
+        ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.fillStyle = accent; ctx.fill();
     } else {
