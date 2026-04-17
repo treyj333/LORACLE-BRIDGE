@@ -4,6 +4,35 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17] — Feature Roadmap: Meshtastic Parity + UX Improvements
+
+- What changed:
+  - **Canvas panning**: click-drag to pan viewport, double-click to reset
+  - **Realistic mesh topology**: hop-chained links instead of star pattern
+  - **Unread badges**: orange count badges on canvas nodes
+  - **Node list sidebar**: sortable/filterable node panel
+  - **Interactive map view**: 4th view (MAP) with Leaflet, node markers, auto-fit bounds
+  - **Battery/device metrics**: live telemetry (battery, voltage, temp, humidity, channel util, HW model) in float windows and canvas (red dot for low battery)
+  - **Traceroute**: TRACE button in float windows
+  - **Device admin**: REBOOT and SHUTDOWN buttons in CONFIG
+  - **Message delivery status**: checkmarks on outbound messages (✓ acked, ✓✓ delivered, ✗ failed)
+  - **Channel management**: CONFIG section showing all radio channels with role, encryption, uplink/downlink
+  - **Radio configuration**: CONFIG section for LoRa region, modem preset, TX power, hop limit — reads/writes to radio
+  - **Page crash fix**: moved canvas mousemove listener inside initCanvas()
+  - **Connect modal fix**: stays visible on boot until user interaction
+  - **Float window chat fix**: messages now persist in thread history
+  - **Magnetism fix**: closest-only attract, others repel
+- Why:
+  - Feature comparison against official Meshtastic web client revealed core gaps. Implemented all priority features while keeping LORACLE's retro-modern canvas identity.
+- Impact on project goals:
+  - Dashboard is now a fully functional mesh management tool: map, channels, radio config, device admin, telemetry — alongside the unique AI/LLM features.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — all frontend + API endpoints
+  - `meshtastic-bridge/standalone_bridge.py` — telemetry subscription, device metrics
+  - `meshtastic-bridge/db/messages.py` — update_status method
+
+---
+
 ## [2026-04-16 22:00] — Phase 1: Canvas Panning, Mesh Topology, Unread Badges, Node Sidebar
 
 - What changed:
