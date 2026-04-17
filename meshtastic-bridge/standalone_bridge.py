@@ -24,7 +24,7 @@ import queue
 import sys
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import meshtastic
 import meshtastic.serial_interface
@@ -145,6 +145,51 @@ def auto_detect_serial_port() -> Optional[str]:
     return candidates[0] if candidates else None
 
 
+# Maps Protocol enum short values ("mt", "mc") to DB-column strings
+# ("meshtastic", "meshcore"). Keeps the DB schema stable while the radio
+# abstraction uses the short form in unified IDs.
+_PROTOCOL_SHORT_TO_DB = {"mt": "meshtastic", "mc": "meshcore"}
+
+
+def _parse_second_radio(spec: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a --second-radio spec like 'meshcore:serial:/dev/ttyUSB1'
+    or 'meshcore:tcp:192.168.1.1:4000' into a config dict.
+
+    Returns None on empty/invalid input.
+    """
+    if not spec:
+        return None
+    # Only split the first two colons; transport params may contain colons (tcp host:port)
+    parts = spec.split(":", 2)
+    if len(parts) < 3:
+        return None
+    protocol, transport, params = parts[0].lower(), parts[1].lower(), parts[2]
+    if protocol not in ("meshcore",):
+        return None  # meshtastic secondary not supported yet (primary radio is meshtastic)
+    cfg: Dict[str, Any] = {"protocol": protocol, "transport": transport}
+    if transport == "serial":
+        if not params:
+            return None
+        cfg["serial_port"] = params
+        return cfg
+    if transport == "tcp":
+        if ":" in params:
+            host, port_str = params.rsplit(":", 1)
+            try:
+                cfg["tcp_port"] = int(port_str)
+            except ValueError:
+                return None
+            cfg["tcp_host"] = host
+        else:
+            cfg["tcp_host"] = params
+            cfg["tcp_port"] = 4000  # meshcore default
+        return cfg
+    if transport == "ble":
+        cfg["ble_address"] = params or None
+        return cfg
+    return None
+
+
 class StandaloneBridge:
     """LORACLE BRIDGE — LoRa + Oracle mesh AI bridge."""
 
@@ -169,6 +214,7 @@ class StandaloneBridge:
         public_talk: bool = True,
         protocol: str = "auto",
         ai_replies_enabled: bool = True,
+        second_radio: Optional[str] = None,
     ):
         self.connection_type = connection_type
         self.serial_port = serial_port
@@ -186,6 +232,12 @@ class StandaloneBridge:
         self._request_queue: queue.Queue = queue.Queue()
         self._start_time = time.time()
         self._ai_replies_enabled = ai_replies_enabled
+        self._second_radio_config = _parse_second_radio(second_radio)
+        if second_radio and self._second_radio_config is None:
+            logger.warning(
+                f"Ignoring invalid --second-radio spec: {second_radio!r} "
+                "(expected 'meshcore:serial:/dev/…', 'meshcore:tcp:host[:port]', or 'meshcore:ble:[addr]')"
+            )
 
         # ── SQLite persistence ────────────────────────────────────────────
         self._db = init_db(DB_PATH)
@@ -688,6 +740,7 @@ class StandaloneBridge:
             to_id = packet.get("toId", "")
             text = packet.get("decoded", {}).get("text", "")
             channel = packet.get("channel", 0)
+            protocol = "meshtastic"
 
             # Record hop metadata for every packet, even if we ignore the text
             self._record_packet_meta(sender, packet)
@@ -783,7 +836,7 @@ class StandaloneBridge:
                         hops = h
                 # Always upsert the sender as a DM contact
                 self._contact_store.upsert(
-                    contact_id=sender, protocol="meshtastic",
+                    contact_id=sender, protocol=protocol,
                     backend_id=sender, short_name=sender[-6:] if len(sender) > 6 else sender,
                     rssi=rssi_val, snr=snr_val, hops=hops,
                 )
@@ -791,23 +844,23 @@ class StandaloneBridge:
                     # DM: store under sender's contact
                     self._message_store.insert(
                         contact_id=sender, direction="in", author="human",
-                        text=text.strip(), protocol="meshtastic",
+                        text=text.strip(), protocol=protocol,
                         hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
                     )
                     self._contact_store.increment_unread(sender)
                 else:
                     # Channel message: store under channel contact
-                    chan_id = f"meshtastic:channel:{channel}"
+                    chan_id = f"{protocol}:channel:{channel}"
                     chan_name = f"Channel {channel}"
                     self._contact_store.upsert(
-                        contact_id=chan_id, protocol="meshtastic",
+                        contact_id=chan_id, protocol=protocol,
                         backend_id=chan_id, short_name=chan_name,
                         long_name=chan_name, is_channel=True,
                         channel_idx=channel, channel_name=chan_name,
                     )
                     self._message_store.insert(
                         contact_id=chan_id, direction="in", author="human",
-                        text=f"{sender}: {text.strip()}", protocol="meshtastic",
+                        text=f"{sender}: {text.strip()}", protocol=protocol,
                         hops_traveled=hops, rx_rssi=rssi_val, rx_snr=snr_val,
                         is_channel_msg=True,
                     )
@@ -833,7 +886,7 @@ class StandaloneBridge:
                 except Exception as e:
                     logger.warning(f"Addon {addon.name} on_message error: {e}")
 
-            self._request_queue.put((sender, text.strip(), channel, is_dm))
+            self._request_queue.put(("meshtastic", sender, text.strip(), channel, is_dm))
 
         except Exception as e:
             logger.error(f"Error processing incoming message: {e}")
@@ -1039,6 +1092,7 @@ class StandaloneBridge:
             nodes = getattr(self.interface, "nodes", None)
             if not nodes:
                 return
+            protocol = "meshtastic"
             # First-ever startup safety net: silently mark every node already
             # in the radio's nodeDB as "known" so we don't blast the entire
             # mesh on initial deployment. Idempotent — only does work once.
@@ -1066,7 +1120,7 @@ class StandaloneBridge:
                     if meta and "hops" in meta:
                         hops = meta["hops"]
                     self._contact_store.upsert(
-                        contact_id=key, protocol="meshtastic",
+                        contact_id=key, protocol=protocol,
                         backend_id=key, short_name=short_name,
                         long_name=long_name, hops=hops,
                     )
@@ -1134,7 +1188,7 @@ class StandaloneBridge:
         """Process queued messages through Ollama and send responses."""
         while self._running:
             try:
-                node_id, text, channel, is_dm = self._request_queue.get(timeout=1)
+                protocol, node_id, text, channel, is_dm = self._request_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
@@ -1150,7 +1204,7 @@ class StandaloneBridge:
                     )
                     # For channel messages, check channel's AI state
                     if not is_dm:
-                        chan_id = f"meshtastic:channel:{channel}"
+                        chan_id = f"{protocol}:channel:{channel}"
                         effective_ai = self._contact_store.get_effective_ai(
                             chan_id, self._ai_replies_enabled
                         )
@@ -1243,7 +1297,7 @@ class StandaloneBridge:
 
                 if not is_dm:
                     # Channel message → AI reply goes to sender as DM
-                    originating_channel = f"meshtastic:channel:{channel}"
+                    originating_channel = f"{protocol}:channel:{channel}"
                     logger.info(f"Channel AI redirect: replying to {node_id} as DM (from ch{channel})")
 
                 # Send response as DM to sender (never to channel)
@@ -1254,7 +1308,7 @@ class StandaloneBridge:
                     author = "ai" if elapsed > 0 else "human"
                     self._message_store.insert(
                         contact_id=reply_contact_id, direction="out", author=author,
-                        text=response, protocol="meshtastic",
+                        text=response, protocol=protocol,
                         originating_channel_id=originating_channel,
                     )
                 except Exception as e:
@@ -1923,6 +1977,7 @@ def main():
         public_talk=args.public_talk,
         protocol=args.protocol,
         ai_replies_enabled=ai_replies,
+        second_radio=args.second_radio,
     )
 
     # Pull the better model in background after bridge starts
