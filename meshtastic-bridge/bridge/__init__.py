@@ -23,6 +23,7 @@ from bridge.policy import (
     Policy,
 )
 from bridge.relay import Relay
+from bridge.urgency import HeuristicUrgencyClassifier
 
 __all__ = [
     "DEFAULT_CONFIG",
@@ -36,4 +37,5 @@ __all__ = [
     "DisabledPolicy",
     "Policy",
     "Relay",
+    "HeuristicUrgencyClassifier",
 ]

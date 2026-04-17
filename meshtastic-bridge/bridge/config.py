@@ -33,6 +33,7 @@ from bridge.policy import (
     DisabledPolicy,
     Policy,
 )
+from bridge.urgency import HeuristicUrgencyClassifier
 
 DEFAULT_CONFIG: Dict[str, Any] = {"enabled": False, "rules": []}
 
@@ -83,5 +84,14 @@ def build_policy(cfg: Dict[str, Any]) -> Policy:
     base = ChannelAllowlist(active)
     has_ai_gated = any(mode == "ai-gated" for (_, _, mode) in rules)
     if has_ai_gated:
-        return AIGatedPolicy(base)
+        # v2 Phase 4 (live): the heuristic urgency classifier replaces the
+        # Phase 2 pass-through stub. ai-gated rules now actually gate —
+        # only messages the classifier flags urgent cross the bridge.
+        # Operators can extend the vocabulary via ``extra_urgent_keywords``
+        # in the rule config (per-rule extension is a Phase 4.1 item).
+        extra_kw = cfg.get("urgent_keywords") or []
+        classifier = HeuristicUrgencyClassifier(
+            extra_urgent_keywords=list(extra_kw) if isinstance(extra_kw, list) else None
+        )
+        return AIGatedPolicy(base, classifier=classifier)
     return base

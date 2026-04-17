@@ -16,6 +16,7 @@ Intentional boundaries:
 """
 
 import logging
+import re
 from typing import Callable, List, Optional
 
 from bridge.dedup import RelayDedupCache
@@ -27,6 +28,16 @@ logger = logging.getLogger("bridge.relay")
 # Phase 2 destination set. Add future protocols here — the relay is
 # otherwise agnostic to which ones exist.
 _ALL_PROTOCOLS = ("meshtastic", "meshcore")
+
+# Phase 4: "force relay" prefixes. Messages starting with any of these
+# bypass the policy (AI gate, channel allowlist — everything) and cross
+# the bridge unconditionally. The prefix is stripped before relaying so
+# recipients see the raw message. Trailing whitespace after the bang-
+# word is consumed too.
+_FORCE_RELAY_PREFIX_RE = re.compile(
+    r"^!(urgent|priority|sos|mayday)\b[\s:,-]*",
+    re.IGNORECASE,
+)
 
 
 class Relay:
@@ -87,11 +98,33 @@ class Relay:
             logger.debug(f"[bridge] skip already-bridged from {sender}: {text[:60]!r}")
             return []
 
+        # Phase 4: force-relay prefix. Strip the tag and bypass policy
+        # (including the AI gate). Policy still can't relay DMs — the
+        # prefix only overrides the channel/urgency gate.
+        force_relay = False
+        m = _FORCE_RELAY_PREFIX_RE.match(text)
+        if m:
+            force_relay = True
+            text = text[m.end():]
+            if not text.strip():
+                # Bang-word on its own — nothing to forward.
+                self._drop_count += 1
+                return []
+            logger.info(
+                f"[bridge] force-relay from {sender} "
+                f"(prefix={m.group(1).lower()}): {text[:60]}"
+            )
+
         delivered: List[str] = []
         for dest in _ALL_PROTOCOLS:
             if dest == source_protocol:
                 continue
-            if not self._policy.should_relay(
+            # DMs still never relay, even with !urgent — bridging private
+            # conversation is a trust decision, not a priority decision.
+            if is_dm:
+                self._drop_count += 1
+                continue
+            if not force_relay and not self._policy.should_relay(
                 source_protocol, dest, sender, text, channel, is_dm
             ):
                 self._drop_count += 1

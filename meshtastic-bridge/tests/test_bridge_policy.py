@@ -130,12 +130,21 @@ class TestBuildPolicy(unittest.TestCase):
         self.assertFalse(_call(p, source="meshtastic", channel=1))
 
     def test_ai_gated_rule_wraps(self):
+        # Phase 4: build_policy now plugs in a real HeuristicUrgencyClassifier
+        # for ai-gated rules, so the policy actually gates on urgency.
         p = build_policy({
             "enabled": True,
             "rules": [{"source": "meshcore", "channel": 2, "mode": "ai-gated"}],
         })
         self.assertIsInstance(p, AIGatedPolicy)
-        self.assertTrue(_call(p, source="meshcore", channel=2))
+        # Urgent text passes
+        self.assertTrue(_call(p, source="meshcore", channel=2,
+                              text="EMERGENCY injured at gate"))
+        # Chatter does not
+        self.assertFalse(_call(p, source="meshcore", channel=2, text="hi"))
+        # Wrong channel still blocked regardless of urgency
+        self.assertFalse(_call(p, source="meshcore", channel=0,
+                               text="EMERGENCY injured at gate"))
 
     def test_wildcard_channel_none(self):
         p = build_policy({
