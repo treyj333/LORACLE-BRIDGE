@@ -148,18 +148,27 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 | **Orange dot (center)** | Your radio — "MY NODE" |
 | **Teal dots** | Peer nodes on the mesh |
 | **Hexagons** | Public channels — click to broadcast |
-| **Concentric rings** | Hop distance (1H, 2H, 3H) — closer = fewer hops |
+| **Hop-chained links** | Nodes link through their relay path (direct → 1-hop → 2-hop), not a star |
 | **Line thickness** | Signal strength — thick = strong, dotted = weak |
+| **Orange badges** | Unread message count per node |
+| **Red dot** | Low battery warning (≤20%) |
 
-**Click any node** to open its detail panel: see signal info, hop count, and send messages directly. Toggle AI auto-reply per node from the panel header.
+**Click any node** to open a floating window with signal info, battery/voltage, temperature, hardware model, hop count, message thread, and a composer. Toggle AI auto-reply per node. Click **TRACE** to send a traceroute.
+
+**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view.
 
 ### Views
 
 | View | What It Shows |
 |------|-------------|
 | **MESH** | Default — the live force-directed mesh canvas with all nodes and links |
-| **TRAFFIC** | Same canvas, emphasis on active packet flow |
-| **CONFIG** | Full settings: connection, model, routing, RAG, knowledge packs, appearance |
+| **TRAFFIC** | Same canvas, emphasis on active packet flow (inactive nodes dim) |
+| **MAP** | Geographic Leaflet map with node markers, auto-fit bounds, coverage heatmap layer |
+| **CONFIG** | Full settings: connection, channels, radio, model, routing, RAG, knowledge packs, data, appearance |
+
+### Node List Sidebar
+
+Click the **☰** button in the title bar to open the node sidebar. Lists all nodes with hops, last heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
 
 ### HUD Overlay
 
@@ -471,28 +480,54 @@ All addons load automatically — no flags needed. Just run `./mesh-llm.sh`.
 
 ## Spatial Features (web dashboard)
 
-Beyond addons, the dashboard exposes two map-based features built on the radio's GPS-aware traffic:
+### MAP View — Interactive Node Map
 
-### Live Node Map (CONFIG > Geographic Map)
-- Bright pulsing markers for every node with a known GPS fix
-- Marker label shows a short node id and **hop count** (e.g. `ac12f3 · 2h`)
-- Click any node → popup with lat/lon, hop count, age, and a **DM this node** button that pre-fills the Send Message form so you can reply directly
-- Stale fixes (no update >10 min) flip to amber
+Switch to the **MAP** view to see all nodes with GPS fixes on a geographic Leaflet map:
 
-### Coverage Heatmap (LIVE > Coverage)
-The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that has both signal info and a known position to `~/.mesh-llm/coverage.jsonl`. The Coverage tab visualizes that data:
+- Node markers with labels, hop count, and battery level in popups
+- Your node (self) shown with an orange marker
+- Click any marker → popup with coordinates and an **Open** link to the floating window
+- Auto-fits bounds to all visible nodes on first load
+- Coverage heatmap layer (toggle on/off) showing signal strength across the area
+- Tiles served from local cache (`~/.mesh-llm/tiles/`) with OpenStreetMap fallback
 
-- **Heatmap** mode (default): Leaflet.heat with a high-contrast green→red gradient
-- **Grid** mode: solid 40 m × 40 m colored rectangles by best RSSI per cell — crisp at any zoom
-- **Both** mode: stacked layers
-- **Dead zones** toggle: highlights cells where nodes traveled but signal was poor or missing
-- Time window filter: last hour / 6h / 24h / all-time
-- Min-RSSI slider, persistent legend
-- **Auto-refreshes every ~10 s** while the Coverage section is open — no need to click Refresh manually
-- **Disconnected banner** appears whenever the bridge has no radio attached, warning that the data on screen is from the last connected session and not live
-- **Clear log** button (red, in the toolbar) wipes `~/.mesh-llm/coverage.jsonl` and resets the in-memory throttle so the next sample logs immediately. Use this when you want to start fresh after moving locations or changing antennas
+### Coverage Data
 
-Coverage data starts populating as soon as the bridge is connected and packets are flowing. Samples are persisted to `~/.mesh-llm/coverage.jsonl` and survive bridge restarts — so opening the tab on a disconnected bridge will show data from the last session (the disconnected banner makes this explicit). Use **Clear log** to reset. Useful for finding antenna sweet spots and identifying mesh dead spots before a patrol.
+The bridge logs `(time, node, lat, lon, RSSI, SNR)` for every mesh packet that has both signal info and a known position to `~/.mesh-llm/coverage.jsonl`. This data powers the coverage heatmap layer on the MAP view. API endpoints: `/api/coverage/samples`, `/api/coverage/stats`, `/api/coverage/clear`.
+
+Coverage data persists across restarts. Use the clear endpoint to start fresh after moving locations.
+
+### Device Telemetry
+
+Floating windows show live device metrics from telemetry packets:
+- **Battery** level (%) and voltage
+- **Temperature** and humidity (if sensors available)
+- **Channel utilization** and air time
+- **Hardware model**
+- Low-battery nodes (≤20%) get a red dot on the canvas
+
+### Device Admin
+
+From CONFIG > CONNECTION (visible when connected):
+- **REBOOT** — restart the radio device
+- **SHUTDOWN** — power off the radio (requires manual restart)
+
+### Channel Management
+
+CONFIG > CHANNELS shows all active radio channels with:
+- Channel index, name, and role (primary/secondary)
+- Encryption status (locked/unlocked icon)
+- Uplink/downlink indicators
+
+### Radio Configuration
+
+CONFIG > RADIO lets you read and write LoRa settings directly on the radio:
+- **Region** (US, EU_868, EU_433, and 15+ others)
+- **Modem preset** (Long Fast, Short Fast, etc.)
+- **TX power** (dBm)
+- **Max hops** (1-7)
+
+Save writes the config to the radio — it may restart to apply changes.
 
 ---
 

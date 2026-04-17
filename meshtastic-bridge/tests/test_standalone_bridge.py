@@ -5,6 +5,7 @@ command dispatch, dedup, rate limiting, public channel addressing, and paging.
 """
 
 import hashlib
+import tempfile
 import time
 import unittest
 import sys
@@ -39,7 +40,10 @@ def _make_bridge(**overrides):
         public_talk=True,
     )
     defaults.update(overrides)
-    with patch("standalone_bridge.OllamaClient") as MockOllama:
+    tmp = tempfile.mkdtemp()
+    db_path = os.path.join(tmp, "test.db")
+    with patch("standalone_bridge.OllamaClient") as MockOllama, \
+         patch("standalone_bridge.DB_PATH", db_path):
         mock_ollama = MagicMock()
         MockOllama.return_value = mock_ollama
         bridge = StandaloneBridge(**defaults)
