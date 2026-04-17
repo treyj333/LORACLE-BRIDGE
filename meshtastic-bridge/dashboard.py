@@ -1383,64 +1383,76 @@ button::-moz-focus-inner { border: 0; }
   color: var(--lo-faint); pointer-events: none;
 }
 
-/* ── Node Detail Panel ────────────────────────────────────────────────────── */
-.lo-panel-wrap {
-  position: absolute; top: 0; right: 0; bottom: 40px; width: 380px;
-  z-index: 80; display: none; overflow: hidden;
+/* ── Floating Node Windows ─────────────────────────────────────────────────── */
+.lo-float-win {
+  position: absolute; z-index: 80;
+  width: 320px; max-height: 400px;
+  background: var(--lo-bg);
+  border: 1px solid var(--lo-divider-strong);
+  display: flex; flex-direction: column;
+  font-size: 11px;
+  pointer-events: auto;
 }
-.lo-panel-wrap.open { display: flex; flex-direction: column; }
-.lo-node-panel {
-  flex: 1; display: flex; flex-direction: column;
-  background: var(--lo-bg); border-left: 2px solid var(--lo-divider-strong);
-  min-height: 0;
+.lo-float-win .lo-fw-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--lo-divider);
+  cursor: grab;
 }
-.lo-np-header {
-  padding: 16px 18px 12px; border-bottom: 1px solid var(--lo-divider-strong); flex-shrink: 0;
+.lo-float-win .lo-fw-header:active { cursor: grabbing; }
+.lo-fw-name { font-size: 12px; font-weight: 500; color: var(--lo-ink); flex: 1; }
+.lo-fw-close {
+  background: none; border: none; font-size: 14px; color: var(--lo-dim);
+  cursor: pointer; padding: 0 2px; line-height: 1;
 }
-.lo-np-name { font-size: 14px; font-weight: 500; color: var(--lo-ink); margin-bottom: 2px; }
-.lo-np-meta { font-size: 10px; color: var(--lo-dim); letter-spacing: 0.08em; text-transform: uppercase; }
-.lo-np-actions { display: flex; gap: 6px; margin-top: 10px; }
-.lo-np-actions button {
-  background: none; border: 1px solid var(--lo-divider-strong); padding: 3px 10px;
-  font-family: inherit; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--lo-dim); cursor: pointer; transition: color 0.15s, border-color 0.15s;
+.lo-fw-close:hover { color: var(--lo-ink); }
+.lo-fw-meta {
+  padding: 6px 12px; font-size: 9px; color: var(--lo-dim);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  border-bottom: 1px solid var(--lo-divider);
 }
-.lo-np-actions button:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
-.lo-np-actions button.on { color: var(--lo-accent); border-color: var(--lo-accent); }
-.lo-np-messages { flex: 1; overflow-y: auto; padding: 12px 18px; min-height: 0; }
-.lo-np-msg {
-  display: grid; grid-template-columns: 48px 14px 1fr; gap: 4px;
-  padding: 3px 0; align-items: baseline; font-size: 11px;
+.lo-fw-meta div { padding: 1px 0; }
+.lo-fw-actions {
+  display: flex; gap: 4px; padding: 6px 12px;
+  border-bottom: 1px solid var(--lo-divider);
 }
-.lo-np-msg-time { color: var(--lo-faint); font-size: 10px; }
-.lo-np-msg-arrow { text-align: center; }
-.lo-np-msg-arrow.in { color: var(--lo-dim); }
-.lo-np-msg-arrow.out { color: var(--lo-ink); }
-.lo-np-msg-arrow.ai { color: var(--lo-accent); }
-.lo-np-msg-body { color: var(--lo-ink); word-break: break-word; }
-.lo-np-msg-ai { display: inline; font-size: 8px; letter-spacing: 0.1em; padding: 0 3px; border: 1px solid var(--lo-accent); color: var(--lo-accent); margin-left: 4px; vertical-align: middle; }
-.lo-np-empty { padding: 24px; text-align: center; color: var(--lo-faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; }
-.lo-np-composer {
-  display: flex; align-items: center; gap: 8px; padding: 10px 18px;
-  border-top: 1px solid var(--lo-divider-strong); flex-shrink: 0;
+.lo-fw-actions button {
+  background: none; border: 1px solid var(--lo-divider-strong); padding: 2px 8px;
+  font-family: inherit; font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--lo-dim); cursor: pointer;
 }
-.lo-np-composer .lo-prompt { color: var(--lo-accent); font-size: 14px; font-weight: 500; }
-.lo-np-composer input {
-  flex: 1; background: transparent; border: none; font-family: inherit; font-size: 12px;
-  color: var(--lo-ink); caret-color: var(--lo-accent); outline: none;
+.lo-fw-actions button:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
+.lo-fw-actions button.on { color: var(--lo-accent); border-color: var(--lo-accent); }
+.lo-fw-messages {
+  flex: 1; overflow-y: auto; padding: 8px 12px; max-height: 180px; min-height: 40px;
 }
-.lo-np-composer input::placeholder { color: var(--lo-faint); }
-.lo-np-composer .lo-send {
-  background: var(--lo-ink); color: var(--lo-bg); border: none; padding: 5px 14px;
-  font-family: inherit; font-size: 10px; font-weight: 500; letter-spacing: 0.1em;
+.lo-fw-msg {
+  display: grid; grid-template-columns: 42px 12px 1fr; gap: 3px;
+  padding: 2px 0; align-items: baseline; font-size: 10px;
+}
+.lo-fw-msg-time { color: var(--lo-faint); font-size: 9px; }
+.lo-fw-msg-arrow { text-align: center; font-size: 10px; }
+.lo-fw-msg-arrow.in { color: var(--lo-dim); }
+.lo-fw-msg-arrow.out { color: var(--lo-ink); }
+.lo-fw-msg-arrow.ai { color: var(--lo-accent); }
+.lo-fw-msg-body { color: var(--lo-ink); word-break: break-word; }
+.lo-fw-empty { padding: 12px; text-align: center; color: var(--lo-faint); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+.lo-fw-composer {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-top: 1px solid var(--lo-divider-strong);
+}
+.lo-fw-composer .lo-prompt { color: var(--lo-accent); font-size: 12px; font-weight: 500; }
+.lo-fw-composer input {
+  flex: 1; background: transparent; border: none; font-family: inherit; font-size: 11px;
+  color: var(--lo-ink); caret-color: var(--lo-accent); outline: none; padding: 2px 0;
+}
+.lo-fw-composer input::placeholder { color: var(--lo-faint); }
+.lo-fw-composer .lo-send {
+  background: var(--lo-ink); color: var(--lo-bg); border: none; padding: 3px 10px;
+  font-family: inherit; font-size: 9px; font-weight: 500; letter-spacing: 0.1em;
   text-transform: uppercase; cursor: pointer;
 }
-.lo-np-composer .lo-send:disabled { opacity: 0.4; cursor: default; }
-.lo-np-close {
-  position: absolute; top: 12px; right: 12px; background: none; border: none;
-  font-size: 16px; color: var(--lo-dim); cursor: pointer; z-index: 2;
-}
-.lo-np-close:hover { color: var(--lo-ink); }
+.lo-fw-composer .lo-send:disabled { opacity: 0.4; }
 
 /* ── Activity Ribbon (bottom strip) ───────────────────────────────────────── */
 .lo-ribbon {
@@ -1565,27 +1577,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <!-- Hop ring legend -->
   <div class="lo-hop-legend" id="hop-legend"></div>
 
-  <!-- Node detail panel -->
-  <div class="lo-panel-wrap" id="node-panel">
-    <div class="lo-node-panel">
-      <button class="lo-np-close" onclick="closePanel()">&times;</button>
-      <div class="lo-np-header">
-        <div class="lo-np-name" id="np-name"></div>
-        <div class="lo-np-meta" id="np-meta"></div>
-        <div class="lo-np-actions">
-          <button id="np-ai-toggle" onclick="toggleNodeAi()">AI: --</button>
-        </div>
-      </div>
-      <div class="lo-np-messages" id="np-messages">
-        <div class="lo-np-empty">NO MESSAGES YET</div>
-      </div>
-      <div class="lo-np-composer">
-        <span class="lo-prompt">&gt;</span>
-        <input type="text" id="np-input" placeholder="type a message..." onkeydown="if(event.key==='Enter'){event.preventDefault();panelSend()}">
-        <button class="lo-send" id="np-send" onclick="panelSend()">SEND</button>
-      </div>
-    </div>
-  </div>
+  <!-- Floating node windows rendered here by JS -->
+  <div id="float-windows" style="position:absolute;inset:0;pointer-events:none;z-index:80"></div>
 </div>
 
 <!-- ── Activity Ribbon ────────────────────────────────────────────────────── -->
@@ -2065,14 +2058,17 @@ function buildGraph(state) {
       node.lat = pos.lat || null; node.lon = pos.lon || null;
       node.lastHeard = pos.last_update || null;
     } else {
-      // New node — place on hop ring
+      // New node — place on hop ring with organic jitter
       var angle = hashStr(nid) % 360 * Math.PI / 180;
       var ringR = hops !== null ? (80 + hops * 100) : 200;
       ringR = Math.min(ringR, Math.min(cx, cy) - 40);
+      // Add chaos: ±30% radius jitter + ±15° angle jitter
+      var jitterR = ringR * (0.7 + (hashStr(nid + 'r') % 60) / 100);
+      var jitterA = angle + ((hashStr(nid + 'a') % 30) - 15) * Math.PI / 180;
       node = {
         id: nid, label: shortId, hops: hops, isChannel: isChannel,
-        x: cx + Math.cos(angle) * ringR,
-        y: cy + Math.sin(angle) * ringR,
+        x: cx + Math.cos(jitterA) * jitterR,
+        y: cy + Math.sin(jitterA) * jitterR,
         rssi: m.rssi || pos.rssi || null, snr: m.snr || pos.snr || null,
         lat: pos.lat || null, lon: pos.lon || null,
         lastHeard: pos.last_update || null,
@@ -2095,7 +2091,7 @@ function buildGraph(state) {
   // Rebuild simulation (only when nodes actually changed)
   if (App.simulation) App.simulation.stop();
   App.simulation = d3.forceSimulation(nodes)
-    .force('charge', d3.forceManyBody().strength(-120))
+    .force('charge', d3.forceManyBody().strength(-80))
     .force('center', d3.forceCenter(cx, cy))
     .force('link', d3.forceLink(links).distance(function(l) {
       var h = l.target.hops;
@@ -2113,6 +2109,19 @@ function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCod
 
 function renderLoop() {
   App.breathPhase += 0.02;
+  // Mouse magnetism — attract nearby nodes toward cursor
+  if (_mouseX > 0 && _mouseY > 0) {
+    App.nodes.forEach(function(n) {
+      if (n.isSelf) return;
+      var dx = _mouseX - n.x, dy = _mouseY - n.y;
+      var dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist < 120 && dist > 5) {
+        var pull = Math.max(0, (120 - dist) / 120) * 0.6;
+        n.x += dx * pull * 0.03;
+        n.y += dy * pull * 0.03;
+      }
+    });
+  }
   renderCanvas();
   App.animFrame = requestAnimationFrame(renderLoop);
 }
@@ -2247,160 +2256,140 @@ function renderCanvas() {
   });
 }
 
-// ─── Canvas Interaction ────────────────────────────────────────────────────
+// ─── Canvas Interaction + Floating Windows ────────────────────────────────
+
+var _mouseX = 0, _mouseY = 0;
 
 function onCanvasClick(e) {
   var rect = App.canvas.getBoundingClientRect();
   var mx = e.clientX - rect.left, my = e.clientY - rect.top;
-
-  // Find closest node (40px hit area for easier clicking)
   var closest = null, closestDist = Infinity;
   App.nodes.forEach(function(n) {
     var dx = n.x - mx, dy = n.y - my;
     var dist = Math.sqrt(dx*dx + dy*dy);
     if (dist < 40 && dist < closestDist) { closest = n; closestDist = dist; }
   });
-
   if (closest && !closest.isSelf) {
-    openNodePanel(closest.id);
+    openFloatWindow(closest);
   } else if (closest && closest.isSelf) {
-    // Clicking MY NODE — could open broadcast/channel panel in future
     showToast('This is your radio node');
-  } else {
-    closePanel();
   }
 }
 
-// ─── Node Panel ────────────────────────────────────────────────────────────
+// Track mouse for magnetism
+App.canvas.addEventListener('mousemove', function(e) {
+  var rect = App.canvas.getBoundingClientRect();
+  _mouseX = e.clientX - rect.left;
+  _mouseY = e.clientY - rect.top;
+});
 
-async function openNodePanel(nodeId) {
-  App.selectedNode = nodeId;
-  document.getElementById('node-panel').classList.add('open');
+// ─── Floating Node Windows ────────────────────────────────────────────────
 
-  try {
-    var d = await callApi('GET', '/api/threads/' + encodeURIComponent(nodeId));
-    if (!d || d.error) {
-      // Contact not in DB yet — show basic panel with canvas data
-      var canvasNode = App.nodes.find(function(n) { return n.id === nodeId; });
-      document.getElementById('np-name').textContent = canvasNode ? canvasNode.label : nodeId.slice(-6);
-      document.getElementById('np-meta').innerHTML = '<div style="color:var(--lo-faint)">Node discovered but no contact record yet. Send a message to create one.</div>';
-      document.getElementById('np-messages').innerHTML = '<div class="lo-np-empty">SEND A MESSAGE TO START</div>';
-      document.getElementById('np-input').placeholder = 'message ' + (canvasNode ? canvasNode.label : nodeId.slice(-6)) + '...';
-      document.getElementById('np-input').focus();
-      return;
-    }
+var _openWindows = {};
 
-    var contact = d.contact || {};
-    var msgs = d.messages || [];
-
-    // Also pull live canvas data for this node
-    var canvasNode = App.nodes.find(function(n) { return n.id === nodeId; });
-
-    // Header — full name
-    var name = contact.long_name ? (contact.short_name + ' \u00b7 ' + contact.long_name) : (contact.short_name || nodeId.slice(-6));
-    document.getElementById('np-name').textContent = name;
-
-    // Build rich metadata display
-    var metaHtml = '';
-    var proto = (contact.protocol === 'mc' || contact.protocol === 'meshcore') ? 'MC' : 'MT';
-
-    metaHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:8px">';
-    metaHtml += '<div><span style="color:var(--lo-faint)">ID</span> <span style="color:var(--lo-ink)">' + escapeHtml(nodeId) + '</span></div>';
-    metaHtml += '<div><span style="color:var(--lo-faint)">PROTOCOL</span> <span style="color:var(--lo-ink)">' + proto + '</span></div>';
-
-    var hops = contact.last_hops;
-    if (hops !== null && hops !== undefined) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">HOPS</span> <span style="color:var(--lo-ink)">' + (hops === 0 ? 'DIRECT' : hops) + '</span></div>';
-    }
-    if (contact.last_rssi) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">RSSI</span> <span style="color:var(--lo-ink)">' + contact.last_rssi + ' dBm</span></div>';
-    }
-    if (contact.last_snr) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">SNR</span> <span style="color:var(--lo-ink)">' + contact.last_snr + ' dB</span></div>';
-    }
-    if (contact.last_heard) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">LAST HEARD</span> <span style="color:var(--lo-ink)">' + relativeTime(contact.last_heard) + '</span></div>';
-    }
-    if (contact.first_seen) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">FIRST SEEN</span> <span style="color:var(--lo-ink)">' + relativeTime(contact.first_seen) + '</span></div>';
-    }
-    if (contact.has_position && canvasNode && canvasNode.lat) {
-      metaHtml += '<div><span style="color:var(--lo-faint)">GPS</span> <span style="color:var(--lo-ink)">' + canvasNode.lat.toFixed(4) + ', ' + canvasNode.lon.toFixed(4) + '</span></div>';
-    }
-    metaHtml += '</div>';
-
-    document.getElementById('np-meta').innerHTML = metaHtml;
-
-    // AI toggle
-    var aiBtn = document.getElementById('np-ai-toggle');
-    var aiVal = contact.ai_enabled;
-    if (aiVal === 1) { aiBtn.textContent = 'AI: ON'; aiBtn.className = 'on'; }
-    else if (aiVal === 0) { aiBtn.textContent = 'AI: OFF'; aiBtn.className = ''; }
-    else { aiBtn.textContent = 'AI: AUTO'; aiBtn.className = ''; }
-
-    // Messages
-    var el = document.getElementById('np-messages');
-    if (msgs.length === 0) {
-      el.innerHTML = '<div class="lo-np-empty">NO MESSAGES YET \u2014 SEND ONE BELOW</div>';
-    } else {
-      el.innerHTML = msgs.map(function(m) {
-        var arrowCls = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
-        var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
-        var aiBadge = m.author === 'ai' ? '<span class="lo-np-msg-ai">AI</span>' : '';
-        return '<div class="lo-np-msg">' +
-          '<span class="lo-np-msg-time">' + formatTime(m.timestamp) + '</span>' +
-          '<span class="lo-np-msg-arrow ' + arrowCls + '">' + arrow + '</span>' +
-          '<span class="lo-np-msg-body">' + escapeHtml(m.text) + aiBadge + '</span></div>';
-      }).join('');
-      el.scrollTop = el.scrollHeight;
-    }
-
-    // Mark as read
-    callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/open');
-
-    document.getElementById('np-input').placeholder = 'message ' + (contact.short_name || nodeId.slice(-6)) + '...';
-    document.getElementById('np-input').focus();
-  } catch(e) {}
+async function openFloatWindow(node) {
+  if (_openWindows[node.id]) return; // already open
+  var win = document.createElement('div');
+  win.className = 'lo-float-win';
+  win.dataset.nodeId = node.id;
+  var wx = Math.min(Math.max(node.x + 20, 10), App.width - 340);
+  var wy = Math.max(Math.min(node.y - 80, App.height - 420), 10);
+  win.style.left = wx + 'px'; win.style.top = wy + 'px';
+  var label = node.label || node.id.slice(-6);
+  var eid = node.id.replace(/[^a-zA-Z0-9]/g, '_');
+  win.innerHTML =
+    '<div class="lo-fw-header" onmousedown="startDragWin(event,this.parentElement)">' +
+      '<span class="lo-fw-name">' + escapeHtml(label) + '</span>' +
+      '<button class="lo-fw-close" onclick="closeFloatWin(\'' + escapeHtml(node.id) + '\')">\u00d7</button>' +
+    '</div>' +
+    '<div class="lo-fw-meta" id="fw-m-' + eid + '">Loading...</div>' +
+    '<div class="lo-fw-actions" id="fw-a-' + eid + '"></div>' +
+    '<div class="lo-fw-messages" id="fw-g-' + eid + '"><div class="lo-fw-empty">LOADING...</div></div>' +
+    '<div class="lo-fw-composer">' +
+      '<span class="lo-prompt">\u003e</span>' +
+      '<input type="text" placeholder="message ' + escapeHtml(label) + '..." onkeydown="if(event.key===\'Enter\'){event.preventDefault();floatSend(\'' + escapeHtml(node.id) + '\',this)}">' +
+      '<button class="lo-send" onclick="floatSend(\'' + escapeHtml(node.id) + '\',this.previousElementSibling)">SEND</button>' +
+    '</div>';
+  document.getElementById('float-windows').appendChild(win);
+  _openWindows[node.id] = win;
+  await loadFloatData(node.id);
 }
 
-function closePanel() {
-  App.selectedNode = null;
-  document.getElementById('node-panel').classList.remove('open');
+async function loadFloatData(nodeId) {
+  var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
+  var metaEl = document.getElementById('fw-m-' + eid);
+  var actEl = document.getElementById('fw-a-' + eid);
+  var msgsEl = document.getElementById('fw-g-' + eid);
+  if (!metaEl) return;
+  var canvasNode = App.nodes.find(function(n) { return n.id === nodeId; });
+  var d = await callApi('GET', '/api/threads/' + encodeURIComponent(nodeId));
+  var contact = (d && d.contact) || {};
+  var msgs = (d && d.messages) || [];
+  var proto = (contact.protocol === 'mc' || contact.protocol === 'meshcore') ? 'MC' : 'MT';
+  var lines = ['<div>ID: ' + escapeHtml(nodeId) + '</div>', '<div>PROTOCOL: ' + proto + '</div>'];
+  var hops = contact.last_hops;
+  if (hops !== null && hops !== undefined) lines.push('<div>HOPS: ' + (hops === 0 ? 'DIRECT' : hops) + '</div>');
+  if (contact.last_rssi) lines.push('<div>RSSI: ' + contact.last_rssi + ' dBm</div>');
+  if (contact.last_snr) lines.push('<div>SNR: ' + contact.last_snr + ' dB</div>');
+  if (contact.last_heard) lines.push('<div>HEARD: ' + relativeTime(contact.last_heard) + '</div>');
+  if (canvasNode && canvasNode.lat) lines.push('<div>GPS: ' + canvasNode.lat.toFixed(4) + ', ' + canvasNode.lon.toFixed(4) + '</div>');
+  metaEl.innerHTML = lines.join('');
+  var aiVal = contact.ai_enabled;
+  var aiLabel = aiVal === 1 ? 'AI: ON' : aiVal === 0 ? 'AI: OFF' : 'AI: AUTO';
+  var aiClass = aiVal === 1 ? ' on' : '';
+  actEl.innerHTML = '<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>';
+  if (msgs.length === 0) { msgsEl.innerHTML = '<div class="lo-fw-empty">NO MESSAGES YET</div>'; }
+  else {
+    msgsEl.innerHTML = msgs.slice(-15).map(function(m) {
+      var ac = m.direction === 'in' ? 'in' : (m.author === 'ai' ? 'ai' : 'out');
+      var arrow = m.direction === 'in' ? '\u2190' : '\u2192';
+      return '<div class="lo-fw-msg"><span class="lo-fw-msg-time">' + formatTime(m.timestamp) +
+        '</span><span class="lo-fw-msg-arrow ' + ac + '">' + arrow +
+        '</span><span class="lo-fw-msg-body">' + escapeHtml(m.text) + '</span></div>';
+    }).join('');
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
+  try { callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/open'); } catch(e) {}
 }
 
-async function panelSend() {
-  if (!App.selectedNode) return;
-  var input = document.getElementById('np-input');
-  var text = input.value.trim();
+function closeFloatWin(nodeId) {
+  var win = _openWindows[nodeId];
+  if (win && win.parentNode) win.parentNode.removeChild(win);
+  delete _openWindows[nodeId];
+}
+
+async function floatSend(nodeId, inputEl) {
+  var text = inputEl.value.trim();
   if (!text) return;
-  input.value = '';
-  document.getElementById('np-send').disabled = true;
-
-  var nodeId = App.selectedNode;
+  inputEl.value = '';
   var isChannel = nodeId.indexOf('channel:') !== -1;
-
   if (isChannel) {
-    // Channel broadcast — extract channel number
-    var chNum = parseInt(nodeId.split(':').pop()) || 0;
-    var d = await callApi('POST', '/api/send-mesh', {text: text, node_id: '', channel: chNum});
-    if (d && d.ok) showToast('Broadcast on CH ' + chNum);
+    var ch = parseInt(nodeId.split(':').pop()) || 0;
+    await callApi('POST', '/api/send-mesh', {text: text, node_id: '', channel: ch});
+    showToast('Broadcast on CH ' + ch);
   } else {
-    // DM to specific node — use raw mesh send (proven path)
-    var d = await callApi('POST', '/api/send-mesh', {text: text, node_id: nodeId, channel: 0});
-    if (d && d.ok) showToast('Sent to ' + nodeId.slice(-6));
+    await callApi('POST', '/api/send-mesh', {text: text, node_id: nodeId, channel: 0});
+    showToast('Sent to ' + nodeId.slice(-6));
   }
-
-  document.getElementById('np-send').disabled = false;
-  // Also persist to DB if contact exists
-  try { await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/open'); } catch(e) {}
-  openNodePanel(nodeId);
+  loadFloatData(nodeId);
 }
 
-async function toggleNodeAi() {
-  if (!App.selectedNode) return;
-  await callApi('POST', '/api/threads/' + encodeURIComponent(App.selectedNode) + '/ai-toggle');
-  openNodePanel(App.selectedNode); // refresh
+async function floatToggleAi(nodeId) {
+  await callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/ai-toggle');
+  loadFloatData(nodeId);
 }
+
+var _dragWin = null, _dragOff = {x:0, y:0};
+function startDragWin(e, win) {
+  _dragWin = win; _dragOff.x = e.clientX - win.offsetLeft; _dragOff.y = e.clientY - win.offsetTop; e.preventDefault();
+}
+document.addEventListener('mousemove', function(e) {
+  if (!_dragWin) return;
+  _dragWin.style.left = (e.clientX - _dragOff.x) + 'px';
+  _dragWin.style.top = (e.clientY - _dragOff.y) + 'px';
+});
+document.addEventListener('mouseup', function() { _dragWin = null; });
+
 
 // ─── Ribbon ────────────────────────────────────────────────────────────────
 
