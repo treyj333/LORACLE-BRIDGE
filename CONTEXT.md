@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-16 21:00] — Fix: Connect Modal Stays Visible on Boot
+
+- What changed:
+  - Fixed race condition where the connect modal flashed invisibly on page load because the backend auto-connected before the first poll completed, immediately hiding the modal
+  - Added `_userAckedModal` gate — poll loop cannot auto-hide the modal until user clicks CONNECT, DISMISS, or picks a BLE device
+  - When backend auto-connects while modal is still showing, text updates to "RADIO CONNECTED" and auto-dismisses after 3 seconds
+  - Auto-dismiss timer is cancelled if radio disconnects while modal is still visible
+- Why:
+  - Connecting a radio is the mandatory first step. Users were never seeing the connect modal because it appeared for one frame then vanished due to the auto-connect race condition.
+- Impact on project goals:
+  - Ensures first-run UX works correctly — users always see the connect dialog on boot
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — modal HTML (added IDs), JS state vars, checkConnectionForModal rewrite, user interaction tracking in dismiss/connect/pick functions
+
+---
+
 ## [2026-04-16] — Network-as-Canvas: Force-Directed Mesh UI
 
 - What changed:
