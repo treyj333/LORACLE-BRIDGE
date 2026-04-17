@@ -1766,8 +1766,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <!-- ── Connect Modal ──────────────────────────────────────────────────────── -->
 <div class="lo-connect-modal" id="connect-modal">
   <div class="lo-connect-box">
-    <h3>CONNECT A RADIO</h3>
-    <p>No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.</p>
+    <h3 id="connect-modal-title">CONNECT A RADIO</h3>
+    <p id="connect-modal-desc">No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.</p>
     <div class="lo-form-row">
       <span class="lo-form-label">PROTOCOL</span>
       <select id="connect-protocol" style="max-width:140px">
@@ -2469,9 +2469,9 @@ async function poll() {
 
 // ─── Connect Modal ─────────────────────────────────────────────────────────
 
-var _connectModalDismissed = false, _disconnectedSince = 0, _wasConnected = false;
+var _connectModalDismissed = false, _disconnectedSince = 0, _wasConnected = false, _userAckedModal = false;
 function showConnectModal() { if (!_connectModalDismissed) document.getElementById('connect-modal').classList.add('open'); }
-function dismissConnectModal() { _connectModalDismissed = true; document.getElementById('connect-modal').classList.remove('open'); }
+function dismissConnectModal() { _userAckedModal = true; _connectModalDismissed = true; document.getElementById('connect-modal').classList.remove('open'); }
 function hideConnectModal() { document.getElementById('connect-modal').classList.remove('open'); }
 
 function connectModalTypeChanged() {
@@ -2508,6 +2508,7 @@ async function connectModalScan() {
 }
 
 function connectModalPickDevice(el, address, name) {
+  _userAckedModal = true;
   document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
   el.classList.add('selected');
   document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '... (BLE takes 10-20s)';
@@ -2519,6 +2520,7 @@ function connectModalPickDevice(el, address, name) {
 }
 
 async function connectFromModal() {
+  _userAckedModal = true;
   var type = document.getElementById('connect-type').value;
   var addr = document.getElementById('connect-address').value.trim();
   var payload = {type: type};
@@ -2535,8 +2537,34 @@ async function connectFromModal() {
 }
 
 function checkConnectionForModal(connected) {
-  if (connected) { _wasConnected = true; _disconnectedSince = 0; hideConnectModal(); return; }
-  if (!_wasConnected && !_connectModalDismissed) { showConnectModal(); return; }
+  if (connected) {
+    _wasConnected = true;
+    _disconnectedSince = 0;
+    if (_userAckedModal) {
+      hideConnectModal();
+    } else if (document.getElementById('connect-modal').classList.contains('open')) {
+      document.getElementById('connect-modal-title').textContent = 'RADIO CONNECTED';
+      document.getElementById('connect-modal-desc').textContent = 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
+      document.getElementById('connect-modal-status').textContent = '';
+      if (!checkConnectionForModal._autoDismissTimer) {
+        checkConnectionForModal._autoDismissTimer = setTimeout(function() {
+          checkConnectionForModal._autoDismissTimer = null;
+          if (!_userAckedModal) { _userAckedModal = true; hideConnectModal(); }
+        }, 3000);
+      }
+    }
+    return;
+  }
+  if (checkConnectionForModal._autoDismissTimer) {
+    clearTimeout(checkConnectionForModal._autoDismissTimer);
+    checkConnectionForModal._autoDismissTimer = null;
+  }
+  if (!_wasConnected && !_connectModalDismissed) {
+    document.getElementById('connect-modal-title').textContent = 'CONNECT A RADIO';
+    document.getElementById('connect-modal-desc').textContent = 'No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.';
+    showConnectModal();
+    return;
+  }
   if (_wasConnected && !_connectModalDismissed) {
     if (!_disconnectedSince) _disconnectedSince = Date.now();
     if (Date.now() - _disconnectedSince > 10000) { _connectModalDismissed = false; showConnectModal(); }
