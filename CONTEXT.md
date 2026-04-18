@@ -4,6 +4,25 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-18 00:05] — MC nodes now visible on the mesh canvas
+
+- What changed:
+  - **`_secondary_radio_ingest_loop` now uses the unified node id** (`mc:<native>`) throughout instead of the bare native id. Every downstream surface that feeds the dashboard or the DB — `_known_nodes`, `_persist_incoming` (contact_id), `_node_last_active` (rate-limit key), `self._relay.observe(...)`, `addon.on_message(...)`, `self._request_queue.put(...)` — now receives the prefixed form. Before: MC peers landed in `_known_nodes` as `abcdef012345`; the dashboard's `isMC = nid.indexOf('mc:') === 0` check then classified them as Meshtastic and they rendered as teal circles instead of purple diamonds (or collided with the MT self-exclusion logic).
+  - **`_send_raw` / `_send_response` are now idempotent to the `mc:` prefix** — they normalise a `routing_id = node_id if node_id.startswith("mc:") else f"mc:{node_id}"` before passing to `_radio_manager.send(...)`. This keeps the send path safe now that the ingest loop hands unified ids through the request queue.
+  - **`MeshCoreBackend.get_node_positions()` + `get_node_meta()`** implemented — previously the base-class default returned `{}` so the periodic `_node_sync_loop` pulled nothing from MC. Positions are built from each contact's `adv_lat` / `adv_lon` (skipping 0,0 and None), with a wall-clock `last_update` so the UI's freshness heuristic treats them as just-heard. Meta carries `short_name` + `long_name` so the dashboard labels match the user's configured device names.
+  - **`_node_sync_loop` extended** — it now also merges `get_all_nodes().keys()` into `_known_nodes`, not just positions and meta. Advertised-but-silent MC peers now show on the dashboard without needing to send any traffic first. Refactored the body into a reusable `_sync_nodes_from_backends()` method.
+  - **Faster first-sync**: the periodic loop's initial wait is now 3 seconds instead of the full 30-second refresh interval, and `_spawn_secondary_radio` spawns a 2.5-second-delayed one-shot sync after a successful `add_backend`. Net effect: when a user adds a MeshCore radio through the dashboard, advertised MC contacts appear on the canvas within ~3 seconds instead of up to 30.
+- Why:
+  - User report: "I don't think the meshcore nodes are displaying on the node map when I connect it?" Confirmed: two separate bugs were at play. First, the ingest loop stored raw-native ids (`abcdef012345`) in `_known_nodes`, so the dashboard's prefix-based classifier treated MC peers as if they were Meshtastic — wrong shape, wrong colour, and they conflicted with the MT self-node exclusion logic. Second, `MeshCoreBackend.get_node_positions()` / `get_node_meta()` were never overridden, so the periodic sync pulled nothing from MC and peers that weren't actively transmitting never showed up at all.
+- Impact on project goals:
+  - MC peers finally render with the right shape + colour on the canvas, in the node-list sidebar, and in the map view. Click-to-DM works because the in-memory `_known_nodes` id matches the DB `contact_id` matches the dashboard's `mc:`-prefixed unified id. Cross-protocol relay continues to work because the relay engine always took a sender string and didn't care about its format — the prefix is just tag content. No schema changes, no new dependencies.
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — `_secondary_radio_ingest_loop` uses `msg.node.id` for every non-send-path sink; `_send_raw` + `_send_response` normalise `mc:` prefix idempotently; `_node_sync_loop` split into `_sync_nodes_from_backends()` + wrapper; `_spawn_secondary_radio` fires a 2.5s-delayed one-shot sync after `add_backend`
+  - `meshtastic-bridge/radio/meshcore_backend.py` — `get_node_positions()` and `get_node_meta()` implemented
+- Tests: 302/302 pass (behaviour changes live downstream of tested surfaces; relay/dedup/identity/integration suites all validate against the prefix-agnostic sender string).
+
+---
+
 ## [2026-04-17 23:40] — Connect-modal dot alignment + per-success-panel dot colors
 
 - What changed:

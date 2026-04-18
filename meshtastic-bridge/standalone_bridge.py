@@ -1408,6 +1408,17 @@ class StandaloneBridge:
             self._seed_default_bridge_rules(force=False)
         except Exception as e:
             logger.debug(f"Default bridge seed skipped: {e}")
+        # Kick a node-sync so advertised MC contacts land in _known_nodes
+        # without waiting for the periodic loop's next tick (up to 30s).
+        # Runs in a background thread because the MC backend's contact list
+        # may take a second or two to populate after connect.
+        def _delayed_sync():
+            time.sleep(2.5)
+            try:
+                self._sync_nodes_from_backends()
+            except Exception as e:
+                logger.debug(f"Post-add node sync error: {e}")
+        threading.Thread(target=_delayed_sync, daemon=True).start()
         return backend
 
     def add_secondary_radio(
@@ -1602,7 +1613,14 @@ class StandaloneBridge:
                     # Handled by pubsub in _on_receive; skip to avoid double-persist
                     continue
 
-                sender = msg.node.backend_native_id
+                native_id = msg.node.backend_native_id
+                # Unified id (`mc:<native>`) is what the dashboard expects so
+                # MC nodes render with the right shape / colour / self-exclusion
+                # logic. We keep the raw native handy for places that route
+                # directly through the MC backend (rate-limit keying, name
+                # display fallback), but everything that feeds the UI, DB, or
+                # relay uses the unified form.
+                unified_id = msg.node.id  # e.g. "mc:abcdef012345"
                 text = (msg.text or "").strip()
                 channel = msg.channel if msg.channel is not None else 0
                 is_dm = msg.is_dm
@@ -1611,42 +1629,43 @@ class StandaloneBridge:
                     continue
 
                 now = time.time()
-                last = self._node_last_active.get(sender)
+                last = self._node_last_active.get(unified_id)
                 if last is not None and (now - last) < RATE_LIMIT_SECS:
                     logger.info(
-                        f"Rate-limited {sender}/{db_protocol} "
+                        f"Rate-limited {unified_id}/{db_protocol} "
                         f"({now - last:.0f}s < {RATE_LIMIT_SECS}s cooldown)"
                     )
                     continue
+                self._node_last_active[unified_id] = now
 
-                self._known_nodes.add(sender)
+                self._known_nodes.add(unified_id)
                 self._node_count = len(self._known_nodes)
                 ch_label = "DM" if is_dm else f"ch{channel}"
                 logger.info(
-                    f"[{db_protocol}] Received from {sender} ({ch_label}): {text[:100]}"
+                    f"[{db_protocol}] Received from {unified_id} ({ch_label}): {text[:100]}"
                 )
-                record_message("in", sender, text)
+                record_message("in", unified_id, text)
 
                 self._persist_incoming(
-                    db_protocol, sender, text, channel, is_dm,
+                    db_protocol, unified_id, text, channel, is_dm,
                     rssi=msg.rssi, snr=msg.snr, hops=msg.hops_traveled,
                 )
 
                 # Bridge relay observation — may re-broadcast to Meshtastic.
                 try:
-                    self._relay.observe(db_protocol, sender, text, channel, is_dm)
+                    self._relay.observe(db_protocol, unified_id, text, channel, is_dm)
                 except Exception as e:
                     logger.warning(f"[bridge] relay.observe({db_protocol}) error: {e}")
 
                 for addon in self._addons:
                     try:
-                        addon.on_message(sender, text, msg.raw_packet or {})
+                        addon.on_message(unified_id, text, msg.raw_packet or {})
                     except Exception as e:
                         logger.warning(
                             f"Addon {addon.name} on_message error: {e}"
                         )
 
-                self._request_queue.put((db_protocol, sender, text, channel, is_dm))
+                self._request_queue.put((db_protocol, unified_id, text, channel, is_dm))
             except Exception as e:
                 logger.error(f"Error in secondary radio ingest: {e}")
 
@@ -1981,15 +2000,19 @@ class StandaloneBridge:
         the unified ``mc:`` prefix instead of the Meshtastic interface.
         """
         if protocol == "meshcore":
+            # Accept both unified (``mc:<native>``) and raw-native forms —
+            # the ingest loop now passes unified ids through the request
+            # queue, but legacy callers may still hand us the native form.
+            routing_id = node_id if node_id.startswith("mc:") else f"mc:{node_id}"
             try:
                 self._radio_manager.send(
-                    f"mc:{node_id}", text, channel=channel, is_dm=is_dm,
+                    routing_id, text, channel=channel, is_dm=is_dm,
                 )
                 ch_label = "DM" if is_dm else f"ch{channel}"
-                logger.info(f"[meshcore] Status to {node_id} ({ch_label}): {text}")
+                logger.info(f"[meshcore] Status to {routing_id} ({ch_label}): {text}")
             except Exception as e:
                 logger.warning(
-                    f"Failed to send meshcore status to {node_id}: {e}"
+                    f"Failed to send meshcore status to {routing_id}: {e}"
                 )
             return
         if not self.interface or not self._is_interface_alive():
@@ -2048,18 +2071,19 @@ class StandaloneBridge:
                 )
             else:
                 message = content
+            routing_id = node_id if node_id.startswith("mc:") else f"mc:{node_id}"
             try:
                 self._radio_manager.send(
-                    f"mc:{node_id}", message, channel=channel, is_dm=is_dm,
+                    routing_id, message, channel=channel, is_dm=is_dm,
                 )
                 ch_label = "DM" if is_dm else f"ch{channel}"
                 logger.info(
-                    f"[meshcore] Sent to {node_id} ({ch_label}): "
+                    f"[meshcore] Sent to {routing_id} ({ch_label}): "
                     f"{len(message.encode('utf-8'))} bytes"
                 )
             except Exception as e:
                 logger.warning(
-                    f"Failed to send meshcore response to {node_id}: {e}"
+                    f"Failed to send meshcore response to {routing_id}: {e}"
                 )
             return
         if not self.interface:
@@ -2194,26 +2218,44 @@ class StandaloneBridge:
                     self._rag_disabled_nodes.discard(nid)
                 logger.info(f"Auto-cleared context for {nid} (idle >{CONTEXT_TTL//60}m)")
 
-    def _node_sync_loop(self):
-        """Periodically merge node positions from all backends."""
-        while self._running:
-            time.sleep(NODEDB_REFRESH_INTERVAL_S)
-            try:
-                positions = self._radio_manager.get_all_node_positions()
-                for uid, pos in positions.items():
-                    if uid not in self._node_positions:
+    def _sync_nodes_from_backends(self) -> None:
+        """One-shot: pull positions, meta, and contact list from every
+        connected backend and merge into the bridge's in-memory state.
+        Idempotent — safe to call any time."""
+        try:
+            positions = self._radio_manager.get_all_node_positions()
+            for uid, pos in positions.items():
+                if uid not in self._node_positions:
+                    self._node_positions[uid] = pos
+                else:
+                    existing_ts = self._node_positions[uid].get("last_update", 0)
+                    new_ts = pos.get("last_update", 0)
+                    if new_ts > existing_ts:
                         self._node_positions[uid] = pos
-                    else:
-                        # Update if newer
-                        existing_ts = self._node_positions[uid].get("last_update", 0)
-                        new_ts = pos.get("last_update", 0)
-                        if new_ts > existing_ts:
-                            self._node_positions[uid] = pos
-                meta = self._radio_manager.get_all_node_meta()
-                for uid, m in meta.items():
-                    self._node_meta[uid] = m
-            except Exception as e:
-                logger.debug(f"Node sync error: {e}")
+            meta = self._radio_manager.get_all_node_meta()
+            for uid, m in meta.items():
+                self._node_meta[uid] = m
+            # Advertised-only contacts land in _known_nodes with their
+            # unified ("mc:...") id so the dashboard renders MC peers
+            # even before they've sent any traffic.
+            all_nodes = self._radio_manager.get_all_nodes()
+            for uid in all_nodes:
+                self._known_nodes.add(uid)
+            self._node_count = len(self._known_nodes)
+        except Exception as e:
+            logger.debug(f"Node sync error: {e}")
+
+    def _node_sync_loop(self):
+        """Periodic wrapper around :meth:`_sync_nodes_from_backends`. Runs
+        once almost-immediately so a freshly-attached secondary radio
+        populates nodes within a few seconds instead of waiting a full
+        NODEDB_REFRESH_INTERVAL_S tick. After that, syncs every interval.
+        """
+        # Prime the set quickly on startup; no need to block a full 30s.
+        time.sleep(3)
+        while self._running:
+            self._sync_nodes_from_backends()
+            time.sleep(NODEDB_REFRESH_INTERVAL_S)
 
     def _cleanup(self):
         """Clean up resources."""

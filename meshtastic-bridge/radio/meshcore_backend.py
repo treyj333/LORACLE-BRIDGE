@@ -152,6 +152,53 @@ class MeshCoreBackend(RadioBackend):
             result[prefix] = node
         return result
 
+    def get_node_positions(self) -> Dict[str, dict]:
+        """Positions for MC contacts that advertised GPS.
+
+        Keyed by ``backend_native_id`` (the first 12 chars of the public
+        key, matching ``get_nodes``). The RadioManager re-wraps these
+        with the ``mc:`` prefix when merging across backends.
+        """
+        import time as _time
+        result: Dict[str, dict] = {}
+        for name, contact in self._contacts.items():
+            pubkey = contact.get("public_key", "")
+            prefix = pubkey[:12] if pubkey else name[:12]
+            lat = contact.get("adv_lat")
+            lon = contact.get("adv_lon")
+            if lat is None or lon is None:
+                continue
+            if lat == 0 and lon == 0:
+                continue
+            result[prefix] = {
+                "lat": lat,
+                "lon": lon,
+                "alt": contact.get("adv_alt"),
+                # MeshCore advertisements don't carry a first-class
+                # timestamp — fall back to "now" so the UI treats these as
+                # recently-heard rather than aging them out immediately.
+                "last_update": _time.time(),
+            }
+        return result
+
+    def get_node_meta(self) -> Dict[str, dict]:
+        """Metadata for MC contacts (short_name / long_name / hops-unknown).
+
+        Keyed by the same ``backend_native_id`` as ``get_node_positions``.
+        Hops / RSSI / SNR aren't carried in contact advertisements, so those
+        fields stay absent and the UI falls back to "fresh heard" heuristics.
+        """
+        result: Dict[str, dict] = {}
+        for name, contact in self._contacts.items():
+            pubkey = contact.get("public_key", "")
+            prefix = pubkey[:12] if pubkey else name[:12]
+            adv_name = contact.get("adv_name") or name
+            result[prefix] = {
+                "short_name": prefix[:6],
+                "long_name": adv_name,
+            }
+        return result
+
     def get_self_info(self) -> dict:
         info = {"self_node_id": None}
         if self._meshcore is None or self._loop is None:
