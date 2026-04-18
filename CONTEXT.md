@@ -4,6 +4,23 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-18 01:35] — MT/MC equal-citizens pass (Phase 2: wizard copy + fallback)
+
+- What changed:
+  - **Wizard step labels dropped protocol names.** `STEP 1 OF 2 — MESHTASTIC` → `STEP 1 OF 2 — PRIMARY RADIO`; `STEP 2 OF 2 — MESHCORE` → `STEP 2 OF 2 — SECOND RADIO (OPTIONAL)`. Primary-modal title `CONNECT YOUR MESHTASTIC` → `CONNECT YOUR FIRST RADIO`; add-radio modal title `ADD SECONDARY RADIO` → `ADD A SECOND RADIO`. Step descriptions rewritten to frame MT + MC as equal rather than "MT-required, MC-optional-addon."
+  - **Skip buttons renamed.** `SKIP — NO MESHTASTIC` → `SKIP — MESHCORE ONLY`; `SKIP — NO MESHCORE` → `SKIP — SINGLE RADIO`. Same flow, honest framing (the `/api/connection/switch` endpoint is still MT-only underneath, so stepping past primary with `SKIP` really does mean "my first radio is MC").
+  - **Success-modal paragraph resymmetrized.** Was: *"Your Meshtastic radio is up and running. Next, let's try a MeshCore radio — it's optional."* Now: *"Your first radio is up. Want to reach the other network too? Add a MeshCore radio — optional. With both connected, MT and MC peers can message each other through the auto-bridge."* Pitches the second radio as a cross-network bridge, not a bolted-on extra.
+  - **Dropped hardcoded `mt-primary` fallback in `buildGraph`.** The placeholder self-node inserted when no backend info has arrived yet now honours `App.scope`: if the user has scoped to MC, the fallback gets `protocol: 'mc'` instead of unconditionally assuming MT. When scope is `all`, the fallback's `protocol` is left empty (previously `mt`), so nothing downstream assumes MT-by-default during the first poll tick.
+- Why:
+  - Phase 2 of the equal-citizens work: once the scope selector + graceful feature-parity infra (Phase 1 + 3) landed, the remaining asymmetry was all copy. The wizard was the most visible — it literally told users "MT is the main thing; MC is the optional add-on" with every label, step, and skip button. Doesn't change flow (MT is still the connect-modal target because `/api/connection/switch` is MT-only), but stops framing MT as the product and MC as the plugin. The `mt-primary` fallback was a second-order bug: even with the scope selector set to MC, a zero-backend first paint drew a "MY NODE" teal circle in the middle of the canvas.
+- Impact on project goals:
+  - Every piece of first-run copy now reads as "MT and MC are equals" instead of "MT first, maybe MC second." Combined with Phase 1 (scope selector), Phase 3 (graceful feature fallback), and Phase 2 (copy), the dashboard no longer frames either protocol as primary. Remaining known asymmetries: the primary-connect API is MT-only (a flow refactor, not copy), and `/api/connection/switch` route naming still reflects the MT-origin design. Both are non-blocking for the equal-citizens experience today.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — wizard step labels (`connect-modal-wizard-step`, `ar-wizard-step`), titles + descriptions in `_applyWizardChromePrimary` / `_applyWizardChromeSecondary` and in the static HTML for step 2, skip-button labels, success-modal paragraph, `buildGraph` fallback protocol.
+- Tests: 306/306 pass.
+
+---
+
 ## [2026-04-18 01:10] — MT/MC equal-citizens pass (Phase 1 + 3)
 
 - What changed:

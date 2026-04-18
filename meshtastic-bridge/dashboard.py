@@ -2663,11 +2663,11 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
           <div id="connect-scan-list" style="margin-top:6px"></div>
         </div>
       </div>
-      <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — MESHTASTIC</div>
+      <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — PRIMARY RADIO</div>
       <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
         <button class="btn" id="connect-modal-dismiss-btn" onclick="dismissConnectModal()">DISMISS</button>
         <div style="display:flex;gap:6px">
-          <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — NO MESHTASTIC</button>
+          <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — MESHCORE ONLY</button>
           <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
         </div>
       </div>
@@ -2679,8 +2679,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div style="font-size:42px;color:var(--lo-accent-2);line-height:1">&#x2713;</div>
       <h3 style="margin:12px 0 8px 0;font-size:14px;color:var(--lo-accent-2);letter-spacing:0.1em">MESHTASTIC CONNECTED</h3>
       <p style="margin:0 0 16px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
-        Your Meshtastic radio is up and running. Next, let's try a MeshCore radio —
-        <strong style="color:var(--lo-ink)">it's optional</strong>. Skip if you don't have one.
+        Your first radio is up. Want to reach the other network too? Add a MeshCore radio —
+        <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC
+        peers can message each other through the auto-bridge.
       </p>
       <div id="connect-modal-success-detail" style="font-size:10px;color:var(--lo-faint);margin-bottom:14px"></div>
       <div style="display:flex;justify-content:space-between;gap:8px">
@@ -2694,9 +2695,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <!-- ── Add Secondary Radio Modal ─────────────────────────────────────────── -->
 <div class="lo-connect-modal" id="add-radio-modal">
   <div class="lo-connect-box">
-    <div id="ar-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 2 OF 2 — MESHCORE</div>
-    <h3 id="ar-title">ADD SECONDARY RADIO</h3>
-    <p id="ar-description">Attach a MeshCore radio alongside your primary Meshtastic. Once connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
+    <div id="ar-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 2 OF 2 — SECOND RADIO (OPTIONAL)</div>
+    <h3 id="ar-title">ADD A SECOND RADIO</h3>
+    <p id="ar-description">Attach a MeshCore radio alongside your first one. Once both are connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
     <div id="ar-active-row" style="display:none;margin-bottom:14px;padding:10px;background:var(--lo-bg-deep);font-size:11px">
       <div style="color:#9b59b6;font-weight:500;margin-bottom:4px;display:flex;align-items:center;gap:8px">
         <span style="display:inline-block;width:8px;height:8px;background:#9b59b6;transform:rotate(45deg);flex-shrink:0"></span>
@@ -2752,7 +2753,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
       <button class="btn" id="ar-cancel-btn" onclick="hideAddRadioModal()">CANCEL</button>
       <div style="display:flex;gap:6px">
-        <button class="btn" id="ar-skip-btn" onclick="wizardSkipSecondary()" style="display:none">SKIP — NO MESHCORE</button>
+        <button class="btn" id="ar-skip-btn" onclick="wizardSkipSecondary()" style="display:none">SKIP — SINGLE RADIO</button>
         <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
       </div>
     </div>
@@ -3183,8 +3184,12 @@ function buildGraph(state) {
   // dual-radio rig shows both "self" dots with distinct shape/color.
   var selfBackends = backends.slice(0);
   if (selfBackends.length === 0) {
-    // No backend info yet — fall back to a single generic self node.
-    selfBackends.push({ id: 'primary', protocol: 'mt', connected: !!state.connected, self_node_id: null });
+    // No backend info yet. Pick the fallback protocol from App.scope when the
+    // user has filtered to one — so an MC-only viewer doesn't see an empty-MT
+    // placeholder in the middle of the canvas. Otherwise leave protocol blank
+    // so downstream code doesn't assume MT is the "default".
+    var fallbackProto = (App.scope === 'mc') ? 'mc' : (App.scope === 'mt' ? 'mt' : '');
+    selfBackends.push({ id: 'primary', protocol: fallbackProto, connected: !!state.connected, self_node_id: null });
   }
   var selfOffsets = selfBackends.length === 1
     ? [{dx: 0, dy: 0}]
@@ -4787,8 +4792,11 @@ function _applyWizardChromePrimary(active) {
   if (step) step.style.display = active ? '' : 'none';
   if (skip) skip.style.display = active ? '' : 'none';
   if (active) {
-    if (title) title.textContent = 'CONNECT YOUR MESHTASTIC';
-    if (desc) desc.textContent = 'Plug in your main Meshtastic radio over USB, or scan for Bluetooth. You can skip this step if you only have a MeshCore.';
+    // Step 1 hosts the Meshtastic-connect flow today (the /api/connection/switch
+    // endpoint is MT-only). Keep the title honest about that, but frame it as
+    // "pick your first radio" rather than "MT is mandatory, MC is an add-on."
+    if (title) title.textContent = 'CONNECT YOUR FIRST RADIO';
+    if (desc) desc.textContent = 'Pair your first mesh radio. If you have both, either protocol works — MeshTastic and MeshCore are equal citizens on the canvas. Skip this step if your first radio is MeshCore.';
   }
 }
 
@@ -4801,8 +4809,8 @@ function _applyWizardChromeSecondary(active) {
   if (step) step.style.display = active ? '' : 'none';
   if (skip) skip.style.display = active ? '' : 'none';
   if (cancel) cancel.textContent = active ? 'BACK' : 'CANCEL';
-  if (active && title) title.textContent = 'CONNECT YOUR MESHCORE';
-  if (active && desc) desc.textContent = 'Optional second radio. When connected, public channel 0 auto-bridges between the two networks. Leave blank and skip if you don\u2019t have one.';
+  if (active && title) title.textContent = 'ADD A SECOND RADIO (OPTIONAL)';
+  if (active && desc) desc.textContent = 'Add a MeshCore radio alongside your first one. When both are up, public channel 0 auto-bridges in both directions so MT and MC peers can talk to each other. Skip if you\u2019re running a single network.';
 }
 
 function wizardSkipPrimary() {
