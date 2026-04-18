@@ -4,6 +4,23 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 22:45] — Paced wizard success screens + serial-port scanner
+
+- What changed:
+  - **Paced wizard success panels** — the step-1 modal no longer auto-dismisses 1.5s after a successful primary connect. Instead, the form rows are swapped out for a confirmation panel with a large teal `✓` glyph, a `MESHTASTIC CONNECTED` headline, a short description that explicitly calls out MeshCore as optional ("`…it's optional. Skip if you don't have one.`"), a small detail line showing the transport + address that was connected, and two clear buttons: `DONE — JUST MESHTASTIC` (closes the wizard) and `NEXT — ADD MESHCORE →` (advances to step 2). Step-2 gets an equivalent purple-diamond MESHCORE CONNECTED panel after a successful MC connect, with a single `DONE →` button and a plain-English confirmation that public-channel relay is live — no more 900ms-auto-close. Non-wizard "+ RADIO" flows keep the old brief-then-close UX so adding a radio after setup isn't slower than before. Panels toggle form/success state via new `#connect-modal-form` / `#connect-modal-success` and `#ar-form` / `#ar-success` wrappers; four new JS helpers (`_showPrimarySuccessPanel`, `_resetPrimaryPanels`, `_showSecondarySuccessPanel`, `_resetSecondaryPanels`) + three wizard-button handlers (`wizardAdvanceFromPrimarySuccess`, `wizardPrimaryDone`, `wizardFinishFromSecondarySuccess`).
+  - **Serial-port scanner** — new `GET /api/serial/scan` endpoint wraps `pyserial.tools.list_ports` (already a transitive meshtastic-python dep, zero new dependencies). Returns each port's `device`, `description`, `manufacturer`, `vid`, `pid`, and a heuristic `likely_radio` flag. The heuristic matches CP210x / CH340 / FT232 drivers, Silicon Labs / WCH manufacturer names, and a bunch of known-device paths (`/dev/cu.usbserial`, `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/cu.SLAB`). Dashboard: both connect modals (primary and secondary) grew a `SCAN PORTS` button next to their device/address input; clicking it populates a click-to-select list showing the port path, description, manufacturer, and VID:PID, with radio-shaped ports sorted to the top and marked with a green `●`. Shared JS (`_fetchSerialPorts`, `_renderSerialPorts`) keeps the two modal implementations in sync. SCAN PORTS only renders when the transport dropdown is set to `serial` — switching to TCP / BLE hides the button and its port list automatically.
+- Why:
+  - User feedback after the wizard shipped: "ok once it successfully connects to meshtastic it automatically closes but i want it to move on to the next screen and let them know meshtastic connected and then asks to connect a meshcore radio but it is optional and vice versa." The old 1500ms auto-dismiss swapped the title to "MESHTASTIC CONNECTED" for a blink, but a new user would miss that and just see the next modal appear out of nowhere. The paced success panel makes the success message unmissable and the next action explicit.
+  - Also: "for serial connection can you make a scan button to select from the systems comports." Typing `/dev/cu.usbserial-XYZ` by hand is error-prone and varies by OS; a SCAN PORTS button that surfaces the actual available ports (with radio-shape hints) closes that UX gap.
+- Impact on project goals:
+  - The first-run experience is now genuinely self-guided: the user sees explicit success for each radio, is told MeshCore is optional in plain English, and picks serial ports from a list rather than typing Unix device paths. Zero backend-protocol change — all client-side plus the one read-only pyserial wrapper endpoint. The wizard's paced flow also makes the demo story cleaner (no awkward "the modal flashed a thing and disappeared, what did it say?" during live demos).
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — new `/api/serial/scan` endpoint + `_looks_like_radio_port` heuristic, primary connect modal wrapped in form/success panels + serial SCAN PORTS UI, secondary (add-radio) modal wrapped + serial SCAN PORTS UI, JS `_fetchSerialPorts` / `_renderSerialPorts` / `connectModalSerialScan` / `addRadioSerialScan`, success-panel show/reset helpers, `checkConnectionForModal` replaced the wizard-mode auto-timer with `_showPrimarySuccessPanel`, `submitAddRadio` shows the success panel in wizard mode instead of auto-closing
+  - `README.md` — wizard + serial scanner documented in the Dual-Radio section
+- Tests: 302/302 pass (unchanged — UI work only).
+
+---
+
 ## [2026-04-17 22:15] — Two-step connect wizard, one-click bridge toggle, auto-seed at startup
 
 - What changed:

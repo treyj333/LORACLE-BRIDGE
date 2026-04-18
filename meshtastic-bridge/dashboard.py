@@ -626,6 +626,52 @@ def api_ble_scan():
     return jsonify({"devices": devices})
 
 
+@app.route("/api/serial/scan", methods=["GET"])
+def api_serial_scan():
+    """List available system COM / serial ports so users don't have to
+    type the path by hand. Uses pyserial's cross-platform list_ports
+    (meshtastic-python already depends on pyserial so no new deps).
+    """
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return jsonify({"error": "pyserial not installed", "ports": []}), 500
+    try:
+        ports = []
+        for p in list_ports.comports():
+            ports.append({
+                "device": p.device,
+                "description": (p.description or "").strip(),
+                "manufacturer": (p.manufacturer or "").strip(),
+                "vid": p.vid, "pid": p.pid,
+                # Flag the entries that look like a LoRa radio so the UI can
+                # highlight them over, say, a built-in Bluetooth serial port.
+                "likely_radio": _looks_like_radio_port(p),
+            })
+        # Radio-shaped ports first, then alphabetical.
+        ports.sort(key=lambda x: (not x["likely_radio"], x["device"]))
+        return jsonify({"ports": ports})
+    except Exception as e:
+        return jsonify({"error": str(e), "ports": []}), 500
+
+
+def _looks_like_radio_port(p) -> bool:
+    """Heuristic: does a pyserial ListPortInfo look like a LoRa radio?"""
+    blob = " ".join(
+        str(x or "") for x in (p.device, p.description, p.manufacturer)
+    ).lower()
+    # Silicon Labs CP210x, CH340, FT232, and the common USB vendor names for
+    # T-Beam / Heltec / RAK / NanoSG1 / MeshCore boards.
+    hints = (
+        "cp210", "ch340", "ch341", "ft232", "ftdi",
+        "silicon labs", "wch", "qinheng",
+        "tbeam", "heltec", "rak", "nanog1", "meshcore",
+        "/dev/cu.usbserial", "/dev/ttyusb", "/dev/ttyacm", "/dev/cu.slab",
+        "/dev/cu.wchusbserial",
+    )
+    return any(h in blob for h in hints)
+
+
 @app.route("/api/ble/last-device", methods=["GET"])
 def api_ble_last_device():
     if _bridge is None:
@@ -2537,43 +2583,69 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <div class="lo-connect-box">
     <h3 id="connect-modal-title">CONNECT A RADIO</h3>
     <p id="connect-modal-desc">No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.</p>
-    <div class="lo-form-row">
-      <span class="lo-form-label">PROTOCOL</span>
-      <select id="connect-protocol" style="max-width:140px">
-        <option value="auto">Auto-detect</option>
-        <option value="meshtastic">Meshtastic</option>
-        <option value="meshcore">MeshCore</option>
-      </select>
+
+    <!-- FORM PANEL — shown while the user picks protocol/transport/address -->
+    <div id="connect-modal-form">
+      <div class="lo-form-row">
+        <span class="lo-form-label">PROTOCOL</span>
+        <select id="connect-protocol" style="max-width:140px">
+          <option value="auto">Auto-detect</option>
+          <option value="meshtastic">Meshtastic</option>
+          <option value="meshcore">MeshCore</option>
+        </select>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">TRANSPORT</span>
+        <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
+          <option value="ble" selected>Bluetooth (BLE)</option>
+          <option value="serial">Serial (USB)</option>
+          <option value="tcp">TCP</option>
+        </select>
+      </div>
+      <div class="lo-form-row" id="connect-address-row" style="display:none">
+        <span class="lo-form-label">ADDRESS</span>
+        <div style="flex:1;display:flex;gap:6px">
+          <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)" style="flex:1">
+          <button class="btn btn-sm" id="connect-serial-scan-btn" onclick="connectModalSerialScan()" style="display:none;white-space:nowrap">SCAN PORTS</button>
+        </div>
+      </div>
+      <div class="lo-form-row" id="connect-serial-list-row" style="display:none">
+        <span class="lo-form-label"></span>
+        <div id="connect-serial-list" style="flex:1;font-size:10px;color:var(--lo-dim)"></div>
+      </div>
+      <div class="lo-form-row" id="connect-scan-row">
+        <span class="lo-form-label">DEVICES</span>
+        <div style="flex:1">
+          <button class="btn btn-sm" id="connect-scan-btn" onclick="connectModalScan()">SCAN FOR DEVICES</button>
+          <div id="connect-scan-status" style="font-size:10px;color:var(--lo-dim);margin-top:6px"></div>
+          <div id="connect-scan-list" style="margin-top:6px"></div>
+        </div>
+      </div>
+      <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — MESHTASTIC</div>
+      <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
+        <button class="btn" id="connect-modal-dismiss-btn" onclick="dismissConnectModal()">DISMISS</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — NO MESHTASTIC</button>
+          <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
+        </div>
+      </div>
+      <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
     </div>
-    <div class="lo-form-row">
-      <span class="lo-form-label">TRANSPORT</span>
-      <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
-        <option value="ble" selected>Bluetooth (BLE)</option>
-        <option value="serial">Serial (USB)</option>
-        <option value="tcp">TCP</option>
-      </select>
-    </div>
-    <div class="lo-form-row" id="connect-address-row" style="display:none">
-      <span class="lo-form-label">ADDRESS</span>
-      <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)">
-    </div>
-    <div class="lo-form-row" id="connect-scan-row">
-      <span class="lo-form-label">DEVICES</span>
-      <div style="flex:1">
-        <button class="btn btn-sm" id="connect-scan-btn" onclick="connectModalScan()">SCAN FOR DEVICES</button>
-        <div id="connect-scan-status" style="font-size:10px;color:var(--lo-dim);margin-top:6px"></div>
-        <div id="connect-scan-list" style="margin-top:6px"></div>
+
+    <!-- SUCCESS PANEL — swapped in after a successful primary connect during the wizard -->
+    <div id="connect-modal-success" style="display:none;text-align:center;padding:10px 0">
+      <div style="font-size:42px;color:var(--lo-accent-2);line-height:1">&#x2713;</div>
+      <h3 style="margin:12px 0 8px 0;font-size:14px;color:var(--lo-accent-2);letter-spacing:0.1em">MESHTASTIC CONNECTED</h3>
+      <p style="margin:0 0 16px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
+        Your Meshtastic radio is up and running. Next, let's try a MeshCore radio —
+        <strong style="color:var(--lo-ink)">it's optional</strong>. Skip if you don't have one.
+      </p>
+      <div id="connect-modal-success-detail" style="font-size:10px;color:var(--lo-faint);margin-bottom:14px"></div>
+      <div style="display:flex;justify-content:space-between;gap:8px">
+        <button class="btn" onclick="wizardPrimaryDone()">DONE — JUST MESHTASTIC</button>
+        <button class="btn btn-primary" onclick="wizardAdvanceFromPrimarySuccess()">NEXT — ADD MESHCORE &rarr;</button>
       </div>
     </div>
-    <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — MESHTASTIC</div>
-    <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
-      <button class="btn" id="connect-modal-dismiss-btn" onclick="dismissConnectModal()">DISMISS</button>
-      <div style="display:flex;gap:6px">
-        <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — NO MESHTASTIC</button>
-        <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
-      </div>
-    </div>
-    <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
   </div>
 </div>
 
@@ -2588,6 +2660,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div id="ar-active-detail" style="color:var(--lo-dim)"></div>
       <button class="btn btn-sm" onclick="removeSecondaryRadio()" style="margin-top:8px;color:#c0392b;border-color:#c0392b">DISCONNECT</button>
     </div>
+
+    <!-- FORM PANEL — collected into a div so we can swap a success panel in over the top. -->
+    <div id="ar-form">
     <div class="lo-form-row">
       <span class="lo-form-label">PROTOCOL</span>
       <select id="ar-protocol" style="max-width:140px" disabled><option value="meshcore">MeshCore</option></select>
@@ -2602,7 +2677,14 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     </div>
     <div class="lo-form-row" id="ar-serial-row">
       <span class="lo-form-label">DEVICE</span>
-      <input type="text" id="ar-serial-port" placeholder="/dev/ttyUSB1 or COM4">
+      <div style="flex:1;display:flex;gap:6px">
+        <input type="text" id="ar-serial-port" placeholder="/dev/ttyUSB1 or COM4" style="flex:1">
+        <button class="btn btn-sm" onclick="addRadioSerialScan()" style="white-space:nowrap">SCAN PORTS</button>
+      </div>
+    </div>
+    <div class="lo-form-row" id="ar-serial-list-row" style="display:none">
+      <span class="lo-form-label"></span>
+      <div id="ar-serial-list" style="flex:1;font-size:10px;color:var(--lo-dim)"></div>
     </div>
     <div class="lo-form-row" id="ar-tcp-row" style="display:none">
       <span class="lo-form-label">HOST</span>
@@ -2630,6 +2712,22 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       </div>
     </div>
     <div id="ar-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
+    </div><!-- /#ar-form -->
+
+    <!-- SUCCESS PANEL — swapped in after a successful MC connect -->
+    <div id="ar-success" style="display:none;text-align:center;padding:10px 0">
+      <div style="font-size:42px;color:#9b59b6;line-height:1">&#x25C6;</div>
+      <h3 style="margin:12px 0 8px 0;font-size:14px;color:#9b59b6;letter-spacing:0.1em">MESHCORE CONNECTED</h3>
+      <p id="ar-success-desc" style="margin:0 0 12px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
+        Both radios are up. Public channel 0 is auto-bridging in both directions —
+        messages will be tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code>
+        or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> on the other side.
+      </p>
+      <div id="ar-success-detail" style="font-size:10px;color:var(--lo-faint);margin-bottom:14px"></div>
+      <div style="display:flex;justify-content:center;gap:8px">
+        <button class="btn btn-primary" onclick="wizardFinishFromSecondarySuccess()">DONE &rarr;</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -4480,6 +4578,78 @@ function wizardComplete() {
   try { localStorage.setItem('loracle-setup-complete', '1'); } catch(e) {}
   _applyWizardChromePrimary(false);
   _applyWizardChromeSecondary(false);
+  // Reset any success panels back to their form state so a future disconnect
+  // shows the normal primary-connect form, not a stale success screen.
+  _resetPrimaryPanels();
+  _resetSecondaryPanels();
+}
+
+// ── Wizard success-panel helpers ─────────────────────────────────────────
+
+function _showPrimarySuccessPanel() {
+  var form = document.getElementById('connect-modal-form');
+  var ok = document.getElementById('connect-modal-success');
+  if (form) form.style.display = 'none';
+  if (ok) ok.style.display = '';
+  // Fill in a small detail line so the user can see WHAT connected.
+  try {
+    var addr = (document.getElementById('connect-address') || {}).value || '';
+    var t = (document.getElementById('connect-type') || {}).value || '';
+    var d = [t ? t.toUpperCase() : '', addr].filter(Boolean).join(' \u2014 ');
+    var det = document.getElementById('connect-modal-success-detail');
+    if (det) det.textContent = d;
+  } catch(e) {}
+}
+
+function _resetPrimaryPanels() {
+  var form = document.getElementById('connect-modal-form');
+  var ok = document.getElementById('connect-modal-success');
+  if (form) form.style.display = '';
+  if (ok) ok.style.display = 'none';
+}
+
+function _showSecondarySuccessPanel(backend) {
+  var form = document.getElementById('ar-form');
+  var ok = document.getElementById('ar-success');
+  if (form) form.style.display = 'none';
+  if (ok) ok.style.display = '';
+  var det = document.getElementById('ar-success-detail');
+  if (det && backend) {
+    var parts = [];
+    if (backend.transport) parts.push(String(backend.transport).toUpperCase());
+    if (backend.self_node_id) parts.push(backend.self_node_id);
+    det.textContent = parts.join(' \u2014 ');
+  }
+}
+
+function _resetSecondaryPanels() {
+  var form = document.getElementById('ar-form');
+  var ok = document.getElementById('ar-success');
+  if (form) form.style.display = '';
+  if (ok) ok.style.display = 'none';
+}
+
+function wizardAdvanceFromPrimarySuccess() {
+  // User clicked NEXT on the MT success screen.
+  document.getElementById('connect-modal').classList.remove('open');
+  _connectModalDismissed = true;
+  _userAckedModal = true;
+  _resetPrimaryPanels();
+  showAddRadioModal();
+}
+
+function wizardPrimaryDone() {
+  // User clicked "DONE — JUST MESHTASTIC" on the MT success screen.
+  document.getElementById('connect-modal').classList.remove('open');
+  _connectModalDismissed = true;
+  _userAckedModal = true;
+  wizardComplete();  // also resets panels
+}
+
+function wizardFinishFromSecondarySuccess() {
+  // User clicked DONE on the MC success screen.
+  document.getElementById('add-radio-modal').classList.remove('open');
+  wizardComplete();
 }
 
 function _applyWizardChromePrimary(active) {
@@ -4527,6 +4697,7 @@ function wizardSkipSecondary() {
 
 function showConnectModal() {
   if (_connectModalDismissed) return;
+  _resetPrimaryPanels();  // clean slate if previously in success mode
   _applyWizardChromePrimary(_wizardActive);
   document.getElementById('connect-modal').classList.add('open');
 }
@@ -4541,10 +4712,80 @@ function hideConnectModal() { document.getElementById('connect-modal').classList
 
 function connectModalTypeChanged() {
   var sel = document.getElementById('connect-type');
+  var isSerial = sel.value === 'serial';
   document.getElementById('connect-address-row').style.display = sel.value === 'ble' ? 'none' : '';
   document.getElementById('connect-scan-row').style.display = sel.value === 'ble' ? '' : 'none';
-  if (sel.value === 'serial') document.getElementById('connect-address').placeholder = 'auto-detect (or /dev/...)';
+  // SCAN PORTS button only makes sense for serial transport.
+  var btn = document.getElementById('connect-serial-scan-btn');
+  if (btn) btn.style.display = isSerial ? '' : 'none';
+  var listRow = document.getElementById('connect-serial-list-row');
+  if (listRow && !isSerial) listRow.style.display = 'none';
+  if (isSerial) document.getElementById('connect-address').placeholder = 'auto-detect (or /dev/...)';
   else if (sel.value === 'tcp') document.getElementById('connect-address').placeholder = '192.168.1.1:4403';
+}
+
+// ── Serial-port scan — shared between the primary and secondary modals ────
+
+async function _fetchSerialPorts() {
+  var r = await fetch('/api/serial/scan');
+  var d = await r.json();
+  return (d && d.ports) || [];
+}
+
+function _renderSerialPorts(listEl, ports, onPick) {
+  if (!ports.length) {
+    listEl.innerHTML = '<div style="padding:6px 0;color:var(--lo-faint)">No serial devices found. Plug in a USB radio and click SCAN PORTS again.</div>';
+    return;
+  }
+  listEl.innerHTML = ports.map(function(p, i) {
+    var pid = (p.vid ? ' VID:' + p.vid.toString(16).toUpperCase().padStart(4,'0') : '') +
+              (p.pid ? ' PID:' + p.pid.toString(16).toUpperCase().padStart(4,'0') : '');
+    var tag = p.likely_radio ? '<span style="color:var(--lo-accent-2)">\u25CF</span> ' : '';
+    var desc = [p.description, p.manufacturer].filter(function(x){return x}).join(' \u2014 ');
+    return '<div class="lo-serial-port" data-idx="' + i + '" style="padding:5px 8px;margin:2px 0;background:var(--lo-bg-deep);cursor:pointer;font-family:var(--font-mono)">' +
+      tag + '<strong style="color:var(--lo-ink)">' + escapeHtml(p.device) + '</strong>' +
+      (desc ? ' <span style="color:var(--lo-dim)">\u2014 ' + escapeHtml(desc) + '</span>' : '') +
+      (pid ? ' <span style="color:var(--lo-faint);font-size:9px">' + escapeHtml(pid) + '</span>' : '') +
+      '</div>';
+  }).join('');
+  Array.from(listEl.querySelectorAll('.lo-serial-port')).forEach(function(row) {
+    row.addEventListener('click', function() {
+      var idx = parseInt(row.dataset.idx, 10);
+      onPick(ports[idx]);
+    });
+  });
+}
+
+async function connectModalSerialScan() {
+  var listRow = document.getElementById('connect-serial-list-row');
+  var listEl = document.getElementById('connect-serial-list');
+  listRow.style.display = '';
+  listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning\u2026</span>';
+  try {
+    var ports = await _fetchSerialPorts();
+    _renderSerialPorts(listEl, ports, function(p) {
+      document.getElementById('connect-address').value = p.device;
+      listEl.innerHTML = '<div style="color:var(--lo-accent-2)">Selected: ' + escapeHtml(p.device) + '</div>';
+    });
+  } catch(e) {
+    listEl.innerHTML = '<span style="color:#c0392b">Scan failed: ' + escapeHtml(String(e)) + '</span>';
+  }
+}
+
+async function addRadioSerialScan() {
+  var listRow = document.getElementById('ar-serial-list-row');
+  var listEl = document.getElementById('ar-serial-list');
+  listRow.style.display = '';
+  listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning\u2026</span>';
+  try {
+    var ports = await _fetchSerialPorts();
+    _renderSerialPorts(listEl, ports, function(p) {
+      document.getElementById('ar-serial-port').value = p.device;
+      listEl.innerHTML = '<div style="color:var(--lo-accent-2)">Selected: ' + escapeHtml(p.device) + '</div>';
+    });
+  } catch(e) {
+    listEl.innerHTML = '<span style="color:#c0392b">Scan failed: ' + escapeHtml(String(e)) + '</span>';
+  }
 }
 
 async function connectModalScan() {
@@ -4604,6 +4845,7 @@ async function connectFromModal() {
 // ── Add Secondary Radio modal ─────────────────────────────────────────────
 
 function showAddRadioModal() {
+  _resetSecondaryPanels();  // clean slate in case the previous session left success-panel visible
   _applyWizardChromeSecondary(_wizardActive);
   refreshAddRadioModal();
   document.getElementById('add-radio-modal').classList.add('open');
@@ -4674,18 +4916,15 @@ async function submitAddRadio() {
     if (!r.ok || d.error) {
       arSetStatus(d.error || ('HTTP ' + r.status), 'error');
     } else {
-      arSetStatus('\u2713 Connected — public-channel bridge is live', 'ok');
+      arSetStatus('\u2713 Connected', 'ok');
       showToast('MeshCore radio connected');
-      setTimeout(function() {
-        // Close the modal, but DON'T bounce back to step 1 during the wizard.
-        if (_wizardActive) {
-          document.getElementById('add-radio-modal').classList.remove('open');
-          document.getElementById('ar-status').textContent = '';
-          wizardComplete();
-        } else {
-          hideAddRadioModal();
-        }
-      }, 900);
+      if (_wizardActive) {
+        // Paced wizard success screen — user clicks DONE to finish.
+        _showSecondarySuccessPanel(d && d.backend);
+      } else {
+        // Normal path (post-wizard "+ RADIO" flow): brief confirmation then close.
+        setTimeout(hideAddRadioModal, 900);
+      }
     }
   } catch (e) {
     arSetStatus(String(e), 'error');
@@ -4724,21 +4963,22 @@ function checkConnectionForModal(connected) {
     if (_userAckedModal) {
       hideConnectModal();
     } else if (document.getElementById('connect-modal').classList.contains('open')) {
-      document.getElementById('connect-modal-title').textContent = _wizardActive ? 'MESHTASTIC CONNECTED' : 'RADIO CONNECTED';
-      document.getElementById('connect-modal-desc').textContent = _wizardActive
-        ? 'Primary radio up. Next, connect your MeshCore radio — or skip if you only have the one.'
-        : 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
-      document.getElementById('connect-modal-status').textContent = '';
-      if (!checkConnectionForModal._autoDismissTimer) {
-        checkConnectionForModal._autoDismissTimer = setTimeout(function() {
-          checkConnectionForModal._autoDismissTimer = null;
-          if (!_userAckedModal) {
-            _userAckedModal = true;
-            hideConnectModal();
-            // Chain into step 2 of the first-run wizard.
-            if (_wizardActive) { _connectModalDismissed = true; showAddRadioModal(); }
-          }
-        }, _wizardActive ? 1500 : 3000);
+      if (_wizardActive) {
+        // Paced wizard success: swap the form out for a confirmation panel
+        // with explicit NEXT / DONE buttons. User clicks to advance — no
+        // auto-close, so they can read the success message.
+        _showPrimarySuccessPanel();
+      } else {
+        // Normal (post-wizard) flow: brief confirmation, auto-close.
+        document.getElementById('connect-modal-title').textContent = 'RADIO CONNECTED';
+        document.getElementById('connect-modal-desc').textContent = 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
+        document.getElementById('connect-modal-status').textContent = '';
+        if (!checkConnectionForModal._autoDismissTimer) {
+          checkConnectionForModal._autoDismissTimer = setTimeout(function() {
+            checkConnectionForModal._autoDismissTimer = null;
+            if (!_userAckedModal) { _userAckedModal = true; hideConnectModal(); }
+          }, 3000);
+        }
       }
     }
     return;
