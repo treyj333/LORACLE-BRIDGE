@@ -92,13 +92,13 @@ class TestBridgeIntegration(unittest.TestCase):
         mt.receive(relay, "!alice", "hello from meshtastic", channel=0, is_dm=False)
         self.assertEqual(len(mc.sent), 1)
         self.assertEqual(len(mt.sent), 0)
-        self.assertIn("[mt-", mc.sent[0]["text"])
+        self.assertIn("from meshtastic (", mc.sent[0]["text"])
         self.assertIn("hello from meshtastic", mc.sent[0]["text"])
 
         # MC → MT
         mc.receive(relay, "abcdef012345", "hello from meshcore", channel=0, is_dm=False)
         self.assertEqual(len(mt.sent), 1)
-        self.assertIn("[mc-", mt.sent[0]["text"])
+        self.assertIn("from meshcore (", mt.sent[0]["text"])
 
         # Audit log captures both
         rows = store.recent()

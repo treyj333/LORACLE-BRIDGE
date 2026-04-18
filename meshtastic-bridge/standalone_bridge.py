@@ -430,11 +430,16 @@ class StandaloneBridge:
         # Node sync loop
         threading.Thread(target=self._node_sync_loop, daemon=True).start()
 
-        # Secondary radio (MeshCore via RadioManager) — optional, only if
-        # --second-radio was passed and the spec parsed cleanly.
+        # Ingest loop is always spawned — it blocks harmlessly on an empty
+        # queue when no secondary radio is attached, and picks up traffic
+        # immediately if one is added via the dashboard at runtime.
+        threading.Thread(target=self._secondary_radio_ingest_loop, daemon=True).start()
+
+        # Secondary radio (MeshCore via RadioManager) — optional, connected
+        # at startup only when --second-radio was passed and parsed cleanly.
+        # Runtime add/remove happens via add_secondary_radio() / the dashboard.
         if self._second_radio_config:
             threading.Thread(target=self._connect_secondary_radio, daemon=True).start()
-            threading.Thread(target=self._secondary_radio_ingest_loop, daemon=True).start()
 
         # Start addons
         for addon in self._addons:
@@ -1354,37 +1359,183 @@ class StandaloneBridge:
         can block up to 30s, so keep this off the main thread. On failure,
         logs an error and returns — the rest of the bridge keeps running
         on the primary Meshtastic radio.
+
+        Uses ``self._second_radio_config`` — for runtime-added radios, call
+        :meth:`add_secondary_radio` instead (which handles persistence, the
+        dynamic connect, and default-bridge-config seeding in one shot).
         """
         cfg = self._second_radio_config
         if not cfg:
             return
-        if cfg.get("protocol") != "meshcore":
-            logger.warning(
-                f"Unsupported secondary-radio protocol: {cfg.get('protocol')!r}"
-            )
-            return
         try:
-            from radio.meshcore_backend import MeshCoreBackend
-        except ImportError:
-            logger.warning(
-                "meshcore library not installed — skipping secondary radio. "
-                "Install with: pip install meshcore>=2.2.1"
-            )
-            return
-        try:
-            backend = MeshCoreBackend(
-                connection_type=cfg["transport"],
-                serial_port=cfg.get("serial_port"),
-                tcp_host=cfg.get("tcp_host", "192.168.1.1"),
-                tcp_port=cfg.get("tcp_port", 4000),
-                ble_address=cfg.get("ble_address"),
-            )
-            self._radio_manager.add_backend(backend)
-            logger.info(
-                f"Secondary radio connected: meshcore via {cfg['transport']}"
-            )
+            self._spawn_secondary_radio(cfg)
         except Exception as e:
             logger.error(f"Failed to connect secondary meshcore radio: {e}")
+
+    def _spawn_secondary_radio(self, cfg: Dict[str, Any]):
+        """Build a MeshCoreBackend from *cfg* and register with RadioManager.
+
+        Raises on bad protocol, missing lib, or connect failure so callers
+        can return useful errors to the dashboard. *cfg* is the dict shape
+        produced by :func:`_parse_second_radio`.
+        """
+        if cfg.get("protocol") != "meshcore":
+            raise ValueError(
+                f"Unsupported secondary-radio protocol: {cfg.get('protocol')!r}"
+            )
+        try:
+            from radio.meshcore_backend import MeshCoreBackend
+        except ImportError as e:
+            raise ImportError(
+                "meshcore library not installed. Install with: pip install meshcore>=2.2.1"
+            ) from e
+        backend = MeshCoreBackend(
+            connection_type=cfg["transport"],
+            serial_port=cfg.get("serial_port"),
+            tcp_host=cfg.get("tcp_host", "192.168.1.1"),
+            tcp_port=cfg.get("tcp_port", 4000),
+            ble_address=cfg.get("ble_address"),
+        )
+        self._radio_manager.add_backend(backend)
+        logger.info(
+            f"Secondary radio connected: meshcore via {cfg['transport']}"
+        )
+        return backend
+
+    def add_secondary_radio(
+        self,
+        transport: str,
+        serial_port: Optional[str] = None,
+        tcp_host: Optional[str] = None,
+        tcp_port: Optional[int] = None,
+        ble_address: Optional[str] = None,
+        seed_bridge: bool = True,
+    ) -> Dict[str, Any]:
+        """Attach a MeshCore radio at runtime. Persists the spec so the bridge
+        restores it on next restart, and (when ``seed_bridge`` is true) seeds
+        default public-channel relay rules both directions so cross-protocol
+        public-channel messages start bridging immediately.
+
+        Returns the backend info dict (same shape as ``get_backends_info()``).
+        Raises ``ValueError`` / ``ImportError`` / ``ConnectionError`` on
+        failure — callers surface these to the user.
+        """
+        transport = (transport or "").lower().strip()
+        if transport not in ("serial", "tcp", "ble"):
+            raise ValueError(f"Invalid transport: {transport!r}")
+
+        cfg: Dict[str, Any] = {"protocol": "meshcore", "transport": transport}
+        if transport == "serial":
+            if not serial_port:
+                raise ValueError("serial transport requires serial_port")
+            cfg["serial_port"] = serial_port
+        elif transport == "tcp":
+            cfg["tcp_host"] = tcp_host or "192.168.1.1"
+            cfg["tcp_port"] = int(tcp_port) if tcp_port else 4000
+        elif transport == "ble":
+            cfg["ble_address"] = ble_address or None
+
+        # Connect first. A failed connect must not leave stale settings.
+        self._spawn_secondary_radio(cfg)
+        self._second_radio_config = cfg
+
+        # Persist spec so --second-radio doesn't have to be passed next run.
+        try:
+            s = load_settings()
+            s["second_radio"] = self._encode_second_radio_spec(cfg)
+            save_settings(s)
+        except Exception as e:
+            logger.warning(f"Could not persist second_radio setting: {e}")
+
+        # Seed cross-protocol public-channel relay so the user's ask —
+        # "when I get a meshcore message on public channels my meshtastic
+        # radio retransmits it" — works out of the box.
+        if seed_bridge:
+            try:
+                self._seed_default_bridge_rules()
+            except Exception as e:
+                logger.warning(f"Could not seed default bridge rules: {e}")
+
+        # Return the newly-added backend's info (last in the list).
+        try:
+            info = self._radio_manager.get_backends_info()
+            for b in reversed(info):
+                if b.get("protocol") == "meshcore":
+                    return b
+            return info[-1] if info else {}
+        except Exception:
+            return {}
+
+    def remove_secondary_radio(self, backend_id: Optional[str] = None) -> None:
+        """Disconnect a secondary radio and clear the persisted spec.
+
+        If *backend_id* is not given, removes the first meshcore backend
+        (there's practically ever only one). Idempotent — calling on a
+        radio that's already gone is a no-op.
+        """
+        target = backend_id
+        if target is None:
+            for b in self._radio_manager.get_backends():
+                try:
+                    if b.protocol.value == "mc":
+                        target = b.backend_id
+                        break
+                except Exception:
+                    continue
+        if target:
+            try:
+                self._radio_manager.remove_backend(target)
+            except Exception as e:
+                logger.warning(f"Error removing backend {target}: {e}")
+        self._second_radio_config = None
+        try:
+            s = load_settings()
+            s["second_radio"] = None
+            save_settings(s)
+        except Exception as e:
+            logger.warning(f"Could not clear persisted second_radio: {e}")
+
+    @staticmethod
+    def _encode_second_radio_spec(cfg: Dict[str, Any]) -> str:
+        """Serialize a parsed config dict back to the ``--second-radio`` string."""
+        t = cfg.get("transport")
+        if t == "serial":
+            return f"meshcore:serial:{cfg.get('serial_port', '')}"
+        if t == "tcp":
+            host = cfg.get("tcp_host", "")
+            port = cfg.get("tcp_port", 4000)
+            return f"meshcore:tcp:{host}:{port}"
+        if t == "ble":
+            return f"meshcore:ble:{cfg.get('ble_address') or ''}"
+        return ""
+
+    def _seed_default_bridge_rules(self) -> None:
+        """Turn on bidirectional public-channel (channel 0) relay.
+
+        Only adds rules that aren't already present — existing per-channel
+        rules (e.g. ai-gated) are preserved. Enables the global bridge
+        flag if it was off.
+        """
+        cfg = dict(self._bridge_config) if isinstance(self._bridge_config, dict) else {}
+        rules = list(cfg.get("rules") or [])
+        wanted = [
+            {"source": "meshtastic", "channel": 0, "mode": "always"},
+            {"source": "meshcore", "channel": 0, "mode": "always"},
+        ]
+        changed = False
+        for w in wanted:
+            if not any(
+                r.get("source") == w["source"] and r.get("channel") == w["channel"]
+                for r in rules
+            ):
+                rules.append(w)
+                changed = True
+        if not cfg.get("enabled"):
+            cfg["enabled"] = True
+            changed = True
+        if changed:
+            cfg["rules"] = rules
+            self._save_bridge_config(cfg)
 
     def _secondary_radio_ingest_loop(self):
         """Drain _radio_manager's message queue and feed into _request_queue.
@@ -2316,6 +2467,12 @@ def main():
     if args.ai_replies is not None:
         ai_replies = args.ai_replies == "on"
 
+    # Secondary radio: CLI wins; otherwise restore whatever was persisted
+    # the last time the user added one via the dashboard.
+    second_radio_spec = args.second_radio or settings.get("second_radio") or None
+    if second_radio_spec and not args.second_radio:
+        logger.info(f"Restoring persisted second-radio: {second_radio_spec!r}")
+
     bridge = StandaloneBridge(
         connection_type=connection_type,
         serial_port=serial_port,
@@ -2336,7 +2493,7 @@ def main():
         public_talk=args.public_talk,
         protocol=args.protocol,
         ai_replies_enabled=ai_replies,
-        second_radio=args.second_radio,
+        second_radio=second_radio_spec,
     )
 
     # Pull the better model in background after bridge starts

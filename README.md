@@ -214,12 +214,15 @@ You can run **both radios simultaneously** — Meshtastic as the primary and Mes
 ./mesh-llm.sh --second-radio meshcore:ble:AA:BB:CC:DD:EE:FF
 ```
 
-Messages from both networks land in the same dashboard. The node list shows an `mc` badge next to MeshCore contacts so you can tell them apart.
+Messages from both networks land in the same dashboard — same node list, same canvas, same message threads. MT and MC are differentiated by **shape + color** (circle/teal vs diamond/purple), not by separate tabs.
+
+**Connecting the second radio — no CLI needed.** Click `+ RADIO` in the top bar of the dashboard to open an ADD SECONDARY RADIO modal. Pick a transport (Serial / TCP / BLE), enter the address, hit CONNECT. The spec is persisted to `~/.mesh-llm/settings.json` so the bridge auto-restores it on the next restart — the `--second-radio` CLI flag still works and wins if both are set. Ticking **Auto-relay public channel 0 both directions** (on by default) writes the bridge rules for you so messages start bridging immediately.
 
 **Dashboard dual-radio UI:**
-- **Top bar** shows each backend's connection state independently — a teal circle for Meshtastic (`MT ON/OFF/--`) and a purple diamond for MeshCore (`MC ON/OFF/--`), so a dual-radio rig can see at a glance which radios are up.
+- **Top bar** shows each backend's connection state independently — a teal circle for Meshtastic (`MT ON/OFF/--`) and a purple diamond for MeshCore (`MC ON/OFF/--`), and a `+ RADIO` button that opens the add/manage modal (turns into `◆ MC` when a MeshCore radio is attached).
 - **Mesh canvas** draws both "my radios" at center when both backends are connected — an orange circle labeled `MY MT` and a purple diamond labeled `MY MC`. Peers render with the same shape+color convention (circle = Meshtastic, diamond = MeshCore), and the two meshes stay as visually-separate sub-trees.
 - **Protocol legend** under the HUD (`● MESHTASTIC` / `◆ MESHCORE`) is always visible.
+- **Unified messaging.** Clicking any peer (MT or MC) opens the same panel and send flow. DMs route through RadioManager so MeshCore peers are first-class — send arrives on the right radio automatically.
 - **Clicking your own radio** opens a live telemetry panel with protocol, transport, node ID, battery % / voltage, temperature, humidity, channel util, hardware model, uptime, and node/message counts.
 
 ### Cross-Protocol Bridge (v2 Phases 2–5 — software-complete)
@@ -234,8 +237,8 @@ Features shipped:
   - `always` — every channel broadcast crosses (Akita-parity dumb bridge).
   - `ai-gated` — messages are scored by a heuristic urgency classifier; only urgent traffic crosses. The classifier knows defense-tech mesh vocabulary (distress, medical, fire, threat, stuck/lost) and ignores chatter (hi / roger / copy / thanks).
 - **Force-relay prefixes** — a sender can prepend `!urgent`, `!priority`, `!sos`, or `!mayday` to force a message across the bridge past every policy. The prefix is stripped before the message reaches the other network.
-- **Sender tagging** — relayed messages are rendered as `[mt-Alice] original text` so recipients on the other network can see where the message came from. Custom nicknames / long names are preferred over raw node ids.
-- **Loop prevention** — two guards: the `[mt-...]` prefix short-circuits (bridge-originated text never re-relays), and a 5-minute dedup cache catches any that slip through.
+- **Sender tagging** — relayed messages are rendered as `from meshtastic (Alice): original text` (or `from meshcore (Alice): …`) so recipients on the other network can see where the message came from in plain English. Custom nicknames / long names are preferred over raw node ids.
+- **Loop prevention** — two guards: the `from meshtastic (…):` / `from meshcore (…):` prefix short-circuits (bridge-originated text never re-relays), and a 5-minute dedup cache catches any that slip through.
 - **Per-direction rate limiting** — default 30 events / 60s per (source, dest, channel) tuple. `!urgent` bypasses the limit.
 - **Persistent audit log** — every successful relay writes to the `bridge_events` SQLite table with 30-day retention. `GET /api/bridge/history` queries it.
 - **Addon hook** — `Addon.on_bridged_message(event)` fires for every relay so custom addons can observe cross-protocol traffic.

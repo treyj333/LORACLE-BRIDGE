@@ -32,7 +32,7 @@ class TestRelayObserve(unittest.TestCase):
         dest, text, channel = sends[0]
         self.assertEqual(dest, "meshcore")
         self.assertEqual(channel, 0)
-        self.assertTrue(text.startswith("[mt-"))
+        self.assertTrue(text.startswith("from meshtastic ("))
         self.assertIn("hello", text)
 
     def test_never_loops_to_source(self):
@@ -58,7 +58,7 @@ class TestRelayObserve(unittest.TestCase):
         relay, sends = self._make_relay()
         relay.observe(
             "meshtastic", "!abc",
-            "[mc-NODE] already bridged",
+            "from meshcore (NODE): already bridged",
             channel=0, is_dm=False,
         )
         self.assertEqual(sends, [])
@@ -94,7 +94,7 @@ class TestRelayObserve(unittest.TestCase):
             identity_fn=lambda proto, sender: "CUSTOM-" + sender[-3:]
         )
         relay.observe("meshtastic", "!abc12345", "hi", channel=0, is_dm=False)
-        self.assertIn("[mt-CUSTOM-345]", sends[0][1])
+        self.assertIn("from meshtastic (CUSTOM-345):", sends[0][1])
 
     def test_default_identity_uses_last_6(self):
         relay, sends = self._make_relay()

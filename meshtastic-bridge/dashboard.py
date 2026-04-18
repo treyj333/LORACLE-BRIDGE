@@ -682,6 +682,77 @@ def api_radios():
     return jsonify({"backends": info})
 
 
+@app.route("/api/backends/add", methods=["POST"])
+def api_backends_add():
+    """Attach a secondary MeshCore radio at runtime.
+
+    Request JSON::
+
+        { "transport": "serial" | "tcp" | "ble",
+          "serial_port": "/dev/ttyUSB1",        # serial only
+          "tcp_host": "192.168.1.50", "tcp_port": 4000,   # tcp only
+          "ble_address": "AA:BB:...",           # ble only, optional
+          "seed_bridge": true                   # default true — turn on
+        }                                         bidirectional ch-0 relay
+
+    Returns the backend-info dict on success (shape matches ``/api/radios``).
+    Blocking: the MeshCore connect can take up to ~30s — the request runs
+    it inline so the dashboard waits for a definitive success/fail.
+    """
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    transport = (data.get("transport") or "").lower().strip()
+    if transport not in ("serial", "tcp", "ble"):
+        return jsonify({"error": "transport must be serial|tcp|ble"}), 400
+
+    seed_bridge = data.get("seed_bridge", True)
+    kwargs = {"transport": transport, "seed_bridge": bool(seed_bridge)}
+    if transport == "serial":
+        sp = data.get("serial_port") or data.get("address")
+        if not sp:
+            return jsonify({"error": "serial_port is required"}), 400
+        kwargs["serial_port"] = sp
+    elif transport == "tcp":
+        kwargs["tcp_host"] = data.get("tcp_host") or data.get("host") or "192.168.1.1"
+        port = data.get("tcp_port") or data.get("port") or 4000
+        try:
+            kwargs["tcp_port"] = int(port)
+        except (TypeError, ValueError):
+            return jsonify({"error": "tcp_port must be an integer"}), 400
+    elif transport == "ble":
+        kwargs["ble_address"] = data.get("ble_address") or data.get("address")
+
+    try:
+        info = _bridge.add_secondary_radio(**kwargs)
+    except ImportError as e:
+        return jsonify({"error": str(e)}), 501
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.exception("Failed to add secondary radio")
+        return jsonify({"error": f"Could not connect: {e}"}), 500
+    return jsonify({"ok": True, "backend": info})
+
+
+@app.route("/api/backends/remove", methods=["POST"])
+def api_backends_remove():
+    """Disconnect a secondary radio and clear persisted config.
+
+    Accepts optional ``{"backend_id": "..."}``. If omitted, removes the
+    first meshcore backend (there's practically ever only one).
+    """
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    backend_id = data.get("backend_id")
+    try:
+        _bridge.remove_secondary_radio(backend_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
 @app.route("/api/ai-replies", methods=["GET"])
 def api_ai_replies_get():
     if _bridge is None:
@@ -790,7 +861,12 @@ def api_thread_close(thread_id):
 
 @app.route("/api/threads/<path:thread_id>/send", methods=["POST"])
 def api_thread_send(thread_id):
-    """Send a manual message to a contact."""
+    """Send a manual message to a contact.
+
+    Routes through RadioManager so MeshCore (``mc:``) and Meshtastic (``mt:``
+    / legacy unprefixed) thread IDs both work. Falls back to the primary
+    Meshtastic interface only if no matching backend is available.
+    """
     if _bridge is None:
         return jsonify({"error": "Bridge not initialized"}), 503
     data = request.get_json(silent=True) or {}
@@ -798,13 +874,19 @@ def api_thread_send(thread_id):
     if not text:
         return jsonify({"error": "Empty message"}), 400
 
+    # Derive protocol from the unified id prefix so an MC thread auto-creates
+    # an mc-protocol contact. The legacy code hardcoded "meshtastic" here,
+    # which meant newly-seen MC peers landed with the wrong protocol tag and
+    # the later send path picked the wrong backend.
+    inferred_protocol = "meshcore" if thread_id.startswith("mc:") else "meshtastic"
+
     # Auto-create contact if not in DB yet
     contact = _bridge._contact_store.get(thread_id)
     if contact is None:
         try:
             short = thread_id[-6:] if len(thread_id) > 6 else thread_id
             _bridge._contact_store.upsert(
-                contact_id=thread_id, protocol="meshtastic",
+                contact_id=thread_id, protocol=inferred_protocol,
                 backend_id=thread_id, short_name=short,
             )
             contact = _bridge._contact_store.get(thread_id)
@@ -813,9 +895,6 @@ def api_thread_send(thread_id):
     if contact is None:
         return jsonify({"error": "Contact not found"}), 404
 
-    if not _bridge.interface or not _bridge._is_interface_alive():
-        return jsonify({"error": "Radio not connected"}), 503
-
     # Insert with status='sending' up-front so the message shows in history
     # immediately — the UI then transitions it to 'sent' or 'failed'.
     msg_id = _bridge._message_store.insert(
@@ -823,15 +902,60 @@ def api_thread_send(thread_id):
         text=text, protocol=contact["protocol"],
         delivery_status="sending",
     )
-    try:
-        want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
-        is_channel = "channel:" in thread_id
-        if is_channel:
-            ch_num = int(thread_id.split(":")[-1])
-            from meshtastic import BROADCAST_ADDR
-            _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=ch_num, wantAck=want_ack)
+
+    is_channel = "channel:" in thread_id
+    # Normalise the outgoing id into a form RadioManager understands.
+    # Thread IDs come in several shapes depending on how the contact was
+    # created: ``mt:!abc`` / ``!abc`` / ``meshtastic:channel:0`` / ``mc:abcdef``
+    # / ``mc:channel:1``. RadioManager's .send() expects ``mt:<native>`` or
+    # ``mc:<native>`` (plus the is_dm / channel flags for broadcasts).
+    routing_id = thread_id
+    channel_num = 0
+    if is_channel:
+        try:
+            channel_num = int(thread_id.split(":")[-1])
+        except (ValueError, IndexError):
+            channel_num = 0
+        if thread_id.startswith("mc:"):
+            routing_id = "mc:"
         else:
-            _bridge.interface.sendText(text, destinationId=thread_id, wantAck=want_ack)
+            routing_id = "mt:"
+    elif not thread_id.startswith("mt:") and not thread_id.startswith("mc:"):
+        # Legacy unprefixed meshtastic node id (``!abc``) — tag it so
+        # RadioManager routes to the meshtastic backend.
+        routing_id = "mt:" + thread_id
+
+    try:
+        # Prefer RadioManager whenever it has a connected matching backend —
+        # that's the only way to reach the MeshCore side, and it keeps the
+        # meshtastic side behaving the same as before.
+        sent_via_manager = False
+        try:
+            mgr = getattr(_bridge, "_radio_manager", None)
+            if mgr is not None:
+                proto_short = "mc" if routing_id.startswith("mc:") else "mt"
+                if mgr._find_backend_for_protocol(proto_short) is not None:
+                    mgr.send(routing_id, text, channel=channel_num, is_dm=not is_channel)
+                    sent_via_manager = True
+        except Exception as e:
+            logger.debug(f"RadioManager send failed, falling back: {e}")
+
+        if not sent_via_manager:
+            # Fallback: legacy Meshtastic-only path. MC threads without a
+            # connected MC backend surface a clear error instead of silently
+            # sending nowhere.
+            if routing_id.startswith("mc:"):
+                raise RuntimeError("MeshCore radio not connected — add a secondary radio first")
+            if not _bridge.interface or not _bridge._is_interface_alive():
+                raise RuntimeError("Radio not connected")
+            want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
+            if is_channel:
+                from meshtastic import BROADCAST_ADDR
+                _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=channel_num, wantAck=want_ack)
+            else:
+                native = thread_id[3:] if thread_id.startswith("mt:") else thread_id
+                _bridge.interface.sendText(text, destinationId=native, wantAck=want_ack)
+
         _bridge._message_store.update_status(msg_id, "sent")
         record_message("out", thread_id, text)
         return jsonify({"ok": True, "msg_id": msg_id, "status": "sent"})
@@ -1699,6 +1823,14 @@ button::-moz-focus-inner { border: 0; }
 .lo-bar .lo-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
 .lo-bar .lo-dot.mc { border-radius: 0; transform: rotate(45deg); }
 .lo-bar .lo-dot.mc.on { background: #9b59b6; }
+.lo-bar .lo-conn-add {
+  font-family: inherit; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 4px 8px; border: 1px solid var(--lo-divider); background: none;
+  color: var(--lo-dim); cursor: pointer; border-radius: 2px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s; flex-shrink: 0;
+}
+.lo-bar .lo-conn-add:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
+.lo-bar .lo-conn-add.on { color: #9b59b6; border-color: #9b59b6; }
 .lo-bar .lo-filters { display: flex; margin-left: auto; }
 .lo-bar .lo-filters button {
   padding: 4px 14px; font-family: inherit; font-size: 10px; letter-spacing: 0.1em;
@@ -2021,6 +2153,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <span class="lo-conn" title="Radio backend status — meshtastic (circle) and meshcore (diamond)">
     <span class="lo-conn-row"><span class="lo-dot" id="hdr-mt-dot"></span><span id="hdr-mt-label">MT --</span></span>
     <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
+    <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add / manage secondary MeshCore radio">+ RADIO</button>
   </span>
   <div class="lo-filters">
     <button class="active" data-view="mesh" onclick="setView('mesh')">MESH</button>
@@ -2401,6 +2534,58 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
     </div>
     <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── Add Secondary Radio Modal ─────────────────────────────────────────── -->
+<div class="lo-connect-modal" id="add-radio-modal">
+  <div class="lo-connect-box">
+    <h3>ADD SECONDARY RADIO</h3>
+    <p>Attach a MeshCore radio alongside your primary Meshtastic. Once connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
+    <div id="ar-active-row" style="display:none;margin-bottom:14px;padding:10px;background:var(--lo-bg-deep);font-size:11px">
+      <div style="color:#9b59b6;font-weight:500;margin-bottom:4px">◆ <span id="ar-active-label">MESHCORE CONNECTED</span></div>
+      <div id="ar-active-detail" style="color:var(--lo-dim)"></div>
+      <button class="btn btn-sm" onclick="removeSecondaryRadio()" style="margin-top:8px;color:#c0392b;border-color:#c0392b">DISCONNECT</button>
+    </div>
+    <div class="lo-form-row">
+      <span class="lo-form-label">PROTOCOL</span>
+      <select id="ar-protocol" style="max-width:140px" disabled><option value="meshcore">MeshCore</option></select>
+    </div>
+    <div class="lo-form-row">
+      <span class="lo-form-label">TRANSPORT</span>
+      <select id="ar-transport" style="max-width:140px" onchange="arTransportChanged()">
+        <option value="serial" selected>Serial (USB)</option>
+        <option value="tcp">TCP</option>
+        <option value="ble">Bluetooth (BLE)</option>
+      </select>
+    </div>
+    <div class="lo-form-row" id="ar-serial-row">
+      <span class="lo-form-label">DEVICE</span>
+      <input type="text" id="ar-serial-port" placeholder="/dev/ttyUSB1 or COM4">
+    </div>
+    <div class="lo-form-row" id="ar-tcp-row" style="display:none">
+      <span class="lo-form-label">HOST</span>
+      <div style="flex:1;display:flex;gap:6px">
+        <input type="text" id="ar-tcp-host" placeholder="192.168.1.50" style="flex:1">
+        <input type="number" id="ar-tcp-port" placeholder="4000" value="4000" style="width:80px">
+      </div>
+    </div>
+    <div class="lo-form-row" id="ar-ble-row" style="display:none">
+      <span class="lo-form-label">BLE ADDR</span>
+      <input type="text" id="ar-ble-address" placeholder="AA:BB:CC:DD:EE:FF (blank = scan)">
+    </div>
+    <div class="lo-form-row" style="align-items:center">
+      <span class="lo-form-label">BRIDGE</span>
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--lo-dim)">
+        <input type="checkbox" id="ar-seed-bridge" checked>
+        Auto-relay public channel 0 both directions
+      </label>
+    </div>
+    <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
+      <button class="btn" onclick="hideAddRadioModal()">CANCEL</button>
+      <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
+    </div>
+    <div id="ar-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
   </div>
 </div>
 
@@ -4086,6 +4271,14 @@ async function poll() {
     }
     paintDot(document.getElementById('hdr-mt-dot'), document.getElementById('hdr-mt-label'), mt, 'mt');
     paintDot(document.getElementById('hdr-mc-dot'), document.getElementById('hdr-mc-label'), mc, 'mc');
+    // Keep the top-bar "+ RADIO" button label in sync with whether a MC radio
+    // is attached — makes the button read as "manage MC" once connected.
+    var addBtn = document.getElementById('hdr-add-radio');
+    if (addBtn) {
+      var mcOn = !!(mc && mc.connected);
+      addBtn.textContent = mcOn ? '\u25C6 MC' : '+ RADIO';
+      addBtn.classList.toggle('on', mcOn);
+    }
     // Single "any backend up" flag preserves legacy modal + toast behavior.
     var connected = (mt && mt.connected) || (mc && mc.connected);
     if (!connected) { try { connected = !!d.connected; } catch(e) {} }
@@ -4246,6 +4439,106 @@ async function connectFromModal() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   }).catch(function() {});
+}
+
+// ── Add Secondary Radio modal ─────────────────────────────────────────────
+
+function showAddRadioModal() {
+  refreshAddRadioModal();
+  document.getElementById('add-radio-modal').classList.add('open');
+}
+function hideAddRadioModal() {
+  document.getElementById('add-radio-modal').classList.remove('open');
+  document.getElementById('ar-status').textContent = '';
+}
+function arTransportChanged() {
+  var t = document.getElementById('ar-transport').value;
+  document.getElementById('ar-serial-row').style.display = (t === 'serial') ? '' : 'none';
+  document.getElementById('ar-tcp-row').style.display    = (t === 'tcp')    ? '' : 'none';
+  document.getElementById('ar-ble-row').style.display    = (t === 'ble')    ? '' : 'none';
+}
+function refreshAddRadioModal() {
+  // Show current MC backend status at the top of the modal (if any).
+  var backends = (App.state && App.state.backends) || [];
+  var mc = null;
+  for (var i = 0; i < backends.length; i++) {
+    var p = String(backends[i].protocol || '').toLowerCase();
+    if (p === 'mc' || p === 'meshcore') { mc = backends[i]; break; }
+  }
+  var active = document.getElementById('ar-active-row');
+  if (mc && mc.connected) {
+    active.style.display = '';
+    var parts = [];
+    if (mc.transport) parts.push(String(mc.transport).toUpperCase());
+    if (mc.self_node_id) parts.push(mc.self_node_id);
+    document.getElementById('ar-active-detail').textContent = parts.join(' \u2014 ');
+  } else {
+    active.style.display = 'none';
+  }
+  // Update the top-bar button label so it telegraphs "manage MC" vs "add MC"
+  var btn = document.getElementById('hdr-add-radio');
+  if (btn) {
+    btn.textContent = (mc && mc.connected) ? '\u25C6 MC' : '+ RADIO';
+    btn.classList.toggle('on', !!(mc && mc.connected));
+  }
+}
+async function submitAddRadio() {
+  var transport = document.getElementById('ar-transport').value;
+  var body = {transport: transport, seed_bridge: document.getElementById('ar-seed-bridge').checked};
+  if (transport === 'serial') {
+    body.serial_port = document.getElementById('ar-serial-port').value.trim();
+    if (!body.serial_port) { arSetStatus('Enter the serial device path', 'error'); return; }
+  } else if (transport === 'tcp') {
+    body.tcp_host = document.getElementById('ar-tcp-host').value.trim();
+    body.tcp_port = parseInt(document.getElementById('ar-tcp-port').value, 10) || 4000;
+    if (!body.tcp_host) { arSetStatus('Enter the TCP host', 'error'); return; }
+  } else if (transport === 'ble') {
+    body.ble_address = document.getElementById('ar-ble-address').value.trim() || null;
+  }
+  var btn = document.getElementById('ar-submit-btn');
+  btn.disabled = true;
+  arSetStatus('Connecting\u2026 (this can take up to 30s)');
+  try {
+    var r = await fetch('/api/backends/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    var d = await r.json();
+    if (!r.ok || d.error) {
+      arSetStatus(d.error || ('HTTP ' + r.status), 'error');
+    } else {
+      arSetStatus('\u2713 Connected — public-channel bridge is live', 'ok');
+      showToast('MeshCore radio connected');
+      setTimeout(hideAddRadioModal, 900);
+    }
+  } catch (e) {
+    arSetStatus(String(e), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function removeSecondaryRadio() {
+  if (!confirm('Disconnect the MeshCore radio?')) return;
+  try {
+    var r = await fetch('/api/backends/remove', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    var d = await r.json();
+    if (!r.ok || d.error) {
+      arSetStatus(d.error || ('HTTP ' + r.status), 'error');
+    } else {
+      showToast('MeshCore radio disconnected');
+      hideAddRadioModal();
+    }
+  } catch (e) {
+    arSetStatus(String(e), 'error');
+  }
+}
+function arSetStatus(msg, level) {
+  var el = document.getElementById('ar-status');
+  el.textContent = msg || '';
+  el.style.color = (level === 'error') ? '#c0392b' : ((level === 'ok') ? 'var(--lo-accent-2)' : 'var(--lo-dim)');
 }
 
 function checkConnectionForModal(connected) {

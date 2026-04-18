@@ -22,7 +22,7 @@ class TestBridgeEventStore(unittest.TestCase):
             dest_protocol="meshcore",
             channel=0,
             sender="!abc",
-            text="[mt-Alice] hello",
+            text="from meshtastic (Alice): hello",
             outcome="relayed",
             sender_display="Alice",
         )

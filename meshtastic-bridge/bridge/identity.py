@@ -1,9 +1,9 @@
 """Sender identity formatting across bridged networks.
 
 When a message from network A relays to network B, recipients on B see
-it tagged with the source network: ``[mt-Alice] hello``. This module
-owns that format — producing it AND recognising it so the relay doesn't
-re-relay bridge-originated messages (loop guard).
+it tagged with the source network: ``from meshcore (Alice): hello``.
+This module owns that format — producing it AND recognising it so the
+relay doesn't re-relay bridge-originated messages (loop guard).
 
 Source-of-truth for the prefix shape — relay.py and dedup use these
 helpers exclusively. If the format ever changes, change it here.
@@ -11,14 +11,18 @@ helpers exclusively. If the format ever changes, change it here.
 
 import re
 
-# Matches ``[<proto>-<name>] `` at the start of a text.
-# proto must be a registered short code (mt|mc). name is any 1+ chars
-# not containing ']'. Trailing space is required so "[mt-foo]" inside a
-# longer sentence isn't misread as a bridge prefix.
-_BRIDGE_PREFIX_RE = re.compile(r"^\[(mt|mc)-[^\]]+\]\s")
+# Matches ``from <protocol> (<name>): `` at the start of a text.
+# Designed to read naturally on-radio ("from meshcore (Alice): help!")
+# so recipients on the other mesh can tell at a glance which network
+# the message originated on.
+_BRIDGE_PREFIX_RE = re.compile(r"^from (meshtastic|meshcore) \([^)]+\):\s")
 
-# Map DB-form protocol names to the short codes used in the prefix.
-_PROTOCOL_SHORT = {"meshtastic": "mt", "meshcore": "mc"}
+# Protocol names written verbatim into the prefix. Short codes (mt/mc)
+# kept as aliases so lookup stays flexible.
+_PROTOCOL_LONG = {
+    "meshtastic": "meshtastic", "mt": "meshtastic",
+    "meshcore": "meshcore",     "mc": "meshcore",
+}
 
 
 def format_bridged(source_protocol: str, sender_display: str, text: str) -> str:
@@ -31,13 +35,13 @@ def format_bridged(source_protocol: str, sender_display: str, text: str) -> str:
         text: the original message body (unmodified).
 
     Returns:
-        ``"[mt-Alice] original text"``.
+        ``"from meshtastic (Alice): original text"``.
 
-    Unknown protocols fall back to their first-two-chars short form, so
-    a future protocol plugs in cleanly.
+    Unknown protocols fall back to the raw name, so a future protocol
+    plugs in cleanly.
     """
-    short = _PROTOCOL_SHORT.get(source_protocol, source_protocol[:2])
-    return f"[{short}-{sender_display}] {text}"
+    proto = _PROTOCOL_LONG.get(source_protocol, source_protocol)
+    return f"from {proto} ({sender_display}): {text}"
 
 
 def looks_bridged(text: str) -> bool:

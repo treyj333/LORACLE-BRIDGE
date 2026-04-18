@@ -85,7 +85,7 @@ class Addon:
                 channel: int       — destination channel index
                 sender: str        — raw native id on the source network
                 sender_display: str — human-friendly name used in the prefix
-                text: str          — the relayed text (with [mt-...] prefix already applied)
+                text: str          — the relayed text (with "from meshtastic (...)" prefix already applied)
                 timestamp: float   — unix time the relay happened
 
         Default is a no-op — addons that don't care about cross-protocol
