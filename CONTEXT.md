@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-18 01:55] — MT/MC equal-citizens pass (Phase 2b: MeshCore-first primary connect)
+
+- What changed:
+  - **Primary-connect modal respects the protocol dropdown.** `connectFromModal()` in the dashboard used to ignore the `connect-protocol` value and always POST to `/api/connection/switch` (the legacy Meshtastic-only endpoint), so if a user picked "MeshCore" in the dropdown the connect silently failed. It now reads the dropdown and, when the user picked `meshcore`, routes instead to `/api/backends/add` (the existing MC-add endpoint) with the transport + address fields translated to that endpoint's shape (`serial_port` / `tcp_host`+`tcp_port` / `ble_address`). `auto` and `meshtastic` keep the legacy path, so nothing about the default first-run flow changes.
+  - **Success panel is protocol-aware.** The `connect-modal-success` panel used to hard-code "MESHTASTIC CONNECTED" in teal with "add a MeshCore radio" in the CTA. Now `_showPrimarySuccessPanel()` inspects `App.state.backends` to detect which protocol actually connected (falling back to the dropdown value if the backend list hasn't arrived yet), sets the heading + color + check-glyph accordingly, toggles an `is-mc` class on the panel so the CSS `::before` dot flips to the purple MeshCore diamond, and rewrites the CTA to pitch the *other* protocol as the second-radio add-on. Gave the static heading / paragraph / check-glyph dedicated ids (`connect-modal-success-title`, `connect-modal-success-desc`, `connect-modal-success-check`) so the JS has stable targets.
+  - **Dropped the last MT-primary fallback.** `/api/radios` used to synthesise a fake `{"id": "mt-primary", "protocol": "mt", …}` entry when no backends were registered. That framed Meshtastic as the implicit "something is here" default and leaked into the self-node + scope logic. Removed; the endpoint now returns an empty list when nothing's connected and the frontend handles that cleanly.
+- Why:
+  - Completes the structural half of the equal-citizens work. With Phase 1 (scope selector) and Phase 3 (graceful feature fallback) already in place, the only remaining way MT was "privileged" was that you literally couldn't use the first-run flow to connect a MeshCore radio first — you had to skip step 1 and fall through to the secondary modal, which still framed MC as an add-on. Now someone running an MC-only rig can pick MeshCore from the protocol dropdown and connect in the same flow as a Meshtastic user, and the success screen greets them in the right colour/wording.
+- Impact on project goals:
+  - The user's original complaint ("it seems like Meshtastic is the primary program, and the MeshCore is just kind of an add-on") is now addressed end-to-end. The connect modal, the success panel, the scope selector, the node badges, the self-node labels, the feature endpoints, and the wizard copy all treat MT and MC as equals. Still not touched (deliberately): `/api/connection/switch` is still wired to the legacy Meshtastic-specific `switch_connection()` method — it's only used when the dropdown is `auto` or `meshtastic`, so there's no user-visible asymmetry, but the API naming is a leftover artefact from the single-protocol era and could be renamed in a later refactor.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `api_radios` fallback dropped; `connectFromModal` splits on `proto === 'meshcore'` and POSTs to `/api/backends/add` with translated fields; success-panel HTML has stable ids + `is-mc` toggle class; `_showPrimarySuccessPanel` reads connected-backend protocol and sets heading/color/CTA; matching `#connect-modal-success.is-mc h3::before` CSS.
+- Tests: 306/306 pass.
+
+---
+
 ## [2026-04-18 01:35] — MT/MC equal-citizens pass (Phase 2: wizard copy + fallback)
 
 - What changed:

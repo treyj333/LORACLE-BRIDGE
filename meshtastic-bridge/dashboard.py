@@ -716,17 +716,20 @@ def api_connection_disconnect():
 
 @app.route("/api/radios", methods=["GET"])
 def api_radios():
-    """Return info about all active radio backends."""
+    """Return info about all active radio backends.
+
+    Returns an empty ``backends`` list if no backend is registered yet.
+    Earlier builds synthesised a fake ``mt-primary`` entry here so legacy
+    code had *something* to latch onto — but that framed Meshtastic as the
+    implicit default and leaked into the dashboard's scope/self-node logic.
+    The frontend now handles the empty case explicitly (no placeholder
+    self-node, no protocol assumption)."""
     if _bridge is None:
         return jsonify({"backends": []})
     try:
         info = _bridge._radio_manager.get_backends_info()
     except Exception:
         info = []
-    if not info:
-        info = [{"id": "mt-primary", "protocol": "mt",
-                 "transport": getattr(_bridge, "connection_type", "serial"),
-                 "connected": _bridge._is_interface_alive()}]
     return jsonify({"backends": info})
 
 
@@ -2103,8 +2106,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   top: -1px;  /* optical centering against uppercase cap-height */
 }
 /* Success-panel dots: match their heading's protocol color — teal for MT,
-   purple (and diamond-shaped) for MC — instead of the default orange prompt. */
+   purple (and diamond-shaped) for MC — instead of the default orange prompt.
+   `.is-mc` on the container flips the primary modal's success dot to MC. */
 #connect-modal-success h3::before { background: var(--lo-accent-2); }
+#connect-modal-success.is-mc h3::before { background: #9b59b6; border-radius: 0; transform: rotate(45deg) translateY(-1px); }
 #ar-success h3::before { background: #9b59b6; border-radius: 0; transform: rotate(45deg) translateY(-1px); }
 .lo-connect-box p { font-size: 11px; color: var(--lo-dim); margin-bottom: 20px; line-height: 1.7; }
 .lo-connect-box .lo-form-row { padding: 6px 0; }
@@ -2674,12 +2679,14 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
     </div>
 
-    <!-- SUCCESS PANEL — swapped in after a successful primary connect during the wizard -->
+    <!-- SUCCESS PANEL — swapped in after a successful primary connect during the wizard.
+         Heading + "add the other" CTA are populated dynamically by _showPrimarySuccessPanel
+         so MeshCore-first users see the MC branding instead of a hardcoded MESHTASTIC label. -->
     <div id="connect-modal-success" style="display:none;text-align:center;padding:10px 0">
-      <div style="font-size:42px;color:var(--lo-accent-2);line-height:1">&#x2713;</div>
-      <h3 style="margin:12px 0 8px 0;font-size:14px;color:var(--lo-accent-2);letter-spacing:0.1em">MESHTASTIC CONNECTED</h3>
-      <p style="margin:0 0 16px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
-        Your first radio is up. Want to reach the other network too? Add a MeshCore radio —
+      <div id="connect-modal-success-check" style="font-size:42px;color:var(--lo-accent-2);line-height:1">&#x2713;</div>
+      <h3 id="connect-modal-success-title" style="margin:12px 0 8px 0;font-size:14px;color:var(--lo-accent-2);letter-spacing:0.1em">RADIO CONNECTED</h3>
+      <p id="connect-modal-success-desc" style="margin:0 0 16px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
+        Your first radio is up. Want to reach the other network too? Add a second radio —
         <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC
         peers can message each other through the auto-bridge.
       </p>
@@ -4723,6 +4730,33 @@ function _showPrimarySuccessPanel() {
   var ok = document.getElementById('connect-modal-success');
   if (form) form.style.display = 'none';
   if (ok) ok.style.display = '';
+  // Detect which protocol actually connected so the success label isn't
+  // hard-coded to "MESHTASTIC." Picks the first connected backend — matches
+  // what the user saw in the form (single-radio first-run). Falls back to
+  // the dropdown value if no backend info is available yet.
+  var backends = (App.state && App.state.backends) || [];
+  var firstConnected = null;
+  for (var i = 0; i < backends.length; i++) {
+    if (backends[i].connected) { firstConnected = backends[i]; break; }
+  }
+  var proto = firstConnected
+    ? String(firstConnected.protocol || '').toLowerCase()
+    : ((document.getElementById('connect-protocol') || {}).value || '').toLowerCase();
+  var isMC = (proto === 'mc' || proto === 'meshcore');
+  if (ok) ok.classList.toggle('is-mc', isMC);
+  var title = document.getElementById('connect-modal-success-title');
+  var desc = document.getElementById('connect-modal-success-desc');
+  var check = document.getElementById('connect-modal-success-check');
+  if (title) {
+    title.textContent = isMC ? 'MESHCORE CONNECTED' : 'MESHTASTIC CONNECTED';
+    title.style.color = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
+  }
+  if (check) check.style.color = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
+  if (desc) {
+    desc.innerHTML = isMC
+      ? 'Your first radio is up. Want to reach the other network too? Add a Meshtastic radio — <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC peers can message each other through the auto-bridge.'
+      : 'Your first radio is up. Want to reach the other network too? Add a MeshCore radio — <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC peers can message each other through the auto-bridge.';
+  }
   // Fill in a small detail line so the user can see WHAT connected.
   try {
     var addr = (document.getElementById('connect-address') || {}).value || '';
@@ -4973,16 +5007,52 @@ async function connectFromModal() {
   // branch in checkConnectionForModal.
   var type = document.getElementById('connect-type').value;
   var addr = document.getElementById('connect-address').value.trim();
+  var proto = (document.getElementById('connect-protocol') || {}).value || 'auto';
+  var statusMsg = _wizardActive
+    ? 'Connecting\u2026 this screen will update when the radio comes up.'
+    : 'Connecting... (modal will close when connected)';
+  document.getElementById('connect-modal-status').textContent = statusMsg;
+
+  // MeshCore-first flow: the `/api/connection/switch` endpoint is the legacy
+  // Meshtastic connect path, so when the user explicitly picks MeshCore we
+  // route to `/api/backends/add` instead. Both end up in the same place —
+  // the poll loop sees a connected backend and swaps in the success panel.
+  if (proto === 'meshcore' || proto === 'mc') {
+    var mcPayload = { transport: type, seed_bridge: true };
+    if (type === 'serial') {
+      mcPayload.serial_port = addr || null;
+    } else if (type === 'tcp') {
+      if (addr && addr.indexOf(':') !== -1) {
+        var parts = addr.split(':');
+        mcPayload.tcp_host = parts[0];
+        mcPayload.tcp_port = parseInt(parts[1]);
+      } else if (addr) {
+        mcPayload.tcp_host = addr;
+      }
+    } else if (type === 'ble') {
+      mcPayload.ble_address = addr || null;
+    }
+    try {
+      var resp = await fetch('/api/backends/add', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(mcPayload)
+      });
+      var data = await resp.json().catch(function(){ return {}; });
+      if (!resp.ok) {
+        document.getElementById('connect-modal-status').textContent = 'Error: ' + (data.error || 'connect failed');
+      }
+    } catch(e) {
+      document.getElementById('connect-modal-status').textContent = 'Network error';
+    }
+    return;
+  }
+
+  // Default / 'auto' / 'meshtastic' → legacy Meshtastic connect path
   var payload = {type: type};
   if (type === 'tcp' && addr) {
     if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); }
     else payload.host = addr;
   } else { payload.address = addr || null; }
-  var statusMsg = _wizardActive
-    ? 'Connecting\u2026 this screen will update when the radio comes up.'
-    : 'Connecting... (modal will close when connected)';
-  document.getElementById('connect-modal-status').textContent = statusMsg;
-  // Fire and forget — poll loop handles the rest
   fetch('/api/connection/switch', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)

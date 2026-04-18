@@ -230,7 +230,7 @@ Sits in the top bar next to the connection dots. Switches every view — canvas,
 
 Neither protocol is the "default"; every node gets an equal teal `mt` or purple `mc` badge in the sidebar, and when two radios are connected the centre of the mesh shows both "MY MT" and "MY MC" self-nodes side-by-side. Feature endpoints that only one protocol implements (traceroute, writable LoRa config) return a clean "not supported on this radio" toast instead of silently failing.
 
-The first-run wizard is protocol-agnostic: step 1 is labelled "PRIMARY RADIO" (not "MESHTASTIC"), step 2 is "SECOND RADIO (OPTIONAL)", and success copy frames the second radio as a cross-network bridge rather than an optional add-on.
+The first-run wizard is protocol-agnostic: step 1 is labelled "PRIMARY RADIO" (not "MESHTASTIC"), step 2 is "SECOND RADIO (OPTIONAL)", and success copy frames the second radio as a cross-network bridge rather than an optional add-on. Pick `MeshCore` from the protocol dropdown in step 1 and the first-connect flow will wire up an MC radio (same CTA, same success panel, just in MC purple) — users running a MeshCore-only rig never have to touch the "add secondary" path.
 
 ### Node List Sidebar
 
