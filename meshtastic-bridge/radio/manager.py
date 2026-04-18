@@ -11,7 +11,7 @@ import threading
 from typing import Callable, Dict, List, Optional
 
 from radio.events import Protocol, UnifiedMessage, UnifiedNode
-from radio.backend import RadioBackend
+from radio.backend import RadioBackend, FeatureNotSupported
 
 logger = logging.getLogger("radio.manager")
 
@@ -110,6 +110,59 @@ class RadioManager:
             backend.send_direct_message(native_id, text)
         else:
             backend.send_broadcast(text, channel)
+
+    # ── Protocol-optional feature dispatch ───────────────────────────────
+    # These mirror the optional methods on RadioBackend.  They pick a backend
+    # by unified node id (for traceroute) or by explicit backend_id (for
+    # config).  If the target backend doesn't support the feature it raises
+    # FeatureNotSupported, which callers surface as HTTP 501.
+
+    def send_traceroute(self, unified_node_id: str, hop_limit: int = 7) -> None:
+        """Probe the route to *unified_node_id* using the backend matching
+        its protocol prefix.  Raises FeatureNotSupported on MeshCore and any
+        future backend without a traceroute equivalent."""
+        protocol_short, native_id = self._parse_node_id(unified_node_id)
+        backend = self._find_backend_for_protocol(protocol_short)
+        if backend is None:
+            raise ValueError(
+                f"No connected backend for protocol '{protocol_short}'"
+            )
+        backend.send_traceroute(native_id, hop_limit)
+
+    def get_radio_config(self, backend_id: Optional[str] = None) -> dict:
+        """Read the LoRa / radio config from a specific backend.
+
+        If *backend_id* is None, uses the primary (first-added) backend so
+        legacy callers keep working.  Always returns a dict that includes a
+        ``backend_id`` / ``protocol`` so the UI knows which radio it's for.
+        """
+        backend = self._pick_backend(backend_id)
+        data = backend.get_radio_config()
+        data.setdefault("backend_id", backend.backend_id)
+        data.setdefault("protocol", backend.protocol.value)
+        return data
+
+    def set_radio_config(
+        self, config: dict, backend_id: Optional[str] = None,
+    ) -> None:
+        """Apply *config* to a specific backend.  Raises FeatureNotSupported
+        if the target backend is read-only (e.g. MeshCore)."""
+        backend = self._pick_backend(backend_id)
+        backend.set_radio_config(config)
+
+    def _pick_backend(self, backend_id: Optional[str]) -> RadioBackend:
+        """Resolve *backend_id* to a connected backend, or fall back to the
+        primary.  Raises ValueError if nothing suitable is connected."""
+        with self._lock:
+            if backend_id:
+                b = self._backends.get(backend_id)
+                if b is None or not b.is_connected():
+                    raise ValueError(f"Backend '{backend_id}' not connected")
+                return b
+        primary = self.get_primary_backend()
+        if primary is None or not primary.is_connected():
+            raise ValueError("No connected backend")
+        return primary
 
     # ── Node queries ─────────────────────────────────────────────────────
 

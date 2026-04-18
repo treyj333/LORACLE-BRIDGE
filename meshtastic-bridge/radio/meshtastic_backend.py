@@ -149,6 +149,54 @@ class MeshtasticBackend(RadioBackend):
             text, destinationId=BROADCAST_ADDR, channelIndex=channel, wantAck=False
         )
 
+    # ── Protocol-optional features (Meshtastic supports all three) ───────
+
+    def send_traceroute(self, to_native_id: str, hop_limit: int = 7) -> None:
+        if not self.is_connected():
+            raise ConnectionError("Meshtastic radio not connected")
+        self._interface.sendTraceRoute(to_native_id, hopLimit=hop_limit)
+
+    def get_radio_config(self) -> dict:
+        if not self.is_connected():
+            raise ConnectionError("Meshtastic radio not connected")
+        node = getattr(self._interface, "localNode", None)
+        lora = getattr(getattr(node, "localConfig", None), "lora", None)
+        if not lora:
+            raise RuntimeError("Could not read localConfig.lora from radio")
+        return {
+            "region": getattr(lora, "region", 0),
+            "modem_preset": getattr(lora, "modemPreset", 0),
+            "tx_power": getattr(lora, "txPower", 0),
+            "hop_limit": getattr(lora, "hopLimit", 3),
+            "tx_enabled": getattr(lora, "txEnabled", True),
+            "bandwidth": getattr(lora, "bandwidth", 0),
+            "spread_factor": getattr(lora, "spreadFactor", 0),
+            "coding_rate": getattr(lora, "codingRate", 0),
+        }
+
+    def set_radio_config(self, config: dict) -> None:
+        if not self.is_connected():
+            raise ConnectionError("Meshtastic radio not connected")
+        node = getattr(self._interface, "localNode", None)
+        lora = getattr(getattr(node, "localConfig", None), "lora", None)
+        if not lora:
+            raise RuntimeError("Could not read localConfig.lora from radio")
+        changed = False
+        if "hop_limit" in config:
+            lora.hopLimit = max(1, min(int(config["hop_limit"]), 7))
+            changed = True
+        if "tx_power" in config:
+            lora.txPower = max(0, min(int(config["tx_power"]), 30))
+            changed = True
+        if "region" in config:
+            lora.region = int(config["region"])
+            changed = True
+        if "modem_preset" in config:
+            lora.modemPreset = int(config["modem_preset"])
+            changed = True
+        if changed:
+            node.writeConfig("lora")
+
     # ── Listening ────────────────────────────────────────────────────────
 
     def start_listening(self, callback: Callable[[UnifiedMessage], None]) -> None:

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from radio.events import Protocol, Transport, UnifiedMessage, UnifiedNode, BackendEvent
 from radio.manager import RadioManager
-from radio.backend import RadioBackend
+from radio.backend import RadioBackend, FeatureNotSupported
 
 
 class TestUnifiedNode(unittest.TestCase):
@@ -219,6 +219,55 @@ class TestRadioManager(unittest.TestCase):
         mgr.send("!abc123", "fallback test", is_dm=True)
         self.assertEqual(len(mt._sent), 1)
         self.assertEqual(mt._sent[0], ("dm", "!abc123", "fallback test"))
+
+    def test_traceroute_default_raises_feature_not_supported(self):
+        """Backends that don't override send_traceroute must raise
+        FeatureNotSupported so dashboards can return 501 gracefully."""
+        mgr = RadioManager()
+        mgr.add_backend(_MockBackend("mc-0", Protocol.MESHCORE))
+        with self.assertRaises(FeatureNotSupported):
+            mgr.send_traceroute("mc:abc123")
+
+    def test_traceroute_dispatches_to_right_backend(self):
+        """Traceroute should land on the backend whose protocol matches the
+        unified ID, and pass the native id through untouched."""
+        calls = []
+
+        class _TracingMock(_MockBackend):
+            def send_traceroute(self, to_native_id, hop_limit=7):
+                calls.append((self.backend_id, to_native_id, hop_limit))
+
+        mgr = RadioManager()
+        mgr.add_backend(_TracingMock("mt-0", Protocol.MESHTASTIC))
+        mgr.add_backend(_MockBackend("mc-0", Protocol.MESHCORE))
+        mgr.send_traceroute("mt:!abc123", hop_limit=5)
+        self.assertEqual(calls, [("mt-0", "!abc123", 5)])
+
+    def test_radio_config_routes_to_backend_id(self):
+        """get_radio_config(backend_id=...) picks the right backend, and
+        the result carries ``backend_id`` + ``protocol`` for the UI."""
+
+        class _ConfigurableMock(_MockBackend):
+            def get_radio_config(self):
+                return {"region": 3, "tx_power": 20}
+
+        mgr = RadioManager()
+        mgr.add_backend(_ConfigurableMock("mt-0", Protocol.MESHTASTIC))
+        mgr.add_backend(_MockBackend("mc-0", Protocol.MESHCORE))
+        data = mgr.get_radio_config(backend_id="mt-0")
+        self.assertEqual(data["region"], 3)
+        self.assertEqual(data["backend_id"], "mt-0")
+        self.assertEqual(data["protocol"], "mt")
+        # Default MC backend has no config surface
+        with self.assertRaises(FeatureNotSupported):
+            mgr.get_radio_config(backend_id="mc-0")
+
+    def test_set_radio_config_read_only_raises(self):
+        """set_radio_config on a read-only backend surfaces FeatureNotSupported."""
+        mgr = RadioManager()
+        mgr.add_backend(_MockBackend("mc-0", Protocol.MESHCORE))
+        with self.assertRaises(FeatureNotSupported):
+            mgr.set_radio_config({"tx_power": 22}, backend_id="mc-0")
 
 
 class TestProtocolEnum(unittest.TestCase):

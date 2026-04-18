@@ -120,6 +120,24 @@ class MeshCoreBackend(RadioBackend):
         if hasattr(result, "type") and result.type == EventType.ERROR:
             raise RuntimeError(f"MeshCore broadcast failed: {result.payload}")
 
+    # ── Protocol-optional features ───────────────────────────────────────
+    # MeshCore has no traceroute or LoRa-config-write surface yet; only a
+    # read-only device query.  send_traceroute + set_radio_config fall back
+    # to the base class (FeatureNotSupported → dashboard returns 501).
+
+    def get_radio_config(self) -> dict:
+        """Read-only view of whatever the MeshCore device_query returns.
+
+        MeshCore's firmware doesn't expose LoRa config like Meshtastic does,
+        so we hand the dashboard what the device *does* share (firmware ver,
+        hw model, etc.) under a ``read_only`` flag so the UI can grey out
+        write fields.  Still better than a 501 — shows MC isn't a dead zone.
+        """
+        if not self.is_connected() or self._loop is None:
+            raise ConnectionError("MeshCore radio not connected")
+        info = self.get_self_info() or {}
+        return {"read_only": True, "device": info}
+
     # ── Listening ────────────────────────────────────────────────────────
 
     def start_listening(self, callback: Callable[[UnifiedMessage], None]) -> None:

@@ -4,6 +4,32 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-18 01:10] — MT/MC equal-citizens pass (Phase 1 + 3)
+
+- What changed:
+  - **Global protocol scope selector** — new top-bar segmented control `[ ALL | MT | MC ]` right after the connection dots. Drives an `App.scope` state (persisted in `localStorage` as `loracle_scope`) and a new `nodeInScope(n)` helper. Filter is applied at render-time (not data-build-time, so positions are preserved) in seven places: `renderNodeList`, the canvas node-draw loop, the canvas link-draw loop, `onCanvasClick`, `_updateHoverCursor`, the mouse-magnetism closest-node scan, and `updateMapMarkers`. Active button colours match the protocol (teal MT, purple MC).
+  - **Symmetric protocol badges** — MT nodes in the sidebar now get a teal `mt` badge alongside MC's purple `mc`. Previously only MC was badged, with a comment that said "Meshtastic is the default (no badge = less clutter)" — that exact framing was making MT feel primary. Added `.lo-ns-proto-mt` CSS so the two badges have matching geometry and contrast.
+  - **Symmetric "MY NODE" label** — the self-node label in `buildGraph` used to special-case MC as `MY MC` while MT said `MY NODE` when alone. Now both read `MY NODE` in single-radio mode and `MY MT` / `MY MC` only when two radios are connected.
+  - **New `FeatureNotSupported` exception** in `radio/backend.py` (subclass of `NotImplementedError`). Three optional methods added to the `RadioBackend` base with defaults that raise `FeatureNotSupported`: `send_traceroute`, `get_radio_config`, `set_radio_config`. `MeshtasticBackend` overrides all three (delegating to `sendTraceRoute` / `localConfig.lora` / `writeConfig` with the same logic that used to live in the dashboard handlers). `MeshCoreBackend` overrides only `get_radio_config` to return a read-only `{"read_only": true, "device": {…}}` view built from `send_device_query`; traceroute and writable config stay at the base-class default.
+  - **RadioManager dispatchers** — added `send_traceroute(unified_node_id, hop_limit)` (dispatch by protocol prefix), `get_radio_config(backend_id=None)` (picks backend by id or falls back to primary; stamps `backend_id` + `protocol` onto the result), and `set_radio_config(config, backend_id=None)`. Also a new private `_pick_backend` helper that raises `ValueError` when the requested backend isn't connected.
+  - **Dashboard endpoints rewritten** — `/api/traceroute`, `GET/POST /api/radio/config` now route through the RadioManager dispatchers instead of reaching into `_bridge.interface.*`. Config endpoints accept an optional `backend_id` (query param on GET, body field on POST). All three catch `FeatureNotSupported` and return HTTP 501 with `{"feature_not_supported": true, "error": …}` so `callApi` surfaces a clear toast.
+  - **Config tab degrades gracefully** — new `_radioCfgReadOnly` flag + `cfg-radio-save` button id. When `cfgLoadRadio()` sees `read_only: true`, it disables the save button and inserts a dashed-border notice reading "This radio (MC) exposes a read-only config. LoRa tuning is Meshtastic-only." `cfgSaveRadio()` also short-circuits with an error toast if the user somehow tries to save anyway.
+- Why:
+  - User report: *"Right now, it seems like Meshtastic is the primary program, and the MeshCore is just kind of an add-on. But I would like for them to both be equal and have equal feature sets."* The diagnostic pass identified three rot vectors: (1) the unified node tree already worked, but there was no way to filter to just MT or just MC across the app; (2) the sidebar badged only MC, which framed MT as the default; (3) three server endpoints were hardwired to `_bridge.interface.*` and would silently fail (or worse, pretend to succeed) on MC. Phase 1 is the most visible fix (the selector), Phase 3 is the infra that prevents silent feature-divergence going forward.
+- Impact on project goals:
+  - The dashboard now treats MT and MC as equal citizens — every view has a protocol scope, every node has a badge, and every MT-only endpoint fails honestly on MC with a user-visible toast instead of an empty result. `FeatureNotSupported` is the mechanism for any future feature-parity gap: add the method on the base class, let MC raise by default, let the dashboard catch and surface it. Three remaining pieces for full equality: copy/wizard reframing (Phase 2 — "STEP 1 — MESHTASTIC" still reads as MT-first), the `mt-primary` hardcoded fallback in `buildGraph` ([dashboard.py:3130]), and bridge-visibility polish (Phase 4 — direction labels + per-protocol stat columns).
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — scope selector HTML/CSS + `App.scope` + `setScope` + `nodeInScope`; filter applied at 7 render sites; symmetric `lo-ns-proto-mt` badge + label; `FeatureNotSupported` import; three endpoint rewrites; `cfg-radio-save` id + `_radioCfgReadOnly` flag + read-only notice in `cfgLoadRadio`; read-only guard in `cfgSaveRadio`; symmetric `MY NODE` label.
+  - `meshtastic-bridge/radio/backend.py` — new `FeatureNotSupported` exception + three optional methods with raising defaults.
+  - `meshtastic-bridge/radio/manager.py` — imports `FeatureNotSupported`; new `send_traceroute` / `get_radio_config` / `set_radio_config` / `_pick_backend`.
+  - `meshtastic-bridge/radio/meshtastic_backend.py` — concrete implementations of the three optional methods (same logic that used to live in the dashboard).
+  - `meshtastic-bridge/radio/meshcore_backend.py` — read-only `get_radio_config` that wraps `get_self_info()` under a `read_only` flag.
+  - `meshtastic-bridge/tests/test_radio_backends.py` — four new `TestRadioManager` cases covering the default-raises-FeatureNotSupported path, correct protocol dispatch, `backend_id` routing, and the read-only raise on set.
+  - `README.md` — new "Protocol Scope Selector" sub-section under the dashboard Views table.
+- Tests: 306/306 pass (all four new cases green).
+
+---
+
 ## [2026-04-18 00:20] — Multiple float windows can stay open simultaneously (MT + MC side-by-side)
 
 - What changed:

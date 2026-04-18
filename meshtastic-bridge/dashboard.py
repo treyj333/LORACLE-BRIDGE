@@ -16,6 +16,8 @@ import requests as requests_lib
 from flask import Flask, jsonify, Response, request
 from werkzeug.utils import secure_filename
 
+from radio.backend import FeatureNotSupported
+
 logger = logging.getLogger("dashboard")
 
 # ─── Shared state (bridge writes, dashboard reads) ───────────────────────────
@@ -1508,18 +1510,26 @@ def api_send_mesh():
 
 @app.route("/api/traceroute", methods=["POST"])
 def api_traceroute():
-    """Send a traceroute to a node and return the route."""
+    """Send a traceroute probe.  Routes via RadioManager so it works for any
+    backend that implements ``send_traceroute``.  MeshCore has no traceroute
+    today → returns 501 with a clear message instead of silently failing."""
     if _bridge is None:
         return jsonify({"error": "Bridge not initialized"}), 503
-    if not _bridge.interface or not _bridge._is_interface_alive():
-        return jsonify({"error": "Radio not connected"}), 503
+    mgr = getattr(_bridge, "_radio_manager", None)
+    if mgr is None or not mgr.has_connected_backend():
+        return jsonify({"error": "No radio connected"}), 503
     data = request.get_json(silent=True) or {}
-    dest = data.get("dest", "").strip()
+    dest = (data.get("dest") or "").strip()
     if not dest:
         return jsonify({"error": "Missing dest"}), 400
     try:
-        _bridge.interface.sendTraceRoute(dest, hopLimit=7)
+        mgr.send_traceroute(dest, hop_limit=7)
         return jsonify({"ok": True, "dest": dest})
+    except FeatureNotSupported as e:
+        return jsonify({
+            "error": str(e),
+            "feature_not_supported": True,
+        }), 501
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1593,53 +1603,49 @@ def api_channels():
 
 @app.route("/api/radio/config", methods=["GET"])
 def api_radio_config():
-    """Get radio LoRa configuration."""
-    if _bridge is None or not _bridge.interface:
-        return jsonify({"error": "Not connected"}), 503
+    """Get radio config from a specific backend (or primary if unspecified).
+
+    Query param: ``?backend_id=<id>``.  MeshCore returns a read-only view
+    (firmware/hw info) with ``read_only: true``; Meshtastic returns writable
+    LoRa config.  Backends that expose nothing return 501."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    mgr = getattr(_bridge, "_radio_manager", None)
+    if mgr is None or not mgr.has_connected_backend():
+        return jsonify({"error": "No radio connected"}), 503
+    backend_id = (request.args.get("backend_id") or "").strip() or None
     try:
-        node = _bridge.interface.localNode
-        lora = node.localConfig.lora if hasattr(node, "localConfig") else None
-        if not lora:
-            return jsonify({"error": "Cannot read config"}), 500
+        return jsonify(mgr.get_radio_config(backend_id=backend_id))
+    except FeatureNotSupported as e:
         return jsonify({
-            "region": lora.region if hasattr(lora, "region") else 0,
-            "modem_preset": lora.modemPreset if hasattr(lora, "modemPreset") else 0,
-            "tx_power": lora.txPower if hasattr(lora, "txPower") else 0,
-            "hop_limit": lora.hopLimit if hasattr(lora, "hopLimit") else 3,
-            "tx_enabled": lora.txEnabled if hasattr(lora, "txEnabled") else True,
-            "bandwidth": lora.bandwidth if hasattr(lora, "bandwidth") else 0,
-            "spread_factor": lora.spreadFactor if hasattr(lora, "spreadFactor") else 0,
-            "coding_rate": lora.codingRate if hasattr(lora, "codingRate") else 0,
-        })
+            "error": str(e),
+            "feature_not_supported": True,
+        }), 501
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/radio/config", methods=["POST"])
 def api_radio_config_set():
-    """Update radio LoRa configuration."""
-    if _bridge is None or not _bridge.interface or not _bridge._is_interface_alive():
-        return jsonify({"error": "Not connected"}), 503
+    """Update radio config on a specific backend (or primary if unspecified).
+
+    Body may include ``backend_id`` alongside the config fields.  MeshCore is
+    read-only → returns 501 instead of silently accepting writes."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    mgr = getattr(_bridge, "_radio_manager", None)
+    if mgr is None or not mgr.has_connected_backend():
+        return jsonify({"error": "No radio connected"}), 503
     data = request.get_json(silent=True) or {}
+    backend_id = (data.pop("backend_id", None) or None)
     try:
-        node = _bridge.interface.localNode
-        lora = node.localConfig.lora
-        changed = False
-        if "hop_limit" in data:
-            lora.hopLimit = max(1, min(int(data["hop_limit"]), 7))
-            changed = True
-        if "tx_power" in data:
-            lora.txPower = max(0, min(int(data["tx_power"]), 30))
-            changed = True
-        if "region" in data:
-            lora.region = int(data["region"])
-            changed = True
-        if "modem_preset" in data:
-            lora.modemPreset = int(data["modem_preset"])
-            changed = True
-        if changed:
-            node.writeConfig("lora")
+        mgr.set_radio_config(data, backend_id=backend_id)
         return jsonify({"ok": True})
+    except FeatureNotSupported as e:
+        return jsonify({
+            "error": str(e),
+            "feature_not_supported": True,
+        }), 501
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1900,6 +1906,17 @@ button::-moz-focus-inner { border: 0; }
 }
 .lo-bar .lo-conn-add:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
 .lo-bar .lo-conn-add.on { color: #9b59b6; border-color: #9b59b6; }
+.lo-bar .lo-scope { display: flex; margin-left: 12px; }
+.lo-bar .lo-scope button {
+  padding: 4px 10px; font-family: inherit; font-size: 9px; letter-spacing: 0.12em;
+  text-transform: uppercase; border: 1px solid var(--lo-divider); border-right: none;
+  background: none; color: var(--lo-faint); cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.lo-bar .lo-scope button:last-child { border-right: 1px solid var(--lo-divider); }
+.lo-bar .lo-scope button:hover { color: var(--lo-ink); border-color: var(--lo-divider-strong); }
+.lo-bar .lo-scope button.active { color: var(--lo-ink); border-color: var(--lo-ink); background: rgba(255,255,255,0.04); }
+.lo-bar .lo-scope button.active[data-scope="mt"] { color: var(--lo-accent-2); border-color: var(--lo-accent-2); }
+.lo-bar .lo-scope button.active[data-scope="mc"] { color: #9b59b6; border-color: #9b59b6; }
 .lo-bar .lo-filters { display: flex; margin-left: auto; }
 .lo-bar .lo-filters button {
   padding: 4px 14px; font-family: inherit; font-size: 10px; letter-spacing: 0.1em;
@@ -2213,6 +2230,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-ns-row .lo-ns-badge { background: var(--lo-accent); color: var(--lo-bg); font-size: 8px; font-weight: 500; padding: 1px 4px; min-width: 14px; text-align: center; }
 .lo-ns-proto { display: inline-block; font-size: 8px; font-weight: 600; padding: 1px 4px; margin-right: 4px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: baseline; }
 .lo-ns-proto-mc { background: #9b59b6; color: #fff; }
+.lo-ns-proto-mt { background: var(--lo-accent-2); color: var(--lo-bg-deep); }
 
 /* ── Onboarding ───────────────────────────────────────────────────────────── */
 .lo-onboarding { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; }
@@ -2243,6 +2261,11 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
     <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add / manage secondary MeshCore radio">+ RADIO</button>
   </span>
+  <div class="lo-scope" title="Show nodes from: ALL protocols, or filter to just MESHTASTIC / just MESHCORE">
+    <button class="active" data-scope="all" onclick="setScope('all')">ALL</button>
+    <button data-scope="mt" onclick="setScope('mt')">MT</button>
+    <button data-scope="mc" onclick="setScope('mc')">MC</button>
+  </div>
   <div class="lo-filters">
     <button class="active" data-view="mesh" onclick="setView('mesh')">MESH</button>
     <button data-view="traffic" onclick="setView('traffic')">TRAFFIC</button>
@@ -2451,7 +2474,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div class="lo-form-row"><span class="lo-form-label">MODEM PRESET</span><select id="cfg-radio-modem" onchange="markConfigDirty()"><option value="0">Long Fast</option><option value="1">Long Slow</option><option value="2">Very Long Slow</option><option value="3">Medium Slow</option><option value="4">Medium Fast</option><option value="5">Short Slow</option><option value="6">Short Fast</option><option value="7">Long Moderate</option></select></div>
       <div class="lo-form-row"><span class="lo-form-label">TX POWER</span><input type="number" id="cfg-radio-tx" min="0" max="30" style="width:60px" onchange="markConfigDirty()"> <span style="font-size:10px;color:var(--lo-faint)">dBm</span></div>
       <div class="lo-form-row"><span class="lo-form-label">MAX HOPS</span><input type="number" id="cfg-radio-hops" min="1" max="7" style="width:60px" onchange="markConfigDirty()"></div>
-      <div class="lo-form-row"><span class="lo-form-label"></span><button class="btn btn-primary" onclick="cfgSaveRadio()">SAVE RADIO CONFIG</button> <button class="btn btn-sm" onclick="cfgLoadRadio()">REFRESH</button></div>
+      <div class="lo-form-row"><span class="lo-form-label"></span><button id="cfg-radio-save" class="btn btn-primary" onclick="cfgSaveRadio()">SAVE RADIO CONFIG</button> <button class="btn btn-sm" onclick="cfgLoadRadio()">REFRESH</button></div>
     </div>
   </details>
 
@@ -2909,6 +2932,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 var App = {
   state: {},
   view: 'mesh',        // 'mesh' | 'traffic' | 'config'
+  scope: (function() { try { return localStorage.getItem('loracle_scope') || 'all'; } catch(e) { return 'all'; } })(),  // 'all' | 'mt' | 'mc' — filters nodes/self by protocol across every view
   selectedNode: null,
   configLoaded: false,
   nodes: [],
@@ -2926,6 +2950,39 @@ var App = {
   panY: 0,
   unreadCounts: {},
 };
+
+// Scope filter — treats MT and MC as equal citizens. A node is in-scope when:
+//   'all' → always; 'mt' → node is meshtastic (not mc:); 'mc' → node is meshcore (mc:)
+// Channels get classified by the same prefix rule: 'meshtastic:channel:0' is MT,
+// 'mc:channel:1' is MC. Self-nodes use the backend's own protocol via n.isMC.
+function nodeInScope(n) {
+  if (!n) return true;
+  var s = App.scope || 'all';
+  if (s === 'all') return true;
+  var isMC = !!n.isMC;
+  return s === 'mc' ? isMC : !isMC;
+}
+
+function setScope(scope) {
+  if (scope !== 'all' && scope !== 'mt' && scope !== 'mc') scope = 'all';
+  App.scope = scope;
+  try { localStorage.setItem('loracle_scope', scope); } catch(e) {}
+  document.querySelectorAll('.lo-scope button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.scope === scope);
+  });
+  // Canvas repaints every frame (nodeInScope is applied at draw-time), but the
+  // sidebar list is event-driven so nudge it. Map view layers also need a refresh.
+  try { renderNodeList(); } catch(e) {}
+  try { if (typeof updateMapMarkers === 'function') updateMapMarkers(); } catch(e) {}
+}
+
+// Sync the scope button visual state on first paint so a stored preference
+// reflects in the top bar immediately.
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.lo-scope button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.scope === (App.scope || 'all'));
+  });
+});
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
 
@@ -3145,7 +3202,11 @@ function buildGraph(state) {
     selfNode.isSelf = true;
     selfNode.isMC = isMC;
     selfNode.isChannel = false;
-    selfNode.label = isMC ? 'MY MC' : (selfBackends.length > 1 ? 'MY MT' : 'MY NODE');
+    // When only one radio is connected, both protocols show the same generic label;
+    // when two are connected, both get protocol-specific labels so MT/MC are equals.
+    selfNode.label = (selfBackends.length > 1)
+      ? (isMC ? 'MY MC' : 'MY MT')
+      : 'MY NODE';
     selfNode.hops = 0;
     selfNode.selfBackendId = b.id || null;
     selfNode.selfProtocol = isMC ? 'mc' : 'mt';
@@ -3366,6 +3427,7 @@ function renderLoop() {
     var closest = null, closestDist = 100;
     App.nodes.forEach(function(n) {
       if (n.isSelf) return;
+      if (!nodeInScope(n)) return;
       var dx = wmx - n.x, dy = wmy - n.y;
       var dist = Math.sqrt(dx*dx + dy*dy);
       if (dist < closestDist) { closest = n; closestDist = dist; }
@@ -3529,6 +3591,7 @@ function renderCanvas() {
   // Draw links — shortened by node radius + 2px so lines don't bleed through nodes.
   App.links.forEach(function(link) {
     var s = link.source, t = link.target;
+    if (!nodeInScope(s) || !nodeInScope(t)) return;
     var dx = t.x - s.x, dy = t.y - s.y;
     var len = Math.sqrt(dx*dx + dy*dy) || 1;
     var ux = dx / len, uy = dy / len;
@@ -3606,6 +3669,7 @@ function renderCanvas() {
   // Draw nodes
   var nowSecs = Date.now() / 1000;
   App.nodes.forEach(function(node, i) {
+    if (!nodeInScope(node)) return;
     ctx.globalAlpha = 1;
 
     // Freshness: 1.0 = just heard, 0.25 = 1hr+ stale
@@ -3756,6 +3820,7 @@ function onCanvasClick(e) {
   var mx = e.clientX - rect.left - App.panX, my = e.clientY - rect.top - App.panY;
   var closest = null, closestDist = Infinity;
   App.nodes.forEach(function(n) {
+    if (!nodeInScope(n)) return;
     var dx = n.x - mx, dy = n.y - my;
     var dist = Math.sqrt(dx*dx + dy*dy);
     // Click radius scales with node size so larger nodes are easier to hit.
@@ -3772,6 +3837,7 @@ function _updateHoverCursor(mxRel, myRel) {
   var hit = false;
   for (var i = 0; i < App.nodes.length; i++) {
     var n = App.nodes[i];
+    if (!nodeInScope(n)) continue;
     var dx = n.x - mx, dy = n.y - my;
     if (Math.sqrt(dx*dx + dy*dy) < 60) { hit = true; break; }
   }
@@ -5094,15 +5160,24 @@ function updateMapMarkers() {
   var selfId = (backends.length > 0 && backends[0].self_node_id) ? backends[0].self_node_id : null;
   var bounds = [];
 
-  // Remove stale markers and labels
+  // Protocol check: MC nodes have ids prefixed with 'mc:'. Respect App.scope.
+  function _idInScope(id) {
+    var s = App.scope || 'all';
+    if (s === 'all') return true;
+    var isMC = (id || '').indexOf('mc:') === 0;
+    return s === 'mc' ? isMC : !isMC;
+  }
+
+  // Remove stale markers and labels (gone from positions, OR dropped out of scope)
   Object.keys(_mapMarkers).forEach(function(id) {
-    if (!positions[id]) {
+    if (!positions[id] || !_idInScope(id)) {
       _map.removeLayer(_mapMarkers[id]); delete _mapMarkers[id];
       if (_mapLabels[id]) { _map.removeLayer(_mapLabels[id]); delete _mapLabels[id]; }
     }
   });
 
   Object.keys(positions).forEach(function(nid) {
+    if (!_idInScope(nid)) return;
     var pos = positions[nid];
     if (!pos.lat || !pos.lon) return;
     var ll = [pos.lat, pos.lon];
@@ -5185,6 +5260,7 @@ function renderNodeList() {
   var filter = (document.getElementById('ns-search').value || '').toLowerCase();
   var items = App.nodes.filter(function(n) {
     if (n.isSelf) return false;
+    if (!nodeInScope(n)) return false;
     if (filter && n.label.toLowerCase().indexOf(filter) === -1 && n.id.toLowerCase().indexOf(filter) === -1) return false;
     return true;
   }).map(function(n) {
@@ -5203,8 +5279,11 @@ function renderNodeList() {
     var heard = n.lastHeard ? relativeTime(n.lastHeard) : '--';
     var badge = n.unread > 0 ? '<span class="lo-ns-badge">' + n.unread + '</span>' : '';
     var star = n.isFavorite ? '<span style="color:#f1c40f;margin-right:3px">\u2605</span>' : '';
-    // Protocol badge — only show for MeshCore; Meshtastic is the default (no badge = less clutter)
-    var protoTag = n.isMC ? '<span class="lo-ns-proto lo-ns-proto-mc" title="MeshCore">mc</span>' : '';
+    // Protocol badge — both protocols get an equal badge so neither feels "default".
+    // MT: teal circle-dot, MC: purple diamond — mirrors the canvas and header icons.
+    var protoTag = n.isMC
+      ? '<span class="lo-ns-proto lo-ns-proto-mc" title="MeshCore">mc</span>'
+      : '<span class="lo-ns-proto lo-ns-proto-mt" title="Meshtastic">mt</span>';
     return '<div class="lo-ns-row" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(n.id) + '\'}))">' +
       '<span class="lo-ns-name">' + star + protoTag + escapeHtml(n.label) + '</span>' +
       '<span class="lo-ns-hops">' + hops + '</span>' +
@@ -5318,15 +5397,41 @@ async function cfgLoadChannels() {
       '<span style="color:var(--lo-faint);font-size:10px">' + ch.role.toUpperCase() + ' ' + psk + ' ' + up + dn + '</span></div>';
   }).filter(Boolean).join('') || 'No active channels';
 }
+var _radioCfgReadOnly = false;  // true when the primary backend is MC (read-only)
 async function cfgLoadRadio() {
   var d = await callApi('GET', '/api/radio/config');
   if (!d || d.error) return;
+  _radioCfgReadOnly = !!d.read_only;
+  // MeshCore has no writable LoRa config — show a notice and disable save
+  // so the user isn't misled into thinking they can tune region/tx here.
+  var saveBtn = document.getElementById('cfg-radio-save');
+  if (saveBtn) saveBtn.disabled = _radioCfgReadOnly;
+  var noticeId = 'cfg-radio-notice';
+  var notice = document.getElementById(noticeId);
+  if (_radioCfgReadOnly) {
+    if (!notice && saveBtn && saveBtn.parentNode) {
+      notice = document.createElement('div');
+      notice.id = noticeId;
+      notice.style.cssText = 'font-size:10px;color:var(--lo-faint);margin:6px 0;padding:6px;border:1px dashed var(--lo-divider)';
+      notice.textContent = 'This radio (' + (d.protocol || 'non-mt').toUpperCase() +
+        ') exposes a read-only config. LoRa tuning is Meshtastic-only.';
+      saveBtn.parentNode.insertBefore(notice, saveBtn);
+    }
+    // Populate only the fields MC can fill from its device view, leave MT fields blank
+    return;
+  } else if (notice) {
+    notice.remove();
+  }
   document.getElementById('cfg-radio-region').value = d.region || 0;
   document.getElementById('cfg-radio-modem').value = d.modem_preset || 0;
   document.getElementById('cfg-radio-tx').value = d.tx_power || 0;
   document.getElementById('cfg-radio-hops').value = d.hop_limit || 3;
 }
 async function cfgSaveRadio() {
+  if (_radioCfgReadOnly) {
+    showToast('This radio is read-only — cannot save LoRa config', 'error');
+    return;
+  }
   if (!confirm('Save radio config? The radio may restart.')) return;
   var d = await callApi('POST', '/api/radio/config', {
     region: parseInt(document.getElementById('cfg-radio-region').value),

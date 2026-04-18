@@ -224,6 +224,12 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 | **BRIDGE** *(v2)* | Cross-protocol relay controls — live ON/OFF badge, per-channel rule editor (off / always / ai-gated), relayed/dropped/dedup counters, scrolling flow log. See [Cross-Protocol Bridge](#cross-protocol-bridge-v2-phases-25--software-complete) below |
 | **CONFIG** | Full settings: connection, channels, radio, model, routing, RAG, knowledge packs, data, appearance |
 
+### Protocol Scope Selector — `[ ALL | MT | MC ]`
+
+Sits in the top bar next to the connection dots. Switches every view — canvas, node-list sidebar, map markers, click targets — to show only Meshtastic nodes, only MeshCore nodes, or both. The active button glows teal for MT and purple for MC to match the node colours. Choice is persisted in `localStorage`, so reloading the page remembers what you were looking at.
+
+Neither protocol is the "default"; every node gets an equal teal `mt` or purple `mc` badge in the sidebar, and when two radios are connected the centre of the mesh shows both "MY MT" and "MY MC" self-nodes side-by-side. Feature endpoints that only one protocol implements (traceroute, writable LoRa config) return a clean "not supported on this radio" toast instead of silently failing.
+
 ### Node List Sidebar
 
 Click the **☰** button in the title bar to open the node sidebar. Lists all nodes with hops, last heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
