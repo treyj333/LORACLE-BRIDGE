@@ -1400,6 +1400,14 @@ class StandaloneBridge:
         logger.info(
             f"Secondary radio connected: meshcore via {cfg['transport']}"
         )
+        # First-time seed: if the user has never configured the bridge, turn
+        # on public-channel relay by default the moment a second radio comes
+        # up. No-op if bridge rules already exist — respects any prior user
+        # edits on restart.
+        try:
+            self._seed_default_bridge_rules(force=False)
+        except Exception as e:
+            logger.debug(f"Default bridge seed skipped: {e}")
         return backend
 
     def add_secondary_radio(
@@ -1449,10 +1457,12 @@ class StandaloneBridge:
 
         # Seed cross-protocol public-channel relay so the user's ask —
         # "when I get a meshcore message on public channels my meshtastic
-        # radio retransmits it" — works out of the box.
+        # radio retransmits it" — works out of the box. force=True
+        # because the caller (dashboard checkbox or equivalent) explicitly
+        # opted in; without force an existing rule set would block the seed.
         if seed_bridge:
             try:
-                self._seed_default_bridge_rules()
+                self._seed_default_bridge_rules(force=True)
             except Exception as e:
                 logger.warning(f"Could not seed default bridge rules: {e}")
 
@@ -1509,15 +1519,24 @@ class StandaloneBridge:
             return f"meshcore:ble:{cfg.get('ble_address') or ''}"
         return ""
 
-    def _seed_default_bridge_rules(self) -> None:
+    def _seed_default_bridge_rules(self, force: bool = False) -> None:
         """Turn on bidirectional public-channel (channel 0) relay.
 
-        Only adds rules that aren't already present — existing per-channel
-        rules (e.g. ai-gated) are preserved. Enables the global bridge
-        flag if it was off.
+        *force=False* (the default) is a FIRST-TIME seed — it refuses to
+        do anything if the bridge config already has any rules, so user
+        edits aren't clobbered on subsequent auto-seeds (e.g. when a
+        secondary radio reconnects after a reboot).
+
+        *force=True* is an explicit user opt-in (the "+ RADIO" modal's
+        seed-bridge checkbox, or the BRIDGE tab's one-click toggle). In
+        that case the defaults are added if missing and the global
+        enable flag is flipped on — existing custom rules are preserved.
         """
         cfg = dict(self._bridge_config) if isinstance(self._bridge_config, dict) else {}
         rules = list(cfg.get("rules") or [])
+        if not force and rules:
+            # First-time seed: respect any config the user has touched.
+            return
         wanted = [
             {"source": "meshtastic", "channel": 0, "mode": "always"},
             {"source": "meshcore", "channel": 0, "mode": "always"},
@@ -1536,6 +1555,29 @@ class StandaloneBridge:
         if changed:
             cfg["rules"] = rules
             self._save_bridge_config(cfg)
+
+    def _unseed_default_bridge_rules(self) -> None:
+        """Inverse of the seed call used by the BRIDGE tab's one-click toggle.
+
+        Removes the default bidirectional public-channel-0 rules. Any
+        other rules (custom channels, ai-gated rules) the user added are
+        preserved. If removing the defaults empties the rules list, the
+        global enable flag is flipped off too so the bridge goes dark —
+        matches the expectation set by the simplified UI toggle.
+        """
+        cfg = dict(self._bridge_config) if isinstance(self._bridge_config, dict) else {}
+        rules = [
+            r for r in (cfg.get("rules") or [])
+            if not (
+                r.get("source") in ("meshtastic", "meshcore")
+                and r.get("channel") == 0
+                and r.get("mode") == "always"
+            )
+        ]
+        cfg["rules"] = rules
+        if not rules:
+            cfg["enabled"] = False
+        self._save_bridge_config(cfg)
 
     def _secondary_radio_ingest_loop(self):
         """Drain _radio_manager's message queue and feed into _request_queue.

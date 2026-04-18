@@ -1196,6 +1196,29 @@ def api_bridge_config_set():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/bridge/public-channel", methods=["POST"])
+def api_bridge_public_channel():
+    """One-click toggle for the "auto-relay public channel 0 both ways" pattern.
+
+    Request JSON ``{"enabled": bool}``. Delegates to the bridge's seed /
+    unseed helpers so custom rules (non-default channel, ai-gated, etc.)
+    aren't clobbered. Returns the resulting config.
+    """
+    if _bridge is None or not hasattr(_bridge, "_seed_default_bridge_rules"):
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    want_on = bool(data.get("enabled", True))
+    try:
+        if want_on:
+            _bridge._seed_default_bridge_rules(force=True)
+        else:
+            _bridge._unseed_default_bridge_rules()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    cfg = getattr(_bridge, "_bridge_config", {}) or {}
+    return jsonify({"ok": True, "config": cfg})
+
+
 @app.route("/api/bridge/stats", methods=["GET"])
 def api_bridge_stats():
     """Return live relay counters (relayed, dropped, dedup cache size)."""
@@ -2262,26 +2285,39 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   </div>
 
   <div class="lo-bridge-panel">
-    <div class="lo-bridge-section">
-      <div class="lo-bridge-section-title">GLOBAL</div>
-      <label class="lo-bridge-row">
-        <input type="checkbox" id="bridge-enabled" onchange="bridgeMarkDirty()">
-        <span>Relay enabled</span>
-        <span class="lo-bridge-hint">Master switch — when off, no messages cross between networks regardless of per-channel rules.</span>
+    <!-- Simple one-click toggle for the common case — public channel 0 both ways. -->
+    <div class="lo-bridge-section" style="border-color:var(--lo-accent)">
+      <div class="lo-bridge-section-title" style="color:var(--lo-accent)">AUTO-BRIDGE PUBLIC CHANNEL</div>
+      <label class="lo-bridge-row" style="align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="bridge-simple-toggle" onchange="bridgeSimpleToggle(this.checked)" style="width:16px;height:16px;accent-color:var(--lo-accent)">
+        <span style="font-size:13px;color:var(--lo-ink);font-weight:500">Auto-relay public channel 0 between Meshtastic and MeshCore</span>
       </label>
+      <div class="lo-bridge-hint" style="margin-top:8px;line-height:1.6">
+        When on, every message sent on public channel&nbsp;0 on one radio is automatically retransmitted on the other, tagged <code style="background:var(--lo-bg);padding:0 4px">from meshtastic (Alice):&nbsp;…</code> or <code style="background:var(--lo-bg);padding:0 4px">from meshcore (…):&nbsp;…</code> so recipients on the other network see where it came from. DMs never cross.
+      </div>
+      <div id="bridge-simple-status" style="font-size:10px;color:var(--lo-faint);margin-top:6px"></div>
     </div>
 
-    <div class="lo-bridge-section">
-      <div class="lo-bridge-section-title">PER-CHANNEL RULES</div>
-      <div class="lo-bridge-hint" style="margin-bottom:8px">Each rule decides whether channel broadcasts from one network cross to the other. DMs never relay.</div>
-      <div id="bridge-rules-list"></div>
-      <button class="btn btn-sm" onclick="bridgeAddRule()" style="margin-top:8px">+ ADD RULE</button>
-      <div style="margin-top:10px;display:flex;gap:8px">
-        <button class="btn btn-sm" onclick="bridgeSaveConfig()" id="bridge-save-btn">APPLY</button>
-        <button class="btn btn-sm" onclick="bridgeReloadConfig()">RELOAD</button>
-        <span id="bridge-save-status" style="align-self:center;color:var(--lo-faint);font-size:11px"></span>
+    <details id="bridge-advanced" class="lo-bridge-section" style="padding:0;border-style:dashed">
+      <summary style="padding:10px 14px;cursor:pointer;font-size:10px;letter-spacing:0.14em;color:var(--lo-dim);user-select:none">ADVANCED RULES (most users don't need this)</summary>
+      <div style="padding:12px 14px;border-top:1px dashed var(--lo-divider)">
+        <label class="lo-bridge-row">
+          <input type="checkbox" id="bridge-enabled" onchange="bridgeMarkDirty()">
+          <span>Master relay enabled</span>
+          <span class="lo-bridge-hint">When off, no messages cross regardless of per-channel rules.</span>
+        </label>
+        <div class="lo-bridge-hint" style="margin:12px 0 8px">
+          Each rule below decides whether channel broadcasts from one network cross to the other. DMs never relay. Use the simple toggle above for the normal case — this panel is only needed for multi-channel setups or the AI-gated urgency filter.
+        </div>
+        <div id="bridge-rules-list"></div>
+        <button class="btn btn-sm" onclick="bridgeAddRule()" style="margin-top:8px">+ ADD RULE</button>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="bridgeSaveConfig()" id="bridge-save-btn">APPLY</button>
+          <button class="btn btn-sm" onclick="bridgeReloadConfig()">RELOAD</button>
+          <span id="bridge-save-status" style="align-self:center;color:var(--lo-faint);font-size:11px"></span>
+        </div>
       </div>
-    </div>
+    </details>
 
     <div class="lo-bridge-section">
       <div class="lo-bridge-section-title">LIVE FLOW</div>
@@ -2529,9 +2565,13 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
         <div id="connect-scan-list" style="margin-top:6px"></div>
       </div>
     </div>
+    <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — MESHTASTIC</div>
     <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
-      <button class="btn" onclick="dismissConnectModal()">DISMISS</button>
-      <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
+      <button class="btn" id="connect-modal-dismiss-btn" onclick="dismissConnectModal()">DISMISS</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — NO MESHTASTIC</button>
+        <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
+      </div>
     </div>
     <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
   </div>
@@ -2540,8 +2580,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <!-- ── Add Secondary Radio Modal ─────────────────────────────────────────── -->
 <div class="lo-connect-modal" id="add-radio-modal">
   <div class="lo-connect-box">
-    <h3>ADD SECONDARY RADIO</h3>
-    <p>Attach a MeshCore radio alongside your primary Meshtastic. Once connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
+    <div id="ar-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 2 OF 2 — MESHCORE</div>
+    <h3 id="ar-title">ADD SECONDARY RADIO</h3>
+    <p id="ar-description">Attach a MeshCore radio alongside your primary Meshtastic. Once connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
     <div id="ar-active-row" style="display:none;margin-bottom:14px;padding:10px;background:var(--lo-bg-deep);font-size:11px">
       <div style="color:#9b59b6;font-weight:500;margin-bottom:4px">◆ <span id="ar-active-label">MESHCORE CONNECTED</span></div>
       <div id="ar-active-detail" style="color:var(--lo-dim)"></div>
@@ -2582,8 +2623,11 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       </label>
     </div>
     <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
-      <button class="btn" onclick="hideAddRadioModal()">CANCEL</button>
-      <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
+      <button class="btn" id="ar-cancel-btn" onclick="hideAddRadioModal()">CANCEL</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn" id="ar-skip-btn" onclick="wizardSkipSecondary()" style="display:none">SKIP — NO MESHCORE</button>
+        <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
+      </div>
     </div>
     <div id="ar-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
   </div>
@@ -4079,8 +4123,56 @@ async function bridgeReloadConfig() {
     document.getElementById('bridge-enabled').checked = _bridgeState.cfg.enabled;
     bridgeUpdateBadge();
     bridgeRenderRules();
+    bridgeSyncSimpleToggle();
     bridgeSetStatus('');
   } catch(e) { bridgeSetStatus('load failed: ' + e, 'error'); }
+}
+
+// Sync the "Auto-bridge public channel" checkbox with the underlying config.
+// The toggle is "on" iff (enabled && both default rules present); anything
+// else is "off" — including partial states from the advanced editor.
+function bridgeSyncSimpleToggle() {
+  var cb = document.getElementById('bridge-simple-toggle');
+  if (!cb || !_bridgeState.cfg) return;
+  var rules = _bridgeState.cfg.rules || [];
+  var hasMT = rules.some(function(r) { return r.source === 'meshtastic' && r.channel === 0 && r.mode === 'always'; });
+  var hasMC = rules.some(function(r) { return r.source === 'meshcore' && r.channel === 0 && r.mode === 'always'; });
+  cb.checked = !!(_bridgeState.cfg.enabled && hasMT && hasMC);
+  // Surface the status in plain English under the checkbox so the user
+  // can sanity-check at a glance without expanding the advanced panel.
+  var st = document.getElementById('bridge-simple-status');
+  if (st) {
+    if (cb.checked) {
+      st.textContent = 'Public channel is bridging both ways.';
+      st.style.color = 'var(--lo-accent-2)';
+    } else if (rules.length) {
+      st.textContent = 'Off — custom rules are configured in ADVANCED.';
+      st.style.color = 'var(--lo-faint)';
+    } else {
+      st.textContent = 'Off.';
+      st.style.color = 'var(--lo-faint)';
+    }
+  }
+}
+
+async function bridgeSimpleToggle(enabled) {
+  var st = document.getElementById('bridge-simple-status');
+  if (st) { st.textContent = 'Saving\u2026'; st.style.color = 'var(--lo-faint)'; }
+  try {
+    var r = await fetch('/api/bridge/public-channel', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !!enabled})
+    });
+    var d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    // Reload the underlying state so the advanced editor + badge catch up.
+    await bridgeReloadConfig();
+    showToast(enabled ? 'Public-channel bridge ON' : 'Public-channel bridge OFF', 'info');
+  } catch (e) {
+    if (st) { st.textContent = 'Could not save: ' + e; st.style.color = '#c0392b'; }
+    // Flip the checkbox back to reflect server truth.
+    await bridgeReloadConfig();
+  }
 }
 
 function bridgeUpdateBadge() {
@@ -4375,8 +4467,76 @@ async function poll() {
 // ─── Connect Modal ─────────────────────────────────────────────────────────
 
 var _connectModalDismissed = false, _disconnectedSince = 0, _wasConnected = false, _userAckedModal = false;
-function showConnectModal() { if (!_connectModalDismissed) document.getElementById('connect-modal').classList.add('open'); }
-function dismissConnectModal() { _userAckedModal = true; _connectModalDismissed = true; document.getElementById('connect-modal').classList.remove('open'); }
+// ── First-run wizard ─────────────────────────────────────────────────────
+// Chains the primary (meshtastic) and secondary (meshcore) connect modals
+// on the very first dashboard load, so a new user gets asked about BOTH
+// radios — either is optional. A successful run marks "setup complete" in
+// localStorage so subsequent reconnect dialogs behave exactly as before.
+var _wizardActive = false;
+try { _wizardActive = !localStorage.getItem('loracle-setup-complete'); } catch(e) {}
+
+function wizardComplete() {
+  _wizardActive = false;
+  try { localStorage.setItem('loracle-setup-complete', '1'); } catch(e) {}
+  _applyWizardChromePrimary(false);
+  _applyWizardChromeSecondary(false);
+}
+
+function _applyWizardChromePrimary(active) {
+  var step = document.getElementById('connect-modal-wizard-step');
+  var skip = document.getElementById('connect-modal-skip-btn');
+  var title = document.getElementById('connect-modal-title');
+  var desc = document.getElementById('connect-modal-desc');
+  if (step) step.style.display = active ? '' : 'none';
+  if (skip) skip.style.display = active ? '' : 'none';
+  if (active) {
+    if (title) title.textContent = 'CONNECT YOUR MESHTASTIC';
+    if (desc) desc.textContent = 'Plug in your main Meshtastic radio over USB, or scan for Bluetooth. You can skip this step if you only have a MeshCore.';
+  }
+}
+
+function _applyWizardChromeSecondary(active) {
+  var step = document.getElementById('ar-wizard-step');
+  var skip = document.getElementById('ar-skip-btn');
+  var cancel = document.getElementById('ar-cancel-btn');
+  var title = document.getElementById('ar-title');
+  var desc = document.getElementById('ar-description');
+  if (step) step.style.display = active ? '' : 'none';
+  if (skip) skip.style.display = active ? '' : 'none';
+  if (cancel) cancel.textContent = active ? 'BACK' : 'CANCEL';
+  if (active && title) title.textContent = 'CONNECT YOUR MESHCORE';
+  if (active && desc) desc.textContent = 'Optional second radio. When connected, public channel 0 auto-bridges between the two networks. Leave blank and skip if you don\u2019t have one.';
+}
+
+function wizardSkipPrimary() {
+  // User skipped step 1 — go straight to the MeshCore prompt.
+  document.getElementById('connect-modal').classList.remove('open');
+  _connectModalDismissed = true;
+  _userAckedModal = true;
+  showAddRadioModal();  // still wizard-active; chrome re-applies inside
+}
+
+function wizardSkipSecondary() {
+  // Close directly (NOT via hideAddRadioModal — that routes CANCEL back to
+  // step 1 for mid-wizard BACK navigation). The explicit SKIP button exits
+  // the wizard entirely.
+  document.getElementById('add-radio-modal').classList.remove('open');
+  document.getElementById('ar-status').textContent = '';
+  wizardComplete();
+}
+
+function showConnectModal() {
+  if (_connectModalDismissed) return;
+  _applyWizardChromePrimary(_wizardActive);
+  document.getElementById('connect-modal').classList.add('open');
+}
+function dismissConnectModal() {
+  _userAckedModal = true;
+  _connectModalDismissed = true;
+  document.getElementById('connect-modal').classList.remove('open');
+  // DISMISS mid-wizard ends the wizard — user decided to set up manually.
+  if (_wizardActive) wizardComplete();
+}
 function hideConnectModal() { document.getElementById('connect-modal').classList.remove('open'); }
 
 function connectModalTypeChanged() {
@@ -4444,12 +4604,19 @@ async function connectFromModal() {
 // ── Add Secondary Radio modal ─────────────────────────────────────────────
 
 function showAddRadioModal() {
+  _applyWizardChromeSecondary(_wizardActive);
   refreshAddRadioModal();
   document.getElementById('add-radio-modal').classList.add('open');
 }
 function hideAddRadioModal() {
   document.getElementById('add-radio-modal').classList.remove('open');
   document.getElementById('ar-status').textContent = '';
+  // CANCEL during wizard = go back to step 1.
+  if (_wizardActive) {
+    _connectModalDismissed = false;
+    _userAckedModal = false;
+    showConnectModal();
+  }
 }
 function arTransportChanged() {
   var t = document.getElementById('ar-transport').value;
@@ -4509,7 +4676,16 @@ async function submitAddRadio() {
     } else {
       arSetStatus('\u2713 Connected — public-channel bridge is live', 'ok');
       showToast('MeshCore radio connected');
-      setTimeout(hideAddRadioModal, 900);
+      setTimeout(function() {
+        // Close the modal, but DON'T bounce back to step 1 during the wizard.
+        if (_wizardActive) {
+          document.getElementById('add-radio-modal').classList.remove('open');
+          document.getElementById('ar-status').textContent = '';
+          wizardComplete();
+        } else {
+          hideAddRadioModal();
+        }
+      }, 900);
     }
   } catch (e) {
     arSetStatus(String(e), 'error');
@@ -4548,14 +4724,21 @@ function checkConnectionForModal(connected) {
     if (_userAckedModal) {
       hideConnectModal();
     } else if (document.getElementById('connect-modal').classList.contains('open')) {
-      document.getElementById('connect-modal-title').textContent = 'RADIO CONNECTED';
-      document.getElementById('connect-modal-desc').textContent = 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
+      document.getElementById('connect-modal-title').textContent = _wizardActive ? 'MESHTASTIC CONNECTED' : 'RADIO CONNECTED';
+      document.getElementById('connect-modal-desc').textContent = _wizardActive
+        ? 'Primary radio up. Next, connect your MeshCore radio — or skip if you only have the one.'
+        : 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
       document.getElementById('connect-modal-status').textContent = '';
       if (!checkConnectionForModal._autoDismissTimer) {
         checkConnectionForModal._autoDismissTimer = setTimeout(function() {
           checkConnectionForModal._autoDismissTimer = null;
-          if (!_userAckedModal) { _userAckedModal = true; hideConnectModal(); }
-        }, 3000);
+          if (!_userAckedModal) {
+            _userAckedModal = true;
+            hideConnectModal();
+            // Chain into step 2 of the first-run wizard.
+            if (_wizardActive) { _connectModalDismissed = true; showAddRadioModal(); }
+          }
+        }, _wizardActive ? 1500 : 3000);
       }
     }
     return;
