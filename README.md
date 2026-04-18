@@ -1,31 +1,72 @@
 <div align="center">
 
 # LORACLE BRIDGE
-### Offline AI Over Mesh Radio
+### Offline AI + Cross-Protocol Mesh Radio Bridge
 
-**Chat with a local LLM over LoRa — no internet required**
+**Merges two separate mesh-radio networks (Meshtastic + MeshCore) into one, with a private AI assistant built in — no internet, no cellular, no cloud.**
 
 </div>
 
 ---
 
-## What Is This?
+## What Is This? (Plain-English)
 
-This project turns a **Meshtastic LoRa radio** into an AI-powered chatbot. Anyone on your mesh network can send a text message to your radio, and it automatically responds with answers from a local LLM running on your computer via **Ollama**.
+LORACLE Bridge does two big things that normally require the internet, a phone signal, or a server in the cloud — and it does both **completely offline**, powered by nothing but a laptop and a couple of radios:
 
-**No internet. No cloud. No API keys.** Everything runs locally on your machine.
+### 1. It connects two separate radio-mesh networks that normally can't talk to each other.
+
+**Meshtastic** and **MeshCore** are two popular long-range text-messaging radio networks. They both run on LoRa (the same radio technology) but they speak different languages — a Meshtastic radio can't hear a MeshCore radio, and vice-versa. That means a neighborhood, a unit, or a trail group running one network can't message a group running the other. It's like having Verizon and AT&T phones that couldn't call each other.
+
+**LORACLE fixes that.** Plug a Meshtastic radio and a MeshCore radio into the same computer and LORACLE becomes a *translator* between the two networks. When someone on Meshtastic sends a message on the public channel, LORACLE re-broadcasts it on the MeshCore network — tagged `from meshtastic (Alice): …` so the people on the other side know where it came from. Same in the other direction. The two networks start behaving like one big network.
+
+### 2. It runs an AI assistant that anyone on the mesh can text — with no internet needed.
+
+Normally when you ask an AI a question, your message goes to a data center, gets answered there, and comes back. LORACLE runs the entire AI **on your own laptop** — using a local model served by [Ollama](https://ollama.com). Anyone in radio range who sends a text to your node gets a real answer back, even if there's no cell service, no wifi, no power grid.
+
+You can also drop PDFs and text files (survival guides, SOPs, maintenance manuals, maps, whatever) into the `CONTEXT FILES/` folder, and the AI will use those documents to ground its answers. Ask "what's the procedure for a casualty evac" and it can cite your actual field manual instead of guessing.
+
+### Put them together and you have:
+
+A **battery-powered, cellular-free, internet-free** communications + AI platform where a whole mix of radios (Meshtastic *and* MeshCore) show up in one dashboard, messages cross between them automatically, and everyone on either network can ask an on-device AI real questions and get grounded answers back as text over radio. Useful for: disaster response, backcountry groups, off-grid communities, tactical / SAR teams, anywhere you have radios but no infrastructure.
 
 ```
-Someone on the mesh types a question
-  → Their radio sends it over LoRa
-  → Your radio receives it via USB
-  → This bridge forwards it to Ollama (AI running on your computer)
-  → AI generates a response
-  → Bridge sends plain-text response back over the mesh
-  → They get an answer
+    [Meshtastic mesh]                          [MeshCore mesh]
+         radios                                     radios
+           ⇅                                          ⇅
+    ┌──────────────┐                          ┌──────────────┐
+    │  Meshtastic  │                          │   MeshCore   │
+    │    radio     │◀───── LORACLE host ─────▶│    radio     │
+    │  (plugged    │     (laptop + Ollama     │  (plugged    │
+    │   into USB)  │       + this software)   │   into USB)  │
+    └──────────────┘                          └──────────────┘
+           ▲                                          ▲
+           │          public-channel traffic          │
+           │      re-broadcast in both directions     │
+           │                                          │
+           └── AI assistant answers DMs from ─────────┘
+                       either network
 ```
 
-You can also load documents (PDFs, text files, survival manuals, field guides) into a **knowledge base** so the AI can answer questions grounded in your own reference material. The knowledge base is **enabled by default** — just drop files into the `CONTEXT FILES/` folder.
+Either radio is optional — you can run just Meshtastic, just MeshCore, or both. With both plugged in, the cross-protocol bridge turns on automatically for public channel 0, no configuration required.
+
+**No internet. No cloud. No API keys. No phone plan.** Everything runs locally.
+
+---
+
+## Technical Summary (For the Rest)
+
+Below the plain-English section, the rest of this README gets more detailed. Skip to:
+
+- **[What You Need](#what-you-need)** — hardware and software requirements
+- **[Quick Start](#quick-start--3-steps)** — three-command install and run
+- **[Web Dashboard & Control Panel](#web-dashboard--control-panel)** — the mesh-visualization UI
+- **[Supported Protocols](#supported-protocols)** — Meshtastic + MeshCore details, dual-radio setup, cross-protocol bridge
+- **[Connection Methods](#connection-methods)** — Serial / BLE / TCP transports
+- **[Knowledge Base (RAG)](#knowledge-base-rag)** — dropping your own PDFs/docs for grounded answers
+- **[Mesh Commands](#mesh-commands)** — `!help`, `!drop`, `!triage`, `!brief`, `!nav`
+- **[All Command-Line Options](#all-command-line-options)** — every CLI flag
+- **[CONTEXT.md](CONTEXT.md)** — timestamped changelog with the "what / why / impact" of every change
+- **[LORACLE_BRIDGE_V2_FSD.md](LORACLE_BRIDGE_V2_FSD.md)** — the v2 dual-radio/bridge design doc
 
 ---
 
