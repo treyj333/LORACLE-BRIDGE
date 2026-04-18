@@ -73,8 +73,8 @@ You can override with `--model <name>` (e.g., `./mesh-llm.sh --model qwen3:14b`)
 ### Step 1: Clone This Repo
 
 ```bash
-git clone https://github.com/treyj333/loracle.git
-cd loracle
+git clone https://github.com/treyj333/LORACLE-BRIDGE.git
+cd LORACLE-BRIDGE
 ```
 
 ### Step 2: Plug In Your Radio
@@ -171,6 +171,7 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 | **TRAFFIC** | Same canvas, emphasis on active packet flow (inactive nodes dim) |
 | **MAP** | Geographic Leaflet map with node markers, auto-fit bounds, coverage heatmap layer — click any marker to open the same thread panel used on the mesh canvas |
 | **AI** | Direct chat with the local Ollama model — no radio needed. Useful for quick reference queries when you're not using the mesh. History is isolated from per-node conversations |
+| **BRIDGE** *(v2)* | Cross-protocol relay controls — live ON/OFF badge, per-channel rule editor (off / always / ai-gated), relayed/dropped/dedup counters, scrolling flow log. See [Cross-Protocol Bridge](#cross-protocol-bridge-v2-phases-25--software-complete) below |
 | **CONFIG** | Full settings: connection, channels, radio, model, routing, RAG, knowledge packs, data, appearance |
 
 ### Node List Sidebar
@@ -396,6 +397,19 @@ Anyone on the mesh network can send these special commands (prefix with `!`):
 | `!brief now` | Generate a fresh SITREP immediately |
 | `!brief history` | List available SITREPs by timestamp |
 
+### Bridge Force-Relay Prefixes (v2)
+
+When the cross-protocol bridge is enabled, senders can prepend one of these prefixes to force a channel message across the bridge past every policy (even the AI gate). The prefix is stripped before the message reaches the other network. DMs still never cross regardless of prefix.
+
+| Prefix | Intent |
+|--------|--------|
+| `!urgent` | Force relay — elevated-priority traffic |
+| `!priority` | Same as `!urgent`, different word choice |
+| `!sos` | Distress signal |
+| `!mayday` | Distress signal (radio convention) |
+
+All prefixes are case-insensitive and accept an optional `:` / `,` / `-` separator, e.g. `!urgent: building on fire`. A bang-word alone (just `!urgent` with no body) is a no-op — nothing crosses.
+
 ---
 
 ## All Command-Line Options
@@ -403,10 +417,18 @@ Anyone on the mesh network can send these special commands (prefix with `!`):
 ```
 ./mesh-llm.sh [OPTIONS]
 
-Connection (default: USB serial, auto-detected):
+Connection (primary radio; default: USB serial, auto-detected):
   --serial <port>         Serial port for radio (default: auto-detect USB)
   --tcp <host:port>       TCP address for radio (e.g. 192.168.1.1:4403)
   --ble [address]         Connect via Bluetooth LE (scan if no address given)
+
+Multi-protocol (v2):
+  --protocol <auto|meshtastic|meshcore>
+                          Primary-radio protocol detection (default: auto)
+  --second-radio <spec>   Connect a secondary radio (MeshCore via
+                          --second-radio meshcore:serial:/dev/ttyUSB1,
+                          meshcore:tcp:HOST[:PORT], or meshcore:ble:ADDR)
+  --ai-replies <on|off>   Global AI auto-reply toggle (default: on)
 
 Model:
   --model <name>          Ollama model to use (default: auto-selected by RAM)
@@ -425,12 +447,22 @@ Knowledge Base (on by default):
   --docs                  List ingested documents
   --docs-stats            Show knowledge base statistics
 
+Public Channel:
+  --public-talk           Respond to trigger-word messages on public channels (default: on)
+  --no-public-talk        Disable — DM-only mode
+
+Greeter:
+  --auto-greet            Proactively DM new nodes a welcome (default: on)
+  --no-auto-greet         Disable
+  --greet-message <text>  Override the default greeting text
+
 Addons (all enabled by default):
-  --enable-dead-drop      Enable Dead Drop (default: on)
-  --enable-triage         Enable Triage (default: on)
+  --enable-dead-drop      Enable Dead Drop
+  --enable-triage         Enable Triage
   --triage-dir <path>     Triage medical KB directory (default: ~/.mesh-llm/triage)
-  --enable-brief          Enable Brief (default: on)
+  --enable-brief          Enable Brief
   --brief-interval <int>  SITREP generation interval in minutes (default: 60)
+  --enable-navigation     Enable Navigation (bearing/distance helper)
   --enable-all-addons     Enable all available addons (default: on)
 
 Other:
@@ -452,6 +484,12 @@ Other:
 
 # Disable knowledge base
 ./mesh-llm.sh --no-rag
+
+# Dual-radio: Meshtastic primary + MeshCore secondary over serial (v2)
+./mesh-llm.sh --second-radio meshcore:serial:/dev/ttyUSB1
+
+# MeshCore secondary over TCP
+./mesh-llm.sh --second-radio meshcore:tcp:192.168.1.50:4000
 
 # Custom system prompt for a specific use case
 ./mesh-llm.sh --system-prompt "You are a wilderness survival expert. Be concise."
@@ -611,23 +649,11 @@ CLI flags:
 
 Greeter status (counts, queue length, grace remaining, current message) is visible at `/api/state.greeter`.
 
-### Manual Broadcast: Welcome → Public
-
-The dashboard's LIVE tab has a **Welcome → Public** button next to the Send button. Click it and the Send Message form pre-fills with the current greeter text, the recipient drops to **Broadcast**, and the channel is set to **Ch 0**. Review the text, then click **Send** to broadcast it. It does **not** auto-send — accidental clicks won't spam the channel.
-
 ### Ask LORACLE from the Dashboard
 
-The LIVE tab composer has a **Mode** selector with two options:
+Use the **AI tab** to chat with the local LLM directly from the dashboard — no radio required. History is isolated from per-node conversations so dashboard chats don't mix with mesh threads. This is the fastest way to query the knowledge base when you're not on the mesh (RAG context is included automatically).
 
-- **Raw send** (default) — whatever you type is broadcast or DM'd as-is over the mesh, exactly like before. LORACLE does **not** see it (the bridge's own radio doesn't hear its own transmissions), so don't use this mode to ask questions.
-- **Ask LORACLE** — the text becomes a question to the local LLM. The answer is shown in the message log *and* (optionally) transmitted over the mesh.
-
-In Ask mode the recipient dropdown gains a **Local only (don't transmit)** option at the top:
-- **Local only** — the answer appears only in the dashboard. Nothing goes out on the radio.
-- **Broadcast** — the answer is broadcast on the selected channel (e.g. Ch 0) so everyone on the channel gets it.
-- **A specific node** — the answer is DM'd to that node (useful for relaying a Q&A to one person). Long answers still go through the existing `!more` pager, so the target can page through the continuation.
-
-Commands (`!nav`, `!help`, `!triage`, `!brief`, etc.) work from Ask mode too — they're dispatched through the same handler the mesh path uses. Ollama history for dashboard chats lives in an isolated `"!dashboard"` namespace so it never mixes with real-node conversations.
+To transmit an AI answer over the mesh, open a node's thread panel from the MESH or MAP view and use the composer there — responses are DM'd to the node and go through the existing `!more` pager for long content.
 
 ---
 
@@ -700,31 +726,40 @@ All AI responses are sent as **direct messages (DMs)** back to the person who as
 ## Architecture Diagram
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     YOUR COMPUTER                        │
-│                                                          │
-│  ┌─────────────────┐     ┌──────────────────────────┐   │
-│  │   Ollama         │     │   LORACLE BRIDGE         │   │
-│  │   (local AI)     │◄───►│   standalone_bridge.py   │   │
-│  │                  │     │                          │   │
-│  │  gemma3:4b       │     │  ┌── Dashboard (:8000)   │   │
-│  └─────────────────┘     │  ├── RAG Engine           │   │
-│                           │  └── Chat Panel           │   │
-│                           └────────────┬─────────────┘   │
-│                                        │ USB / TCP / BLE │
-└────────────────────────────────────────┼─────────────────┘
-                                         │
-                                ┌────────┴────────┐
-                                │  Your Meshtastic │
-                                │     Radio        │
-                                └────────┬────────┘
-                                         │ LoRa
-                          ┌──────────────┼──────────────┐
-                          │              │              │
-                    ┌─────┴─────┐  ┌─────┴─────┐  ┌────┴──────┐
-                    │  Radio A  │  │  Radio B  │  │  Radio C  │
-                    │  (hiker)  │  │  (camp)   │  │  (truck)  │
-                    └───────────┘  └───────────┘  └───────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                        YOUR COMPUTER                           │
+│                                                                │
+│  ┌─────────────────┐     ┌──────────────────────────────┐     │
+│  │   Ollama         │     │   LORACLE BRIDGE              │     │
+│  │   (local AI)     │◄───►│   standalone_bridge.py        │     │
+│  │                  │     │                               │     │
+│  │  gemma3:4b       │     │  ├── Dashboard (:8000)        │     │
+│  └─────────────────┘     │  ├── RAG Engine                │     │
+│                           │  ├── Addons (DeadDrop/Triage/ │     │
+│                           │  │           Brief/Nav)        │     │
+│                           │  └── Bridge Relay (v2)         │     │
+│                           │      ├─ Policy + Dedup         │     │
+│                           │      ├─ Urgency classifier     │     │
+│                           │      ├─ Rate limiter           │     │
+│                           │      └─ Audit log (SQLite)     │     │
+│                           └──────┬────────────────┬────────┘     │
+│                                  │ USB/TCP/BLE    │ USB/TCP/BLE │
+└──────────────────────────────────┼────────────────┼─────────────┘
+                                   │                │
+                          ┌────────┴────────┐  ┌────┴──────────┐
+                          │  Meshtastic     │  │  MeshCore     │  ← v2: --second-radio
+                          │  (primary)      │  │  (secondary)  │
+                          └────────┬────────┘  └──────┬────────┘
+                                   │ LoRa             │ LoRa
+                 ┌─────────────────┤                  ├────────────────┐
+                 │                 │                  │                │
+          ┌──────┴────┐    ┌──────┴────┐       ┌─────┴─────┐  ┌──────┴─────┐
+          │  Node A   │    │  Node B   │       │ MC Node X │  │ MC Node Y  │
+          │  (hiker)  │    │  (camp)   │       │  (fireteam)│  │  (ops ctr) │
+          └───────────┘    └───────────┘       └───────────┘  └────────────┘
+
+                          ↕ Bridge relays between networks
+                          (off by default; per-channel rules in BRIDGE tab)
 ```
 
 ---
@@ -732,44 +767,91 @@ All AI responses are sent as **direct messages (DMs)** back to the person who as
 ## Project Structure
 
 ```
-loracle/
+LORACLE-BRIDGE/
 │
 ├── LORACLE BRIDGE.command       # DOUBLE-CLICK TO LAUNCH (macOS)
 ├── mesh-llm.sh                  # Or run this from the terminal
 │
+├── README.md                    # This file
+├── CONTEXT.md                   # Project-wide change history (dated entries)
+├── LORACLE_BRIDGE_V2_FSD.md     # v2 roadmap, decisions log, phase progress
+├── CONTRIBUTING.md
+├── LICENSE
+│
 ├── CONTEXT FILES/               # Drop PDFs, text files here for the knowledge base
 │
 ├── meshtastic-bridge/           # Python source code
-│   ├── standalone_bridge.py     # Main bridge — radio connection, message routing, LLM calls
+│   ├── standalone_bridge.py     # Main bridge — radio, message routing, LLM, v2 bridge wiring
 │   ├── ollama_client.py         # Talks to Ollama's REST API for AI responses
 │   ├── protocol.py              # LoRa chunking protocol
-│   ├── dashboard.py             # Web control panel with dynamic addon tab injection
+│   ├── dashboard.py             # Web control panel + dynamic addon tab injection + BRIDGE tab
 │   ├── manage_docs.py           # Document management CLI (ingest, list, stats)
+│   ├── coverage_logger.py       # Append-only JSONL of per-packet signal samples
+│   ├── greeter.py               # Auto-greeter service
 │   ├── requirements.txt         # Python dependencies
+│   │
+│   ├── bridge/                  # v2: cross-protocol relay (Phases 2–5)
+│   │   ├── relay.py             # Relay.observe() — entry point for cross-protocol relay
+│   │   ├── policy.py            # Disabled/Always/ChannelAllowlist/AIGated policies
+│   │   ├── config.py            # JSON config schema + build_policy(cfg) composer
+│   │   ├── dedup.py             # RelayDedupCache — TTL fingerprint cache
+│   │   ├── identity.py          # [mt-Alice] prefix formatter + loop-guard recogniser
+│   │   ├── urgency.py           # HeuristicUrgencyClassifier for ai-gated policy
+│   │   └── rate_limit.py        # RelayRateLimiter — per-direction sliding window
+│   │
+│   ├── radio/                   # v2: multi-protocol abstraction layer
+│   │   ├── events.py            # Protocol/Transport enums, UnifiedMessage, UnifiedNode
+│   │   ├── backend.py           # RadioBackend abstract interface
+│   │   ├── manager.py           # RadioManager — multiplex multiple backends
+│   │   ├── meshtastic_backend.py # Wraps meshtastic-python library
+│   │   └── meshcore_backend.py  # Wraps meshcore Python library (Python 3.10+)
+│   │
+│   ├── routing/                 # LLM model-tier routing (tiny/std/big)
+│   │   ├── classifier.py        # Hybrid length+keyword tier classifier
+│   │   └── tiers.py             # Tier enum + TierConfig + load_tiers
+│   │
+│   ├── db/                      # SQLite schema + per-table stores
+│   │   ├── schema.py            # CREATE TABLE DDL + init_db + settings migration
+│   │   ├── contacts.py          # ContactStore — node/channel contact rows
+│   │   ├── messages.py          # MessageStore — DM + channel message history
+│   │   ├── settings.py          # SettingsStore — key/value (bridge config lives here)
+│   │   └── bridge_events.py     # v2: persistent audit log of relay decisions
+│   │
 │   ├── rag/                     # Knowledge base subsystem
-│   │   ├── engine.py            # SQLite + NumPy vector store with cosine similarity search
-│   │   ├── extractors.py        # Extracts text from PDFs, ZIM archives, and text files
+│   │   ├── engine.py            # SQLite + NumPy vector store with cosine similarity
+│   │   ├── extractors.py        # Extracts text from PDFs, ZIM archives, HTML, text
 │   │   └── chunker.py           # Splits text into overlapping chunks for embedding
+│   │
 │   ├── addons/                  # Pluggable addon system
-│   │   ├── base.py              # Base Addon class — interface for all addons
-│   │   ├── dead_drop/           # LORACLE DEAD DROP — encrypted async messaging
-│   │   │   ├── addon.py         # Command handlers, lifecycle hooks
-│   │   │   ├── store.py         # SQLite message queue (pending/delivered/expired)
-│   │   │   ├── crypto.py        # Fernet encryption (AES-128-CBC + HMAC)
-│   │   │   └── dashboard.py     # 2-tab dashboard (LIVE/CONFIG) HTML/JS + API routes
-│   │   ├── triage/              # LORACLE TRIAGE — offline medical reference
-│   │   │   ├── addon.py         # Medical query handler with separate RAG instance
-│   │   │   ├── prompts.py       # TCCC-optimized system prompts
-│   │   │   └── dashboard.py     # High-contrast medical reference UI
-│   │   └── brief/               # LORACLE BRIEF — AI-generated SITREPs
-│   │       ├── addon.py         # Traffic observer, SITREP scheduler
-│   │       ├── aggregator.py    # SQLite traffic event collector
-│   │       ├── generator.py     # LLM-powered SITREP generation
-│   │       ├── exporter.py      # Text + PDF export
-│   │       └── dashboard.py     # SITREP display, history, export controls
-│   └── tests/                   # Unit tests
-│       ├── test_protocol.py     # Protocol chunking/reassembly tests
-│       └── test_ollama_client.py
+│   │   ├── base.py              # Addon base class (+ v2: on_bridged_message hook)
+│   │   ├── dead_drop/           # Encrypted async messaging (Fernet)
+│   │   ├── triage/              # Offline TCCC medical reference
+│   │   ├── brief/               # AI-generated SITREPs
+│   │   └── navigation/          # Bearing/distance helper (pure Haversine, no LLM)
+│   │
+│   ├── packs/                   # Knowledge-base starter packs
+│   │   ├── registry.py          # List available packs
+│   │   ├── installer.py         # Download + ingest pack documents
+│   │   ├── fetcher.py           # HTTP fetch with zero-byte detection
+│   │   ├── manifest.py          # PackManifest / PackDocument dataclasses
+│   │   └── bundled/             # Shipped packs (e.g. emergency-preparedness)
+│   │
+│   ├── static/                  # Dashboard static assets (favicon, tiles)
+│   │
+│   └── tests/                   # Unit + integration tests (300+ tests)
+│       ├── test_bridge_*.py     # v2 bridge: identity / dedup / policy / relay / urgency /
+│       │                        # force_relay / rate_limit / events_store / integration
+│       ├── test_radio_backends.py
+│       ├── test_db.py
+│       ├── test_standalone_bridge.py
+│       ├── test_dashboard_api.py
+│       ├── test_addons_*.py
+│       ├── test_protocol.py
+│       ├── test_ollama_client.py
+│       ├── test_classifier.py
+│       ├── test_coverage_logger.py
+│       ├── test_greeter.py
+│       └── test_security.py
 ```
 
 ---

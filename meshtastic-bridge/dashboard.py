@@ -1880,10 +1880,16 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-help code { background: var(--lo-divider); padding: 1px 4px; font-size: 11px; }
 
 /* ── Map View ─────────────────────────────────────────────────────────────── */
-#map-view { background: var(--lo-bg-deep); }
+/* Flex child of .lo-app, sibling to .lo-canvas-wrap / .lo-ai-view / .lo-bridge-view
+   — no hardcoded nav/ribbon offsets; flexbox handles the sizing. margin-top
+   gives a small gap under the nav so the tab content doesn't sit flush. */
+#map-view {
+  position: relative; flex: 1; min-height: 0; margin-top: 12px; z-index: 5;
+  background: var(--lo-bg-deep);
+}
 /* ── AI Chat View ─────────────────────────────────────────────────────── */
 .lo-ai-view {
-  position: absolute; inset: 36px 0 26px 0; z-index: 5;
+  position: relative; flex: 1; min-height: 0; margin-top: 12px; z-index: 5;
   background: var(--lo-bg); color: var(--lo-ink);
   display: flex; flex-direction: column;
 }
@@ -1927,7 +1933,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-ai-composer .lo-send:disabled { opacity: 0.4; cursor: default; }
 
 /* ── BRIDGE View (LORACLE v2) ─────────────────────────────────────────────── */
-.lo-bridge-view { position: absolute; inset: 36px 0 26px 0; z-index: 5; background: var(--lo-bg); color: var(--lo-ink); display: flex; flex-direction: column; overflow-y: auto; }
+.lo-bridge-view { position: relative; flex: 1; min-height: 0; margin-top: 12px; z-index: 5; background: var(--lo-bg); color: var(--lo-ink); display: flex; flex-direction: column; overflow-y: auto; }
 .lo-bridge-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--lo-divider-strong); flex-shrink: 0; }
 .lo-bridge-title { display: flex; align-items: baseline; gap: 12px; font-size: 12px; letter-spacing: 0.14em; }
 .lo-bridge-badge { font-size: 9px; letter-spacing: 0.12em; padding: 2px 8px; background: var(--lo-divider); color: var(--lo-ink); border-radius: 2px; }
@@ -2072,7 +2078,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 </div>
 
 <!-- ── Map View ───────────────────────────────────────────────────────────── -->
-<div id="map-view" style="display:none;position:absolute;inset:36px 0 26px 0;z-index:5"></div>
+<div id="map-view" style="display:none"></div>
 <div id="map-controls" style="display:none;position:absolute;top:42px;right:12px;z-index:500">
   <button class="btn btn-sm" onclick="toggleCoverageLayer()" title="Toggle coverage heatmap">COVERAGE</button>
 </div>

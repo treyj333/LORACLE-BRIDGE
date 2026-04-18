@@ -3,15 +3,21 @@
   "configurations": [
     {
       "name": "loracle-bridge",
-      "runtimeExecutable": "./meshtastic-bridge/venv/bin/python",
+      "runtimeExecutable": "/Users/marvinjohnson/Documents/Claude Code/project-meshtastic-llm-bridge/meshtastic-bridge/venv/bin/python",
       "runtimeArgs": ["meshtastic-bridge/standalone_bridge.py", "--dashboard-port", "8000", "--enable-all-addons"],
       "port": 8000
     },
     {
       "name": "loracle-bridge-verify",
-      "runtimeExecutable": "./meshtastic-bridge/venv/bin/python",
+      "runtimeExecutable": "/Users/marvinjohnson/Documents/Claude Code/project-meshtastic-llm-bridge/meshtastic-bridge/venv/bin/python",
       "runtimeArgs": ["meshtastic-bridge/standalone_bridge.py", "--dashboard-port", "8001", "--enable-all-addons"],
       "port": 8001
+    },
+    {
+      "name": "loracle-dashboard-only",
+      "runtimeExecutable": "/Users/marvinjohnson/Documents/Claude Code/project-meshtastic-llm-bridge/meshtastic-bridge/venv/bin/python",
+      "runtimeArgs": ["-c", "import sys; sys.path.insert(0, 'meshtastic-bridge'); from dashboard import app; app.run(host='127.0.0.1', port=8002, debug=False, use_reloader=False)"],
+      "port": 8002
     }
   ]
 }
