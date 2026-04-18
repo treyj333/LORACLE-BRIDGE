@@ -216,6 +216,12 @@ You can run **both radios simultaneously** — Meshtastic as the primary and Mes
 
 Messages from both networks land in the same dashboard. The node list shows an `mc` badge next to MeshCore contacts so you can tell them apart.
 
+**Dashboard dual-radio UI:**
+- **Top bar** shows each backend's connection state independently — a teal circle for Meshtastic (`MT ON/OFF/--`) and a purple diamond for MeshCore (`MC ON/OFF/--`), so a dual-radio rig can see at a glance which radios are up.
+- **Mesh canvas** draws both "my radios" at center when both backends are connected — an orange circle labeled `MY MT` and a purple diamond labeled `MY MC`. Peers render with the same shape+color convention (circle = Meshtastic, diamond = MeshCore), and the two meshes stay as visually-separate sub-trees.
+- **Protocol legend** under the HUD (`● MESHTASTIC` / `◆ MESHCORE`) is always visible.
+- **Clicking your own radio** opens a live telemetry panel with protocol, transport, node ID, battery % / voltage, temperature, humidity, channel util, hardware model, uptime, and node/message counts.
+
 ### Cross-Protocol Bridge (v2 Phases 2–5 — software-complete)
 
 With `--second-radio` set and the bridge enabled, channel messages can cross between the two networks. The bridge is **off by default**; turn it on via the BRIDGE tab in the dashboard or by POSTing to `/api/bridge/config`.

@@ -1693,9 +1693,12 @@ button::-moz-focus-inner { border: 0; }
 }
 .lo-bar .lo-brand { color: var(--lo-ink); font-weight: 500; font-size: 13px; letter-spacing: 0.15em; }
 .lo-bar .lo-brand .lo-accent { color: var(--lo-accent); }
-.lo-bar .lo-conn { display: flex; align-items: center; gap: 6px; }
-.lo-bar .lo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lo-faint); transition: background 0.3s; }
+.lo-bar .lo-conn { display: flex; align-items: center; gap: 14px; font-size: 10px; flex-shrink: 0; }
+.lo-bar .lo-conn-row { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.lo-bar .lo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lo-faint); transition: background 0.3s; display: inline-block; flex-shrink: 0; }
 .lo-bar .lo-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
+.lo-bar .lo-dot.mc { border-radius: 0; transform: rotate(45deg); }
+.lo-bar .lo-dot.mc.on { background: #9b59b6; }
 .lo-bar .lo-filters { display: flex; margin-left: auto; }
 .lo-bar .lo-filters button {
   padding: 4px 14px; font-family: inherit; font-size: 10px; letter-spacing: 0.1em;
@@ -2015,9 +2018,9 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 <!-- ── Title Bar ───────────────────────────────────────────────────────────── -->
 <header class="lo-bar">
   <span class="lo-brand"><span class="lo-accent">LORACLE</span> BRIDGE</span>
-  <span class="lo-conn">
-    <span class="lo-dot" id="hdr-dot"></span>
-    <span id="hdr-conn-label">DISCONNECTED</span>
+  <span class="lo-conn" title="Radio backend status — meshtastic (circle) and meshcore (diamond)">
+    <span class="lo-conn-row"><span class="lo-dot" id="hdr-mt-dot"></span><span id="hdr-mt-label">MT --</span></span>
+    <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
   </span>
   <div class="lo-filters">
     <button class="active" data-view="mesh" onclick="setView('mesh')">MESH</button>
@@ -2049,6 +2052,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <button class="btn btn-sm" onclick="toggleHwColor()" id="hud-hwcolor-btn" style="pointer-events:auto" title="Color nodes by hardware model">HW COLOR</button>
     </div>
     <div id="hw-legend" style="display:none;margin-top:6px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em"></div>
+    <div id="proto-legend" style="margin-top:8px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em;display:flex;gap:12px;align-items:center">
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;border-radius:50%;background:var(--lo-accent-2);display:inline-block"></span>MESHTASTIC</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;background:#9b59b6;display:inline-block;transform:rotate(45deg)"></span>MESHCORE</span>
+    </div>
   </div>
 
   <!-- Hop ring legend -->
@@ -2708,6 +2715,10 @@ function buildGraph(state) {
   }
 
   var backends = state.backends || [];
+  // Collect every backend's self-node id so we can keep each "my radio" centered
+  // and out of the peer list. Legacy selfId (first backend) is still used as a fallback.
+  var selfIds = {};
+  backends.forEach(function(b) { if (b.self_node_id) selfIds[b.self_node_id] = true; });
   if (backends.length > 0 && backends[0].self_node_id) selfId = backends[0].self_node_id;
 
   // Check if node set actually changed — if not, just update data in place
@@ -2750,15 +2761,44 @@ function buildGraph(state) {
   var nodes = [];
   var nodeMap = {};
 
-  // MY NODE at center (fixed position)
-  var selfNode = oldNodeMap['__self__'] || { id: '__self__', x: cx, y: cy };
-  selfNode.fx = cx; selfNode.fy = cy; selfNode.isSelf = true;
-  selfNode.label = 'MY NODE'; selfNode.hops = 0; selfNode.isChannel = false;
-  nodes.push(selfNode);
-  nodeMap['__self__'] = selfNode;
+  // MY NODES at center — one per connected backend so a meshtastic + meshcore
+  // dual-radio rig shows both "self" dots with distinct shape/color.
+  var selfBackends = backends.slice(0);
+  if (selfBackends.length === 0) {
+    // No backend info yet — fall back to a single generic self node.
+    selfBackends.push({ id: 'primary', protocol: 'mt', connected: !!state.connected, self_node_id: null });
+  }
+  var selfOffsets = selfBackends.length === 1
+    ? [{dx: 0, dy: 0}]
+    : [{dx: -18, dy: 0}, {dx: 18, dy: 0}];
+  var primarySelfKey = null;
+  selfBackends.forEach(function(b, i) {
+    var protoLc = String(b.protocol || '').toLowerCase();
+    var isMC = (protoLc === 'mc' || protoLc === 'meshcore');
+    var key = '__self_' + (b.id || (isMC ? 'mc' : 'mt')) + '__';
+    if (i === 0) primarySelfKey = key;
+    var off = selfOffsets[i] || {dx: 0, dy: 0};
+    var selfNode = oldNodeMap[key] || oldNodeMap['__self__'] || { id: key, x: cx + off.dx, y: cy + off.dy };
+    selfNode.id = key;
+    selfNode.fx = cx + off.dx; selfNode.fy = cy + off.dy;
+    selfNode.isSelf = true;
+    selfNode.isMC = isMC;
+    selfNode.isChannel = false;
+    selfNode.label = isMC ? 'MY MC' : (selfBackends.length > 1 ? 'MY MT' : 'MY NODE');
+    selfNode.hops = 0;
+    selfNode.selfBackendId = b.id || null;
+    selfNode.selfProtocol = isMC ? 'mc' : 'mt';
+    selfNode.selfNodeId = b.self_node_id || null;
+    selfNode.selfConnected = !!b.connected;
+    nodes.push(selfNode);
+    nodeMap[key] = selfNode;
+  });
+  // Back-compat alias so existing references to the '__self__' key still resolve.
+  nodeMap['__self__'] = nodeMap[primarySelfKey];
 
   var contactMeta = (state.contact_meta) || {};
   Object.keys(allIds).forEach(function(nid) {
+    if (selfIds[nid]) return;
     if (selfId && nid === selfId) return;
     var m = meta[nid] || {};
     var pos = positions[nid] || {};
@@ -2816,9 +2856,15 @@ function buildGraph(state) {
   // Strategy: sort all peers by hop count, link each to the single
   // geographically closest node that's already linked (fewer hops preferred).
   // This builds a clean tree with no crossing — O(n log n) via pre-sorted arrays.
+  // When both MT and MC self-nodes exist, peers prefer a same-protocol ancestor
+  // so the two meshes render as visually-separate sub-trees.
   var links = [];
-  var linked = {'__self__': true};
-  var linkedList = [nodeMap['__self__']];
+  var linked = {};
+  var linkedList = [];
+  var selfRoots = nodes.filter(function(n) { return n.isSelf; });
+  selfRoots.forEach(function(n) { linked[n.id] = true; linkedList.push(n); });
+  var mtRoot = selfRoots.find(function(n) { return !n.isMC; }) || selfRoots[0];
+  var mcRoot = selfRoots.find(function(n) { return n.isMC; }) || selfRoots[0];
 
   function gpsDeg(a, b) {
     if (!a.lat || !b.lat) return Infinity;
@@ -2835,25 +2881,29 @@ function buildGraph(state) {
   });
 
   peers.forEach(function(n) {
-    var best = nodeMap['__self__'], bestScore = Infinity;
+    var preferredRoot = n.isMC ? mcRoot : mtRoot;
+    var best = preferredRoot, bestScore = Infinity;
     // Only check the last 20 linked nodes (nearest in link order = closest hops)
     var check = linkedList.slice(-20);
     check.forEach(function(c) {
+      // Prefer same-protocol ancestors so MT and MC trees stay untangled.
+      if (!c.isSelf && !!c.isMC !== !!n.isMC) return;
       var d = gpsDeg(n, c);
       if (d < bestScore) { best = c; bestScore = d; }
     });
-    // No GPS on either side — hash-assign to a linked node
+    // No GPS on either side — hash-assign to a linked same-proto node, falling back to root
     if (bestScore === Infinity) {
-      best = linkedList[hashStr(n.id) % linkedList.length];
+      var sameProto = linkedList.filter(function(c) { return c.isSelf || !!c.isMC === !!n.isMC; });
+      best = sameProto[hashStr(n.id) % sameProto.length] || preferredRoot;
     }
     links.push({ source: best, target: n });
     linked[n.id] = true;
     linkedList.push(n);
   });
 
-  // Channels link to MY NODE
+  // Channels link to MY NODE (primary self-root)
   nodes.forEach(function(n) {
-    if (n.isChannel) links.push({ source: nodeMap['__self__'], target: n });
+    if (n.isChannel) links.push({ source: mtRoot, target: n });
   });
 
   App.nodes = nodes;
@@ -2903,6 +2953,20 @@ function _jitterForce(strength) {
 }
 
 function hashStr(s) { var h=0; for(var i=0;i<s.length;i++) h=((h<<5)-h+s.charCodeAt(i))|0; return Math.abs(h); }
+
+// Is this a built-in self-node id (one of '__self__', '__self_<backendId>__')?
+function isSelfId(id) { return typeof id === 'string' && id.indexOf('__self') === 0; }
+
+// Draw a diamond (rotated square) at (cx, cy) with half-diagonal r. Used for MeshCore
+// nodes so the protocol is readable at a glance even in monochrome.
+function drawDiamond(ctx, cx, cy, r) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r);
+  ctx.lineTo(cx + r, cy);
+  ctx.lineTo(cx, cy + r);
+  ctx.lineTo(cx - r, cy);
+  ctx.closePath();
+}
 
 // Returns true if any animation needs 60fps rendering (recent message pulse or node entrance <2s old).
 function _hasActiveAnimation(nowMs) {
@@ -3129,11 +3193,11 @@ function renderCanvas() {
     var current = nodeId;
     var segments = [];
     var safety = 10;
-    while (current && current !== '__self__' && safety-- > 0) {
+    while (current && !isSelfId(current) && safety-- > 0) {
       var link = linkByTarget[current];
       if (!link) break;
       segments.push(link);
-      current = link.source.id === '__self__' ? '__self__' : link.source.id;
+      current = link.source.id;
     }
     if (segments.length === 0) return;
 
@@ -3221,6 +3285,10 @@ function renderCanvas() {
 
     ctx.globalAlpha = Math.max(0, Math.min(1, nodeAlpha + breathAlpha));
 
+    // Diamond-shape MeshCore nodes need ~15% larger half-diagonal to look the
+    // same visual weight as a circle of radius r.
+    var shapeR = node.isMC ? r * 1.15 : r;
+
     if (node.isChannel) {
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.strokeStyle = accent2; ctx.lineWidth = 2; ctx.stroke();
@@ -3233,11 +3301,19 @@ function renderCanvas() {
       if (sonarAlpha > 0.01) {
         ctx.globalAlpha = sonarAlpha * 0.6;
         ctx.beginPath(); ctx.arc(node.x, node.y, sonarR, 0, Math.PI * 2);
-        ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.stroke();
+        ctx.strokeStyle = node.isMC ? mcColor : accent; ctx.lineWidth = 1; ctx.stroke();
       }
       ctx.globalAlpha = 1;
-      ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = accent; ctx.fill();
+      // Self fills with the protocol's accent so a dual-radio rig has two
+      // clearly-distinct "my radio" dots — teal circle for MT, purple diamond for MC.
+      var selfFill = node.isMC ? mcColor : accent;
+      if (node.isMC) { drawDiamond(ctx, node.x, node.y, shapeR); }
+      else { ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2); }
+      ctx.fillStyle = selfFill; ctx.fill();
+    } else if (node.isMC) {
+      drawDiamond(ctx, node.x, node.y, shapeR);
+      ctx.fillStyle = nodeFillColor(node, accent2, mcColor);
+      ctx.fill();
     } else {
       ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.fillStyle = nodeFillColor(node, accent2, mcColor);
@@ -3324,10 +3400,8 @@ function onCanvasClick(e) {
     // Click radius scales with node size so larger nodes are easier to hit.
     if (dist < 60 && dist < closestDist) { closest = n; closestDist = dist; }
   });
-  if (closest && !closest.isSelf) {
+  if (closest) {
     openFloatWindow(closest);
-  } else if (closest && closest.isSelf) {
-    showToast('This is your radio node');
   }
 }
 
@@ -3349,6 +3423,7 @@ var _openWindows = {};
 
 async function openFloatWindow(node) {
   if (!node) return;
+  if (node.isSelf) return openSelfWindow(node);
   App.selectedNode = node.id;  // drives the on-canvas selection ring
   if (_openWindows[node.id]) {
     // Already open — refresh data and bring into view
@@ -3389,7 +3464,85 @@ async function openFloatWindow(node) {
   await loadFloatData(node.id);
 }
 
+// Self-node panel: no thread history, no composer — just live backend telemetry
+// (battery / voltage / hw / uptime / node counts) pulled straight from App.state.
+function openSelfWindow(node) {
+  if (!node) return;
+  var key = node.id;
+  App.selectedNode = key;
+  if (_openWindows[key]) {
+    loadSelfData(key);
+    return;
+  }
+  Object.keys(_openWindows).forEach(function(k) { if (k !== key) closeFloatWin(k); });
+  var win = document.createElement('div');
+  win.className = 'lo-float-win';
+  win.dataset.nodeId = key;
+  var winW = 420;
+  var wx = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10);
+  win.style.left = wx + 'px'; win.style.top = '60px';
+  var eid = key.replace(/[^a-zA-Z0-9]/g, '_');
+  var label = node.label || 'MY RADIO';
+  win.innerHTML =
+    '<div class="lo-fw-header" onmousedown="startDragWin(event,this.parentElement)">' +
+      '<span class="lo-fw-name">' + escapeHtml(label) + '</span>' +
+      '<button class="lo-fw-close" onclick="closeFloatWin(\'' + escapeHtml(key) + '\')">\u00d7</button>' +
+    '</div>' +
+    '<div class="lo-fw-meta" id="fw-m-' + eid + '">Loading...</div>';
+  document.getElementById('float-windows').appendChild(win);
+  _openWindows[key] = win;
+  loadSelfData(key);
+}
+
+function loadSelfData(key) {
+  var eid = key.replace(/[^a-zA-Z0-9]/g, '_');
+  var metaEl = document.getElementById('fw-m-' + eid);
+  if (!metaEl) return;
+  var s = App.state || {};
+  var backends = s.backends || [];
+  var dm = s.device_metrics || {};
+  var selfNode = (App.nodes || []).find(function(n) { return n.id === key; });
+  var backendId = selfNode && selfNode.selfBackendId;
+  // Pick the backend matching this self-node; fall back to the first backend.
+  var b = backends.find(function(x) { return x.id === backendId; }) || backends[0] || {};
+  var protoLc = String(b.protocol || '').toLowerCase();
+  var isMC = (protoLc === 'mc' || protoLc === 'meshcore');
+  var protoLabel = isMC ? 'MESHCORE' : 'MESHTASTIC';
+  var protoColor = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
+  var protoGlyph = isMC ? '\u25C6' : '\u25CF';
+  var lines = [];
+  lines.push('<div style="color:' + protoColor + ';font-weight:500;font-size:12px;margin-bottom:6px">' +
+             '<span style="font-size:13px">' + protoGlyph + '</span> ' + protoLabel + '</div>');
+  lines.push('<div>STATUS: ' + (b.connected ? '<span style="color:var(--lo-accent-2)">CONNECTED</span>' : '<span style="color:#c0392b">DISCONNECTED</span>') + '</div>');
+  if (b.transport) lines.push('<div>TRANSPORT: ' + escapeHtml(String(b.transport).toUpperCase()) + '</div>');
+  var selfNodeId = b.self_node_id || (selfNode && selfNode.selfNodeId) || null;
+  if (selfNodeId) lines.push('<div>NODE ID: ' + escapeHtml(selfNodeId) + '</div>');
+  // Device metrics — keyed by the real unified node id, not our synthetic '__self_*__'
+  var myDm = selfNodeId ? dm[selfNodeId] : null;
+  if (myDm) {
+    var parts = [];
+    if (myDm.battery !== undefined) parts.push(myDm.battery + '%');
+    if (myDm.voltage !== undefined) parts.push(myDm.voltage + 'V');
+    if (parts.length) {
+      var warn = (myDm.battery !== undefined && myDm.battery <= 20) ? ' <span style="color:#c0392b">\u26a0 LOW BATTERY</span>' : '';
+      lines.push('<div>BATTERY: ' + parts.join(' / ') + warn + '</div>');
+    }
+    if (myDm.temperature !== undefined) lines.push('<div>TEMP: ' + myDm.temperature + '\u00b0C</div>');
+    if (myDm.humidity !== undefined) lines.push('<div>HUMIDITY: ' + myDm.humidity + '%</div>');
+    if (myDm.ch_util !== undefined) lines.push('<div>CH UTIL: ' + myDm.ch_util + '%</div>');
+    if (myDm.hw_model) lines.push('<div>HW: ' + escapeHtml(myDm.hw_model) + '</div>');
+  } else if (selfNodeId) {
+    lines.push('<div style="color:var(--lo-dim)">BATTERY: (no telemetry yet)</div>');
+  }
+  lines.push('<div style="border-top:1px solid var(--lo-divider);margin-top:8px;padding-top:8px">UPTIME: ' + formatUptime(s.uptime || 0) + '</div>');
+  lines.push('<div>NODES SEEN: ' + (s.node_count || 0) + '</div>');
+  lines.push('<div>MESSAGES: ' + (s.message_count || 0) + '</div>');
+  if (s.model) lines.push('<div>LLM: ' + escapeHtml(String(s.model)) + '</div>');
+  metaEl.innerHTML = lines.join('');
+}
+
 async function loadFloatData(nodeId) {
+  if (isSelfId(nodeId)) { loadSelfData(nodeId); return; }
   var eid = nodeId.replace(/[^a-zA-Z0-9]/g, '_');
   var metaEl = document.getElementById('fw-m-' + eid);
   var actEl = document.getElementById('fw-a-' + eid);
@@ -3399,7 +3552,10 @@ async function loadFloatData(nodeId) {
   var d = await callApi('GET', '/api/threads/' + encodeURIComponent(nodeId));
   var contact = (d && d.contact) || {};
   var msgs = (d && d.messages) || [];
-  var proto = (contact.protocol === 'mc' || contact.protocol === 'meshcore') ? 'MC' : 'MT';
+  // Prefer contact.protocol, but fall back to the unified-id prefix so nodes
+  // without a contact record yet still show the right protocol.
+  var protoSrc = contact.protocol || (nodeId.indexOf('mc:') === 0 ? 'mc' : 'mt');
+  var proto = (protoSrc === 'mc' || protoSrc === 'meshcore') ? 'MC' : 'MT';
   var lines = ['<div>ID: ' + escapeHtml(nodeId) + '</div>', '<div>PROTOCOL: ' + proto + '</div>'];
   var hops = contact.last_hops;
   if (hops !== null && hops !== undefined) lines.push('<div>HOPS: ' + (hops === 0 ? 'DIRECT' : hops) + '</div>');
@@ -3909,13 +4065,30 @@ async function poll() {
     var d = await r.json();
     App.state = d;
 
-    // Connection
-    var dot = document.getElementById('hdr-dot');
-    var label = document.getElementById('hdr-conn-label');
-    var connected = false;
-    try { connected = d.connected; } catch(e) {}
-    dot.className = connected ? 'lo-dot on' : 'lo-dot';
-    label.textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
+    // Connection — show each radio backend independently so a dual-radio rig
+    // can see at a glance which one(s) are up.
+    var backends = d.backends || [];
+    function findBackend(tags) {
+      for (var i = 0; i < backends.length; i++) {
+        var p = String(backends[i].protocol || '').toLowerCase();
+        if (tags.indexOf(p) !== -1) return backends[i];
+      }
+      return null;
+    }
+    var mt = findBackend(['mt', 'meshtastic']);
+    var mc = findBackend(['mc', 'meshcore']);
+    function paintDot(dotEl, labelEl, b, code) {
+      if (!dotEl || !labelEl) return;
+      var baseClass = code === 'mc' ? 'lo-dot mc' : 'lo-dot';
+      if (!b) { dotEl.className = baseClass; labelEl.textContent = code.toUpperCase() + ' --'; return; }
+      dotEl.className = baseClass + (b.connected ? ' on' : '');
+      labelEl.textContent = code.toUpperCase() + (b.connected ? ' ON' : ' OFF');
+    }
+    paintDot(document.getElementById('hdr-mt-dot'), document.getElementById('hdr-mt-label'), mt, 'mt');
+    paintDot(document.getElementById('hdr-mc-dot'), document.getElementById('hdr-mc-label'), mc, 'mc');
+    // Single "any backend up" flag preserves legacy modal + toast behavior.
+    var connected = (mt && mt.connected) || (mc && mc.connected);
+    if (!connected) { try { connected = !!d.connected; } catch(e) {} }
     // Disconnect alert — fire once on connected → disconnected transition
     if (App._lastConnected === true && !connected) {
       var ct = (d.connection_type || 'radio').toUpperCase();
@@ -3993,10 +4166,15 @@ async function poll() {
 
     // Refresh open panel
     if (App.selectedNode) {
-      // Soft refresh every 5 polls (~10s)
-      if (!App._panelRefreshCount) App._panelRefreshCount = 0;
-      App._panelRefreshCount++;
-      if (App._panelRefreshCount % 5 === 0) openNodePanel(App.selectedNode);
+      if (isSelfId(App.selectedNode) && _openWindows[App.selectedNode]) {
+        // Self panel reads straight from App.state — refresh every poll (free).
+        loadSelfData(App.selectedNode);
+      } else {
+        // Peer panels hit /api/threads — soft refresh every 5 polls (~10s)
+        if (!App._panelRefreshCount) App._panelRefreshCount = 0;
+        App._panelRefreshCount++;
+        if (App._panelRefreshCount % 5 === 0) openNodePanel(App.selectedNode);
+      }
     }
   } catch(e) {}
 }
