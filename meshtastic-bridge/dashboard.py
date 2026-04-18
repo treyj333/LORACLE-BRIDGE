@@ -3787,23 +3787,25 @@ async function openFloatWindow(node) {
   if (node.isSelf) return openSelfWindow(node);
   App.selectedNode = node.id;  // drives the on-canvas selection ring
   if (_openWindows[node.id]) {
-    // Already open — refresh data and bring into view
+    // Already open — refresh data and bring this window to the front.
     loadFloatData(node.id);
+    _bringWinToFront(_openWindows[node.id]);
     return;
   }
-  // Close any other panels so the focused node is unambiguous. Users who
-  // want multiple detached views can drag one off before opening another.
-  Object.keys(_openWindows).forEach(function(k) {
-    if (k !== node.id) closeFloatWin(k);
-  });
   var win = document.createElement('div');
   win.className = 'lo-float-win';
   win.dataset.nodeId = node.id;
-  // Position in the upper-right corner by default so it feels like a persistent panel,
-  // not a tooltip glued to the click point. User can still drag it anywhere.
-  var winW = 420, winH = 540;
-  var wx = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10);
-  var wy = 60;
+  // Panels CASCADE when multiple are open so both (e.g. an MT thread and
+  // an MC thread) stay visible — previously each open call closed the
+  // other panels, which made switching between protocols feel like a
+  // mutex. Users close with the × button or drag panels wherever they want.
+  var winW = 420;
+  var baseX = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10);
+  var baseY = 60;
+  var existing = Object.keys(_openWindows).length;
+  var wx = baseX - existing * 28;
+  var wy = baseY + existing * 28;
+  if (wx < 10) { wx = 10 + ((existing * 28) % 80); }  // wrap if off-screen left
   win.style.left = wx + 'px'; win.style.top = wy + 'px';
   var label = node.label || node.id.slice(-6);
   var eid = node.id.replace(/[^a-zA-Z0-9]/g, '_');
@@ -3822,6 +3824,10 @@ async function openFloatWindow(node) {
     '</div>';
   document.getElementById('float-windows').appendChild(win);
   _openWindows[node.id] = win;
+  _bringWinToFront(win);
+  // Click anywhere in the window body raises it — useful when two panels
+  // overlap and the user wants to interact with the one underneath.
+  win.addEventListener('mousedown', function() { _bringWinToFront(win); });
   await loadFloatData(node.id);
 }
 
@@ -3833,15 +3839,18 @@ function openSelfWindow(node) {
   App.selectedNode = key;
   if (_openWindows[key]) {
     loadSelfData(key);
+    _bringWinToFront(_openWindows[key]);
     return;
   }
-  Object.keys(_openWindows).forEach(function(k) { if (k !== key) closeFloatWin(k); });
   var win = document.createElement('div');
   win.className = 'lo-float-win';
   win.dataset.nodeId = key;
   var winW = 420;
-  var wx = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10);
-  win.style.left = wx + 'px'; win.style.top = '60px';
+  var existing = Object.keys(_openWindows).length;
+  var wx = Math.min(Math.max(App.width - winW - 20, 10), App.width - winW - 10) - existing * 28;
+  var wy = 60 + existing * 28;
+  if (wx < 10) { wx = 10 + ((existing * 28) % 80); }
+  win.style.left = wx + 'px'; win.style.top = wy + 'px';
   var eid = key.replace(/[^a-zA-Z0-9]/g, '_');
   var label = node.label || 'MY RADIO';
   win.innerHTML =
@@ -3852,6 +3861,8 @@ function openSelfWindow(node) {
     '<div class="lo-fw-meta" id="fw-m-' + eid + '">Loading...</div>';
   document.getElementById('float-windows').appendChild(win);
   _openWindows[key] = win;
+  _bringWinToFront(win);
+  win.addEventListener('mousedown', function() { _bringWinToFront(win); });
   loadSelfData(key);
 }
 
@@ -4107,9 +4118,21 @@ async function floatCommitRename(nodeId, newName, oldName) {
   }
 }
 
-var _dragWin = null, _dragOff = {x:0, y:0};
+var _dragWin = null, _dragOff = {x:0, y:0}, _winZ = 100;
+
+// Monotonic z-index bump for float windows so a clicked / dragged panel
+// always surfaces above its siblings. Keeps overlapping MT + MC threads
+// usable — click either one and it comes to the front.
+function _bringWinToFront(win) {
+  if (!win) return;
+  _winZ += 1;
+  win.style.zIndex = _winZ;
+}
+
 function startDragWin(e, win) {
-  _dragWin = win; _dragOff.x = e.clientX - win.offsetLeft; _dragOff.y = e.clientY - win.offsetTop; e.preventDefault();
+  _dragWin = win; _dragOff.x = e.clientX - win.offsetLeft; _dragOff.y = e.clientY - win.offsetTop;
+  _bringWinToFront(win);
+  e.preventDefault();
 }
 document.addEventListener('mousemove', function(e) {
   if (!_dragWin) return;

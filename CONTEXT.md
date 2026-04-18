@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-18 00:20] — Multiple float windows can stay open simultaneously (MT + MC side-by-side)
+
+- What changed:
+  - **Float-window behaviour is no longer single-window mutex.** `openFloatWindow` and `openSelfWindow` previously called `Object.keys(_openWindows).forEach(k => closeFloatWin(k))` right before opening the new panel, so clicking a second node always closed the first. That made it impossible to see an MT thread and an MC thread at the same time — the user had to pick one or the other. Both close-others calls removed; users now close panels explicitly via the `×` button.
+  - **Cascading positions for new windows.** A 2nd+ simultaneously-open panel now appears offset (28×28 px per existing window) from the default top-right slot so panels don't fully overlap on open. When the cascade would run off the left edge, wraps with a small modulo so it stays on-screen.
+  - **Click-to-front.** Introduced a `_bringWinToFront(win)` helper that bumps a monotonic `_winZ` and assigns it as `zIndex` on the panel. Called: (a) when a panel is created/opened, (b) when the user starts dragging it, and (c) on any `mousedown` anywhere in the panel body. So two overlapping MT + MC panels are both usable — clicking either one raises it above the other.
+- Why:
+  - User report: "I'm having a hard time switching between interacting with the meshcore node and the meshtastic node once I select meshcore it's like that's the only nodes I can use and no way to see both." Root cause was the close-others-on-open behaviour inherited from the original single-panel design; now that MT and MC threads share the same dashboard, that exclusivity felt like a mutex the user couldn't escape.
+- Impact on project goals:
+  - The dashboard's "MT + MC unified on the same tabs" story actually works end-to-end now — the user can keep an MT peer's panel open, click an MC peer, and both stay visible. Pure client-side change; no backend or API change, no test surface touched.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — removed the close-others loops in `openFloatWindow` + `openSelfWindow`, added cascading `existing * 28` offset for second-and-later panels, introduced `_bringWinToFront` + `_winZ` with hooks in panel-open / drag-start / panel-mousedown.
+- Tests: 302/302 pass.
+
+---
+
 ## [2026-04-18 00:05] — MC nodes now visible on the mesh canvas
 
 - What changed:
