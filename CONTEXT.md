@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 23:05] — Onboarding disclaimer: use native app first
+
+- What changed:
+  - **Onboarding tour** — new `data-step="1"` slide inserted right after WELCOME, before ORGANIC MESH TOPOLOGY. Styled with an amber warning triangle (SVG "!"), amber-colored `BEFORE YOU CONNECT` heading, and body copy: "Do initial radio setup in the native app first. Install the official Meshtastic app (or MeshCore app) and pair your radio over BLE/USB. Set your region / frequency, pick a short name, configure any channel keys, and confirm the radio is talking on the mesh. LORACLE Bridge reads and drives the radio — it isn't a first-time-setup tool, and a radio without a region set will look connected but receive nothing." Existing steps 2–8 had their `data-step` attrs bumped by 1 for clarity (DOM-order still drives the active-step selection so the renumber is cosmetic but matches the visible progress dot). `_obTotal` bumped 8 → 9 so the progress indicator and NEXT-vs-DONE button transition land on the correct slide.
+  - **README** — prominent blockquote added to the top of the Quick Start section, with the same disclaimer: pair in the native app, set region/frequency, confirm mesh connectivity, THEN plug into LORACLE. Links out to [meshtastic.org/docs/software/](https://meshtastic.org/docs/software/) and [meshcore.co.uk](https://meshcore.co.uk) for the official apps.
+- Why:
+  - User feedback: "when onboarding make sure to put a disclaimer in to tell the user to use the native apps to do initial setup and set frequency and settings before using loracle bridge or their nodes may not work with the software." A factory-new radio with no region set will look connected via the Meshtastic Python API (serial/BLE handshake succeeds) but won't actually transmit or receive anything on-air because the radio firmware refuses to emit RF without a region. This is a classic early-user trap that costs support time and makes LORACLE look broken; surfacing the expectation up-front (both in the onboarding tour and the README Quick Start) cuts that off.
+- Impact on project goals:
+  - First-run UX is now explicit about the hard dependency on the native app: a user who opens the dashboard and takes the default onboarding tour sees the disclaimer as the second slide, and a user who reads the README before running anything sees it as the first thing under Quick Start. Zero code-path change — pure content + one JS constant bump. All behaviours (bridge, wizard, tests) unaffected.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — onboarding: new step 1 (disclaimer), `_obTotal` → 9, step-2-through-8 `data-step` attrs bumped
+  - `README.md` — Quick Start preamble blockquote with the disclaimer + links to the official apps
+- Tests: 302/302 pass (no behavior change).
+
+---
+
 ## [2026-04-17 22:45] — Paced wizard success screens + serial-port scanner
 
 - What changed:

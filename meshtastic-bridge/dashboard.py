@@ -2759,7 +2759,19 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>Offline AI over mesh radio. The orange dot is your radio. Green dots are peers on the mesh. Purple dots are MeshCore nodes. Connect your radio first, then explore.</p>
     </div>
 
+    <!-- IMPORTANT: first-use disclaimer — users with fresh-from-factory radios will
+         often have no region/frequency set and the mesh will look dead even after
+         LORACLE successfully attaches. Surfacing this early saves a support loop. -->
     <div class="lo-ob-step" data-step="1">
+      <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="180,18 220,92 140,92" fill="none" stroke="#d4a017" stroke-width="2"/>
+        <text x="180" y="78" text-anchor="middle" fill="#d4a017" font-family="var(--font-mono)" font-size="30" font-weight="500">!</text>
+      </svg>
+      <h3 style="color:#d4a017">BEFORE YOU CONNECT</h3>
+      <p><strong style="color:var(--lo-ink)">Do initial radio setup in the native app first.</strong> Install the official <strong>Meshtastic</strong> app (or <strong>MeshCore</strong> app) and pair your radio over BLE/USB. Set your region / frequency, pick a short name, configure any channel keys, and confirm the radio is talking on the mesh. LORACLE Bridge reads and drives the radio — it isn't a first-time-setup tool, and a radio without a region set will look connected but receive nothing.</p>
+    </div>
+
+    <div class="lo-ob-step" data-step="2">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <circle cx="180" cy="60" r="6" fill="var(--lo-accent)"/>
         <circle cx="120" cy="50" r="4" fill="var(--lo-accent-2)"/>
@@ -2775,7 +2787,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>Direct peers connect to your node. Multi-hop nodes chain through the radios they relay off of. Nodes with GPS are positioned geographically — the layout mirrors your actual network.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="2">
+    <div class="lo-ob-step" data-step="3">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <circle cx="120" cy="60" r="5" fill="var(--lo-accent-2)"/>
         <text x="120" y="80" text-anchor="middle" fill="var(--lo-ink)" font-family="var(--font-mono)" font-size="7">FRESH</text>
@@ -2788,7 +2800,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>Recently heard nodes are bright and pulse gently. Nodes go dim as they age out. After 1 hour of silence, they fade to ghosts. It's easy to tell who's alive at a glance.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="3">
+    <div class="lo-ob-step" data-step="4">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <rect x="120" y="20" width="120" height="80" fill="none" stroke="var(--lo-divider-strong)" stroke-width="1"/>
         <text x="180" y="40" text-anchor="middle" fill="var(--lo-ink)" font-family="var(--font-mono)" font-size="9" font-weight="500">NODE 3a7b</text>
@@ -2800,7 +2812,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>Opens a floating window with signal info, battery, GPS, hops, and a message thread. Send DMs, toggle AI auto-reply, run a traceroute, or view their chat history.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="4">
+    <div class="lo-ob-step" data-step="5">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <circle cx="180" cy="60" r="12" fill="none" stroke="var(--lo-accent-2)" stroke-width="2"/>
         <text x="180" y="64" text-anchor="middle" fill="var(--lo-accent-2)" font-family="var(--font-mono)" font-size="7">\u25C9</text>
@@ -2814,7 +2826,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>The ringed circle labeled PUBLIC is channel 0 — everyone on the mesh can see broadcasts there. Click it to send a message that reaches every node in range.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="5">
+    <div class="lo-ob-step" data-step="6">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <rect x="60" y="20" width="240" height="80" fill="none" stroke="var(--lo-divider)" stroke-width="0.5"/>
         <circle cx="100" cy="50" r="3" fill="var(--lo-accent-2)"/>
@@ -2827,7 +2839,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>MAP shows nodes on a real map with coverage heatmap. TRAFFIC dims quiet nodes so active ones pop. The \u2630 sidebar lists every node — sort, filter, and search messages across all threads.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="6">
+    <div class="lo-ob-step" data-step="7">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <rect x="110" y="25" width="140" height="22" fill="var(--lo-accent)" opacity="0.15"/>
         <text x="180" y="40" text-anchor="middle" fill="var(--lo-accent)" font-family="var(--font-mono)" font-size="8" font-weight="500">!help</text>
@@ -2839,7 +2851,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <p>Anyone on the mesh can DM your radio to chat with a local LLM. Drop PDFs in CONTEXT FILES/ for knowledge base grounding. Commands: !help, !nav, !triage, !brief, !drop.</p>
     </div>
 
-    <div class="lo-ob-step" data-step="7">
+    <div class="lo-ob-step" data-step="8">
       <svg viewBox="0 0 360 120" xmlns="http://www.w3.org/2000/svg">
         <rect x="80" y="20" width="200" height="16" fill="none" stroke="var(--lo-divider-strong)" stroke-width="0.5"/>
         <text x="85" y="32" fill="var(--lo-dim)" font-family="var(--font-mono)" font-size="7">CONNECTION</text>
@@ -5174,7 +5186,7 @@ document.getElementById('theme-toggle').addEventListener('click', function() { v
 
 // ─── Onboarding ────────────────────────────────────────────────────────────
 
-var _obStep = 0, _obTotal = 8;
+var _obStep = 0, _obTotal = 9;
 function showOnboarding() { _obStep = 0; renderOb(); document.getElementById('onboarding').classList.add('open'); }
 function obNext() { if (_obStep < _obTotal - 1) { _obStep++; renderOb(); } else obSkip(); }
 function obPrev() { if (_obStep > 0) { _obStep--; renderOb(); } }

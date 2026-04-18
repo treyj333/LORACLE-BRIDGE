@@ -70,6 +70,15 @@ You can override with `--model <name>` (e.g., `./mesh-llm.sh --model qwen3:14b`)
 
 ## Quick Start — 3 Steps
 
+> ⚠️ **Before you start — set up your radio in its native app first.**
+> LORACLE Bridge is a host-side runtime that *reads and drives* an already-provisioned radio — it is **not** a first-time-setup tool. Before you plug the radio into LORACLE:
+>
+> - Pair the radio with the official **[Meshtastic](https://meshtastic.org/docs/software/)** (or **[MeshCore](https://meshcore.co.uk)**) phone/desktop app.
+> - Set your **region / frequency** (e.g. `US`, `EU_868`, `ANZ`). A radio with no region set will look connected in LORACLE but transmit and receive nothing.
+> - Give the node a short name, configure any channel keys / PSKs, and confirm the radio is actually talking to other nodes on your mesh.
+>
+> If you skip this step your nodes may not work at all with LORACLE, or will look idle because they're not legally / correctly on air. Set it up in the native app, verify it works there, *then* come back.
+
 ### Step 1: Clone This Repo
 
 ```bash
