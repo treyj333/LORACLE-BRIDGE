@@ -4826,7 +4826,9 @@ async function connectModalScan() {
 }
 
 function connectModalPickDevice(el, address, name) {
-  _userAckedModal = true;
+  // Same reasoning as connectFromModal: don't pre-ack the modal — the poll
+  // loop needs to see an un-acked modal to paint the wizard success panel
+  // instead of silently closing.
   document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
   el.classList.add('selected');
   document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '... (BLE takes 10-20s)';
@@ -4838,7 +4840,14 @@ function connectModalPickDevice(el, address, name) {
 }
 
 async function connectFromModal() {
-  _userAckedModal = true;
+  // IMPORTANT: we deliberately do NOT set _userAckedModal=true here. In wizard
+  // mode the poll loop needs to see an un-acked modal so it can swap in the
+  // success panel (if we set it true, the next poll would just call
+  // hideConnectModal() and skip the success panel entirely — the user would
+  // see the modal silently close and have to find the "+ RADIO" button to get
+  // to step 2). In non-wizard mode the 3s auto-dismiss timer flips this flag
+  // once the user has had time to read "RADIO CONNECTED". See the matching
+  // branch in checkConnectionForModal.
   var type = document.getElementById('connect-type').value;
   var addr = document.getElementById('connect-address').value.trim();
   var payload = {type: type};
@@ -4846,7 +4855,10 @@ async function connectFromModal() {
     if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); }
     else payload.host = addr;
   } else { payload.address = addr || null; }
-  document.getElementById('connect-modal-status').textContent = 'Connecting... (modal will close when connected)';
+  var statusMsg = _wizardActive
+    ? 'Connecting\u2026 this screen will update when the radio comes up.'
+    : 'Connecting... (modal will close when connected)';
+  document.getElementById('connect-modal-status').textContent = statusMsg;
   // Fire and forget — poll loop handles the rest
   fetch('/api/connection/switch', {
     method: 'POST', headers: {'Content-Type': 'application/json'},

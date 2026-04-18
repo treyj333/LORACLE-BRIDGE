@@ -4,6 +4,20 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 23:25] — Wizard fix: success panel now stays up after CONNECT
+
+- What changed:
+  - `connectFromModal` and `connectModalPickDevice` no longer set `_userAckedModal = true` the moment the user clicks CONNECT / picks a BLE device. That pre-ack was short-circuiting the wizard success panel: when the next poll returned `connected=true`, `checkConnectionForModal` hit the `_userAckedModal` branch and called `hideConnectModal()` immediately, so the user would see the primary connect modal silently disappear the instant the radio came up — with no visible success message and no automatic advance to step 2. The fix defers the ack: in wizard mode it happens when the user clicks NEXT (or DONE) on the success panel; in non-wizard mode it happens when the 3s auto-dismiss timer fires (which was already wired to flip the flag). Net effect: the wizard's "MESHTASTIC CONNECTED" panel stays visibly up while node population starts in the background, and the non-wizard reconnect modal now shows its "RADIO CONNECTED" confirmation for the intended 3 seconds instead of closing instantly. Also added a short informational comment at the top of `connectFromModal` so the next maintainer doesn't re-introduce the bug.
+- Why:
+  - User feedback: "when it populates nodes after step 1 connecting to meshtastic it turns off the hub and i have to go find step 2 can we make it populate the nodes but keep the pop up up for step 2." The "hub turning off" was the primary modal silently closing as soon as the radio handshake finished, leaving the user on the bare canvas with nodes streaming in and no path to the MeshCore prompt except the `+ RADIO` button in the top bar — which defeats the purpose of a guided wizard.
+- Impact on project goals:
+  - Restores the intended paced wizard UX — the success panel is unmissable, and the user explicitly decides when to advance to step 2. Node population / map rendering proceeds normally underneath; the modal is just an overlay that no longer gets torn down before the user sees it. Zero backend change, purely a client-side flag-ordering fix.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — removed premature `_userAckedModal = true` assignment in `connectFromModal` and `connectModalPickDevice`; added a status-text string that's wizard-aware ("this screen will update when the radio comes up" vs the old "modal will close when connected").
+- Tests: 302/302 pass (no behavior change on tested surfaces).
+
+---
+
 ## [2026-04-17 23:05] — Onboarding disclaimer: use native app first
 
 - What changed:
