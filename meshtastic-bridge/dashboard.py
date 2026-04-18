@@ -2069,7 +2069,26 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-connect-modal.open { display: flex; }
 .lo-connect-box { background: var(--lo-bg); border: 2px solid var(--lo-divider-strong); width: 420px; max-width: 90vw; padding: 32px; }
 .lo-connect-box h3 { font-size: 14px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--lo-ink); margin-bottom: 6px; }
-.lo-connect-box h3::before { content: '\25C9 '; color: var(--lo-accent); }
+/* Dot rendered as a CSS shape (inline-block + vertical-align:middle) instead
+   of the old Unicode \25C9 glyph, which drifted low and crowded the first
+   letter. Kept inline so text-align:center on success-panel parents still
+   works (flex display on the h3 would swallow that). */
+.lo-connect-box h3::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--lo-accent);
+  margin-right: 10px;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;  /* optical centering against uppercase cap-height */
+}
+/* Success-panel dots: match their heading's protocol color — teal for MT,
+   purple (and diamond-shaped) for MC — instead of the default orange prompt. */
+#connect-modal-success h3::before { background: var(--lo-accent-2); }
+#ar-success h3::before { background: #9b59b6; border-radius: 0; transform: rotate(45deg) translateY(-1px); }
 .lo-connect-box p { font-size: 11px; color: var(--lo-dim); margin-bottom: 20px; line-height: 1.7; }
 .lo-connect-box .lo-form-row { padding: 6px 0; }
 .lo-scan-device { display: flex; align-items: center; gap: 10px; padding: 10px 8px; border-bottom: 1px solid var(--lo-divider); cursor: pointer; border-left: 3px solid transparent; transition: background 0.1s; }
@@ -2656,7 +2675,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <h3 id="ar-title">ADD SECONDARY RADIO</h3>
     <p id="ar-description">Attach a MeshCore radio alongside your primary Meshtastic. Once connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
     <div id="ar-active-row" style="display:none;margin-bottom:14px;padding:10px;background:var(--lo-bg-deep);font-size:11px">
-      <div style="color:#9b59b6;font-weight:500;margin-bottom:4px">◆ <span id="ar-active-label">MESHCORE CONNECTED</span></div>
+      <div style="color:#9b59b6;font-weight:500;margin-bottom:4px;display:flex;align-items:center;gap:8px">
+        <span style="display:inline-block;width:8px;height:8px;background:#9b59b6;transform:rotate(45deg);flex-shrink:0"></span>
+        <span id="ar-active-label">MESHCORE CONNECTED</span>
+      </div>
       <div id="ar-active-detail" style="color:var(--lo-dim)"></div>
       <button class="btn btn-sm" onclick="removeSecondaryRadio()" style="margin-top:8px;color:#c0392b;border-color:#c0392b">DISCONNECT</button>
     </div>
@@ -3848,10 +3870,14 @@ function loadSelfData(key) {
   var isMC = (protoLc === 'mc' || protoLc === 'meshcore');
   var protoLabel = isMC ? 'MESHCORE' : 'MESHTASTIC';
   var protoColor = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
-  var protoGlyph = isMC ? '\u25C6' : '\u25CF';
+  // Shape rendered via CSS (rotated square for MC, circle for MT) + flex-aligned
+  // with the label so the icon vertically centers with the uppercase letters.
+  var shapeStyle = 'display:inline-block;width:9px;height:9px;background:' + protoColor +
+    ';flex-shrink:0;' + (isMC ? 'transform:rotate(45deg);' : 'border-radius:50%;');
   var lines = [];
-  lines.push('<div style="color:' + protoColor + ';font-weight:500;font-size:12px;margin-bottom:6px">' +
-             '<span style="font-size:13px">' + protoGlyph + '</span> ' + protoLabel + '</div>');
+  lines.push('<div style="color:' + protoColor + ';font-weight:500;font-size:12px;margin-bottom:6px;' +
+             'display:flex;align-items:center;gap:8px">' +
+             '<span style="' + shapeStyle + '"></span>' + protoLabel + '</div>');
   lines.push('<div>STATUS: ' + (b.connected ? '<span style="color:var(--lo-accent-2)">CONNECTED</span>' : '<span style="color:#c0392b">DISCONNECTED</span>') + '</div>');
   if (b.transport) lines.push('<div>TRANSPORT: ' + escapeHtml(String(b.transport).toUpperCase()) + '</div>');
   var selfNodeId = b.self_node_id || (selfNode && selfNode.selfNodeId) || null;

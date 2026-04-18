@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-17 23:40] — Connect-modal dot alignment + per-success-panel dot colors
+
+- What changed:
+  - `.lo-connect-box h3::before` moved from the Unicode `◉` (U+25C9 + trailing space) glyph to a CSS-drawn circle — 9×9px, `border-radius:50%`, `background: var(--lo-accent)`, `vertical-align: middle`, `margin-right: 10px`, with a `top:-1px` nudge so it optically centers against the uppercase cap-height instead of sitting at baseline. Kept inline (not flex) so `text-align: center` on the success-panel parents still applies to the whole `dot + heading` row.
+  - New success-panel overrides: `#connect-modal-success h3::before { background: var(--lo-accent-2); }` (teal dot next to teal "MESHTASTIC CONNECTED") and `#ar-success h3::before { background:#9b59b6; border-radius:0; transform: rotate(45deg) translateY(-1px); }` (purple diamond next to purple "MESHCORE CONNECTED") — matches the big glyphs above each success message.
+  - Two other inline-text glyph spots replaced with CSS shapes for the same reason: (a) the "◆ MESHCORE CONNECTED" line in the add-radio modal's manage panel (`#ar-active-row`) now uses a flex-aligned purple diamond `<span>`, and (b) the self-node float window (`loadSelfData`) was assembling `"<span>◆</span> MESHCORE"` / `"<span>●</span> MESHTASTIC"` with bare inline Unicode — now emits a proper CSS shape + `display:flex; align-items:center; gap:8px` so the icon is centered with the label.
+- Why:
+  - User feedback: "where it says Connect your meshtastic or MESHTASTIC CONNECTED etc the dot next to it is too close and not centered can we make that look a little cleaner and anywhere else something is like this?" Unicode glyphs are subject to font metrics we don't control and can't be reliably centered against text; switching to CSS shapes + flex/vertical-align gives pixel-level control and avoids per-font drift. Colour-matching the success-panel dot to the success-panel heading also removes the old orange-on-teal/orange-on-purple visual mismatch.
+- Impact on project goals:
+  - Pure UI polish — no behavior change, no test surface touched. The wizard + post-wizard "+ RADIO" modal + self-node detail panel all read as more intentional now (dot color = protocol color, dot centered cleanly with the uppercase label). Zero risk to relay/backend code.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — the two `.lo-connect-box h3::before` rules + per-panel overrides, the `#ar-active-row` diamond markup, the `loadSelfData` protocol-badge emitter.
+- Tests: 302/302 pass.
+
+---
+
 ## [2026-04-17 23:25] — Wizard fix: success panel now stays up after CONNECT
 
 - What changed:
