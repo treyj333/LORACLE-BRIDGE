@@ -4206,13 +4206,17 @@ function renderCanvas() {
   // TRAFFIC mode where the dimmed-non-active pass already carries its own
   // visual weight and extra texture would muddy the signal.
   if (!isTraffic) {
-    var gridStep = 36;
+    // Tighter grid (was 36 → 24) so the texture reads as more obviously
+    // gridded at default zoom. Zoom-out still looks clean because the
+    // "major" ring absorbs visibility when the minor step gets tiny.
+    var gridStep = 24;
     var dotColor = ink;
-    // Screen-density guard: if we zoom out so far that the grid collapses
-    // into a solid field, skip it. Same for extreme zoom-in where the
-    // dots become meaningless giant circles.
+    // Screen-density guard: if we zoom out so far that the minor grid
+    // collapses into a smear we draw only the major dots. At extreme
+    // zoom-in we skip altogether so giant circles don't appear.
     var screenStep = gridStep * App.zoom;
-    if (screenStep >= 10 && screenStep <= 240) {
+    var majorOnly = screenStep < 9;
+    if (screenStep <= 240) {
       var worldLeft = -App.panX / App.zoom;
       var worldTop = -App.panY / App.zoom;
       var worldRight = (w - App.panX) / App.zoom;
@@ -4221,15 +4225,18 @@ function renderCanvas() {
       var gx0 = Math.floor(worldLeft / gridStep) * gridStep;
       var gy0 = Math.floor(worldTop / gridStep) * gridStep;
       // Counter-scale the radius so dots stay a constant on-screen size
-      // regardless of zoom — a consistent 1px "minor" / 1.6px "major".
-      var minorR = 0.9 / App.zoom;
-      var majorR = 1.7 / App.zoom;
+      // regardless of zoom — a consistent ~1px "minor" / ~1.8px "major".
+      var minorR = 0.85 / App.zoom;
+      var majorR = 1.8 / App.zoom;
       ctx.fillStyle = dotColor;
       for (var gx = gx0; gx <= worldRight; gx += gridStep) {
         for (var gy = gy0; gy <= worldBottom; gy += gridStep) {
           var isMajor = (Math.round(gx / gridStep) % 5 === 0) &&
                         (Math.round(gy / gridStep) % 5 === 0);
-          ctx.globalAlpha = isMajor ? 0.10 : 0.045;
+          if (majorOnly && !isMajor) continue;
+          // Slightly bolder than the original pass so the grid feels
+          // intentional instead of accidental. Major ring stays distinct.
+          ctx.globalAlpha = isMajor ? 0.13 : 0.06;
           ctx.beginPath();
           ctx.arc(gx, gy, isMajor ? majorR : minorR, 0, Math.PI * 2);
           ctx.fill();
@@ -4247,12 +4254,6 @@ function renderCanvas() {
       if (now - m.ts < 300) activeNodes[m.node] = true; // last 5 min
     });
   }
-
-  // Subtle crosshair at center
-  ctx.strokeStyle = divider; ctx.lineWidth = 0.3; ctx.setLineDash([4, 8]);
-  ctx.beginPath(); ctx.moveTo(cx - 30, cy); ctx.lineTo(cx + 30, cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy + 30); ctx.stroke();
-  ctx.setLineDash([]);
 
   // Build a quick lookup of recent messages per node (last 8s for pulse animations)
   var recentMsgs = {};

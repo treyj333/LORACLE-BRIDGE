@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 18:55] — Tighter dot-grid + removed centre crosshair
+
+- What changed:
+  - **Grid step tightened from 36 px → 24 px in world space.** The texture reads more obviously as a grid at default zoom without overwhelming the canvas. Alphas bumped slightly too: minor `0.045 → 0.06`, major `0.10 → 0.13`, and minor radius trimmed `0.9 → 0.85` to balance the higher count. Major dot radius nudged up `1.7 → 1.8` so the 5×5 emphasis holds at the denser minor pitch.
+  - **Zoom-out fallback added.** When on-screen step drops below 9 px (i.e. zoom ≤ ~0.38 at the new 24 px grid) the minor pass is skipped and only the major dots render. Previously the whole grid blanked at <10 px; now the "major frame" stays visible much further out, so the canvas never looks featureless. Zoom-in clamp unchanged (>240 px on-screen still skips to avoid giant circles).
+  - **Centre crosshair removed.** The faint dashed `+` at the world origin was leftover scaffolding from before the dot grid; the grid itself is now the spatial anchor, so the crosshair was redundant visual noise. Dropped four lines of draw code (stroke + two lineTos + setLineDash reset).
+- Why:
+  - User: "Remove the crosshair. Make the grid smaller but more obvious, and it should still look great zoomed out." Tightening the grid pitch plus bumping the alpha values got "more obvious." The zoom-out-only-majors fallback handles the "still looks great zoomed out" half — the major 5×5 frame gives enough spatial context even when the minor dots would otherwise be unrenderable smear.
+- Impact on project goals:
+  - Pure visual polish — no logic changes. Texture is now more present at default zoom and degrades gracefully to a sparser major-only pattern at extreme zoom-out instead of blanking. Crosshair removal simplifies the draw loop (one less scaffolding element) and cleans up the centre of the canvas at default pan.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — dot-grid constants retuned; `majorOnly` branch for sub-9px zoom-out; crosshair block deleted.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 18:40] — DM-only inference by default: auto-greet + public-channel AI replies now OFF
 
 - What changed:
