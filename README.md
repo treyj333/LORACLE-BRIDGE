@@ -244,11 +244,19 @@ Cross-mesh delivery is **off by default** — bridging private messages across p
 
 ### Node List Sidebar
 
-Click the **☰** button in the title bar to open the node sidebar. Lists all nodes with hops, last heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
+Click the **☰** button in the title bar to open the node sidebar. At the very top sit two **pinned PUBLIC CHANNEL rows** — one teal-circle row for Meshtastic channel 0 and one purple-diamond row for MeshCore channel 0 (each visible when that radio is connected). One click opens a composer that broadcasts on the 915 MHz public channel for the matching protocol, no matter which scope filter you're in. Below the pinned rows the regular list shows all peers with hops, last-heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
 
 ### HUD Overlay
 
-The top-left corner shows live stats (nodes, messages, model, uptime) and a **SCAN MESH** button to discover new nodes. The bottom strip shows a packet activity ribbon.
+The top-left corner shows live stats (nodes, messages, model, uptime). The control rail underneath **swaps based on the scope filter**: in `ALL` / `MT` it shows the Meshtastic `SCAN MESH` + `HW COLOR` pair plus the per-hardware colour legend; switching to `MC` replaces both with MeshCore-flavoured controls (`PULL CONTACTS` to force a contact-list refetch, `FAVORITES` to hide everyone you haven't starred, live counts of `contacts / with GPS / starred`, and an advertisement-based legend). The bottom strip shows a packet activity ribbon.
+
+### Header Radio Pills — `◆ MT` + `◆ MC`
+
+Right of the two connection indicators (`MT ON` / `MC ON`) sit a pair of **management pills**. Each opens that radio's self-info panel (status, transport, node id, battery/voltage/temperature, hardware model, uptime) — the same panel you get by clicking the MY NODE dot on the canvas. Colour-matched to the protocol: teal for MT, purple for MC. When a radio isn't connected the MT pill reads `◇ MT` and falls through to the connect modal; the MC pill reads `+ RADIO` and opens the add-secondary-radio wizard.
+
+### Bridge Smoke Test
+
+The BRIDGE tab has a **VALIDATE — SMOKE TEST** section with a one-click `RUN SMOKE TEST` button. It (1) broadcasts a tagged ping on public channel 0 from every connected radio so nearby peers hear it, then (2) injects a synthetic "incoming peer" message through `Relay.observe()` in both directions so the relay policy + dedup + cross-protocol send actually fire (broadcasts from your own radio never trigger the relay — it only observes incoming peer traffic). The result panel shows send-level outcomes, the pre/post counter delta, and a pass/fail summary within ~1 s.
 
 The dashboard updates every 2 seconds. To change the port:
 

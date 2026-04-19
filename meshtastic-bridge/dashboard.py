@@ -277,21 +277,35 @@ def api_state():
     else:
         state["greeter"] = {}
     # Radio backends info
-    # Build backends info from bridge's actual connection state
+    # The legacy Meshtastic interface is owned by _radio_connection_loop and is
+    # *not* registered with RadioManager, so get_backends_info() only returns
+    # secondary (MC) backends added via _attach_secondary_radio. Without the
+    # merge below, the MT status pill vanishes the moment a MeshCore radio is
+    # attached — even though MT is still connected and working.
     backends_info = []
     if _bridge:
         try:
-            backends_info = _bridge._radio_manager.get_backends_info()
+            backends_info = list(_bridge._radio_manager.get_backends_info())
         except Exception:
             pass
-        # If RadioManager has no backends, report from bridge's own state
-        if not backends_info:
-            backends_info = [{
+        has_mt = any(
+            str(b.get("protocol", "")).lower() in ("mt", "meshtastic")
+            for b in backends_info
+        )
+        if not has_mt:
+            mt_self_id = None
+            try:
+                if hasattr(_bridge, "_get_self_node_id"):
+                    mt_self_id = _bridge._get_self_node_id()
+            except Exception:
+                mt_self_id = None
+            backends_info.insert(0, {
                 "id": "mt-primary",
                 "protocol": "mt",
                 "transport": getattr(_bridge, "connection_type", "serial"),
                 "connected": state.get("connected", False),
-            }]
+                "self_node_id": mt_self_id,
+            })
     state["backends"] = backends_info
     # AI replies toggle
     state["ai_replies_enabled"] = getattr(_bridge, "_ai_replies_enabled", True) if _bridge else True
@@ -687,12 +701,12 @@ def api_connection_switch():
     if _bridge is None:
         return jsonify({"error": "Bridge not initialized"}), 503
     data = request.get_json(silent=True) or {}
-    conn_type = data.get("type", "").strip()
+    conn_type = (data.get("type") or "").strip()
     if conn_type not in ("serial", "tcp", "ble"):
         return jsonify({"ok": False, "error": "Invalid type. Use: serial, tcp, ble"}), 400
 
-    address = data.get("address", "").strip() or None
-    host = data.get("host", "").strip() or None
+    address = (data.get("address") or "").strip() or None
+    host = (data.get("host") or "").strip() or None
     port = data.get("port")
     if port:
         port = int(port)
@@ -1342,6 +1356,117 @@ def api_bridge_history():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/bridge/smoke_test", methods=["POST"])
+def api_bridge_smoke_test():
+    """One-click bridge validation.
+
+    The real relay only fires on *incoming* peer messages — broadcasting from
+    this node's own radios is not enough to trigger it. So we do two things:
+
+    1. Send a real broadcast from each connected backend (so range-testing
+       peers can see the ping).
+    2. Inject synthetic ``_relay.observe()`` calls with a unique fake sender
+       per direction. That exercises the relay end-to-end — policy, dedup,
+       rate-limit, and the real send-out through ``_bridge_send`` — without
+       needing a second device to speak.
+
+    The unique-per-run sender avoids the dedup cache suppressing repeat runs.
+    Returns both the send-level results and the pre/post relay counters so
+    the UI can tell the user exactly what happened.
+    """
+    if _bridge is None:
+        return jsonify({"ok": False, "error": "Bridge not initialized"}), 503
+    import time as _time
+    ts = int(_time.time())
+    text = f"LORACLE bridge smoke test @ {ts}"
+    results = []
+
+    # (1) Direct broadcasts — these don't trigger the relay but do prove send
+    # paths are wired and let any nearby peer observe the ping.
+    try:
+        alive = _bridge._is_interface_alive() if hasattr(_bridge, "_is_interface_alive") else False
+    except Exception:
+        alive = False
+    mt_connected = alive and _bridge.interface is not None
+    if mt_connected:
+        try:
+            _bridge.interface.sendText(text, channelIndex=0)
+            results.append({"protocol": "mt", "ok": True, "sent": text, "kind": "broadcast"})
+        except Exception as e:
+            results.append({"protocol": "mt", "ok": False, "error": str(e), "kind": "broadcast"})
+    else:
+        results.append({"protocol": "mt", "ok": False, "error": "Meshtastic radio not connected", "kind": "broadcast"})
+
+    mc_backends = []
+    try:
+        for b in _bridge._radio_manager.get_backends():
+            proto = getattr(b.protocol, "value", str(b.protocol))
+            if proto in ("mt", "meshtastic"):
+                continue
+            mc_backends.append(b)
+    except Exception as e:
+        results.append({"protocol": "?", "ok": False, "error": f"RadioManager error: {e}", "kind": "broadcast"})
+    mc_connected = any(b.is_connected() for b in mc_backends)
+    if not mc_backends:
+        results.append({"protocol": "mc", "ok": False, "error": "No MeshCore radio attached", "kind": "broadcast"})
+    else:
+        for b in mc_backends:
+            proto = getattr(b.protocol, "value", str(b.protocol))
+            if not b.is_connected():
+                results.append({"protocol": proto, "ok": False, "error": f"{proto} radio not connected", "kind": "broadcast"})
+                continue
+            try:
+                b.send_broadcast(text, 0)
+                results.append({"protocol": proto, "ok": True, "sent": text, "kind": "broadcast"})
+            except Exception as e:
+                results.append({"protocol": proto, "ok": False, "error": str(e), "kind": "broadcast"})
+
+    # (2) Relay-path test. Inject a synthetic "incoming" message in each
+    # direction so the relay decides-and-sends as if a real peer spoke.
+    try:
+        stats_before = _bridge._relay.stats() if hasattr(_bridge, "_relay") else {}
+    except Exception:
+        stats_before = {}
+
+    relay_ok = hasattr(_bridge, "_relay")
+    if relay_ok and mt_connected and mc_connected:
+        fake_mt_sender = f"!smoke{ts & 0xFFFFFF:06x}"
+        fake_mc_sender = f"smoke{ts:08x}"[-12:]
+        try:
+            _bridge._relay.observe("meshtastic", fake_mt_sender, text, 0, False)
+            results.append({"protocol": "mt->mc", "ok": True, "kind": "relay", "sender": fake_mt_sender})
+        except Exception as e:
+            results.append({"protocol": "mt->mc", "ok": False, "error": str(e), "kind": "relay"})
+        try:
+            _bridge._relay.observe("meshcore", fake_mc_sender, text, 0, False)
+            results.append({"protocol": "mc->mt", "ok": True, "kind": "relay", "sender": fake_mc_sender})
+        except Exception as e:
+            results.append({"protocol": "mc->mt", "ok": False, "error": str(e), "kind": "relay"})
+    elif relay_ok:
+        results.append({
+            "protocol": "mt<->mc",
+            "ok": False,
+            "kind": "relay",
+            "error": "Both radios must be connected to exercise the relay",
+        })
+
+    try:
+        stats_after = _bridge._relay.stats() if hasattr(_bridge, "_relay") else {}
+    except Exception:
+        stats_after = {}
+
+    bridge_cfg = getattr(_bridge, "_bridge_config", {}) or {}
+    return jsonify({
+        "ok": any(r.get("ok") for r in results),
+        "text": text,
+        "timestamp": ts,
+        "results": results,
+        "relay_enabled": bool(bridge_cfg.get("enabled", True)),
+        "stats_before": stats_before,
+        "stats_after": stats_after,
+    })
+
+
 @app.route("/api/bridge/events", methods=["GET"])
 def api_bridge_events():
     """Return the recent bridge events (ring buffer, up to last 200).
@@ -1509,6 +1634,50 @@ def api_nodes_refresh():
         _bridge._load_nodedb_positions()
         nodes = list(getattr(_bridge, "_known_nodes", set()))
         return jsonify({"ok": True, "node_count": len(nodes)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/nodes/refresh_mc", methods=["POST"])
+def api_nodes_refresh_mc():
+    """Force every MeshCore backend to re-fetch its contact list and re-merge
+    into the bridge's node state. MC contacts arrive via advertisement packets
+    that trickle in over minutes, so giving the operator a manual "pull now"
+    button is more honest than waiting for the 5s background tick.
+    """
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    import asyncio as _asyncio
+    refreshed = 0
+    errors = []
+    try:
+        for b in _bridge._radio_manager.get_backends():
+            proto = getattr(b.protocol, "value", str(b.protocol))
+            if proto in ("mt", "meshtastic"):
+                continue
+            if not b.is_connected():
+                errors.append(f"{b.backend_id}: not connected")
+                continue
+            loop = getattr(b, "_loop", None)
+            if loop is None:
+                errors.append(f"{b.backend_id}: no event loop")
+                continue
+            try:
+                fut = _asyncio.run_coroutine_threadsafe(b._refresh_contacts(), loop)
+                fut.result(timeout=8)
+                refreshed += 1
+            except Exception as e:
+                errors.append(f"{b.backend_id}: {e}")
+        # Merge whatever came back into the bridge's node state.
+        if hasattr(_bridge, "_sync_nodes_from_backends"):
+            _bridge._sync_nodes_from_backends()
+        mc_count = sum(1 for n in _bridge._known_nodes if n.startswith("mc:"))
+        return jsonify({
+            "ok": True,
+            "refreshed": refreshed,
+            "mc_contact_count": mc_count,
+            "errors": errors,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1944,6 +2113,10 @@ button::-moz-focus-inner { border: 0; }
 }
 .lo-bar .lo-conn-add:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
 .lo-bar .lo-conn-add.on { color: #9b59b6; border-color: #9b59b6; }
+/* Meshtastic-specific variant of the header management pill. Default shape
+   (bordered block) matches the MC counterpart; tint flips to the teal accent
+   when the MT radio is connected so the two pills read as symmetric peers. */
+.lo-bar .lo-conn-add-mt.on { color: var(--lo-accent-2); border-color: var(--lo-accent-2); }
 .lo-bar .lo-scope { display: flex; margin-left: 12px; }
 .lo-bar .lo-scope button {
   padding: 4px 10px; font-family: inherit; font-size: 9px; letter-spacing: 0.12em;
@@ -1952,9 +2125,12 @@ button::-moz-focus-inner { border: 0; }
 }
 .lo-bar .lo-scope button:last-child { border-right: 1px solid var(--lo-divider); }
 .lo-bar .lo-scope button:hover { color: var(--lo-ink); border-color: var(--lo-divider-strong); }
-.lo-bar .lo-scope button.active { color: var(--lo-ink); border-color: var(--lo-ink); background: rgba(255,255,255,0.04); }
-.lo-bar .lo-scope button.active[data-scope="mt"] { color: var(--lo-accent-2); border-color: var(--lo-accent-2); }
-.lo-bar .lo-scope button.active[data-scope="mc"] { color: #9b59b6; border-color: #9b59b6; }
+/* Active segment: restore the right border so a middle button (MT) reads as a
+   closed box, not a three-sided U. z-index lifts it above the neighbouring
+   button's left border so colour bleed from the accent doesn't get clipped. */
+.lo-bar .lo-scope button.active { color: var(--lo-ink); border-color: var(--lo-ink); border-right: 1px solid var(--lo-ink); background: rgba(255,255,255,0.04); position: relative; z-index: 1; }
+.lo-bar .lo-scope button.active[data-scope="mt"] { color: var(--lo-accent-2); border-color: var(--lo-accent-2); border-right-color: var(--lo-accent-2); }
+.lo-bar .lo-scope button.active[data-scope="mc"] { color: #9b59b6; border-color: #9b59b6; border-right-color: #9b59b6; }
 .lo-bar .lo-filters { display: flex; margin-left: auto; }
 .lo-bar .lo-filters button {
   padding: 4px 14px; font-family: inherit; font-size: 10px; letter-spacing: 0.1em;
@@ -2112,6 +2288,12 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .btn-primary { background: var(--lo-ink); color: var(--lo-bg); border-color: var(--lo-ink); }
 .btn-sm { padding: 3px 8px; font-size: 9px; }
 .btn.active { color: var(--lo-accent); border-color: var(--lo-accent); }
+/* MeshCore-flavoured button variant: same shape as .btn but tinted purple to
+   match the MC diamond + header pill accent. Used in MC-scope HUD controls
+   so they don't read as Meshtastic by default. */
+.lo-mc-btn { border-color: rgba(155,89,182,0.55); color: rgba(155,89,182,0.9); }
+.lo-mc-btn:hover { color: #9b59b6; border-color: #9b59b6; }
+.lo-mc-btn.active { color: #9b59b6; border-color: #9b59b6; background: rgba(155,89,182,0.08); }
 
 /* ── Toast ────────────────────────────────────────────────────────────────── */
 #toast-container { position: fixed; bottom: 50px; right: 20px; z-index: 3000; display: flex; flex-direction: column; gap: 6px; }
@@ -2275,6 +2457,19 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-ns-proto { display: inline-block; font-size: 8px; font-weight: 600; padding: 1px 4px; margin-right: 4px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: baseline; }
 .lo-ns-proto-mc { background: #9b59b6; color: #fff; }
 .lo-ns-proto-mt { background: var(--lo-accent-2); color: var(--lo-bg-deep); }
+/* Pinned public-channel rows live above the sort header so the main 915MHz
+   broadcast target is always one click away. Slightly brighter bg + solid
+   divider below the block so they don't blur into the scrolling peer list. */
+.lo-ns-pinned-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-size: 10px; color: var(--lo-ink); border-bottom: 1px solid var(--lo-divider); background: rgba(255,255,255,0.02); }
+.lo-ns-pinned-row:hover { background: rgba(255,255,255,0.05); }
+.lo-ns-pinned-row.lo-mt { border-left: 2px solid var(--lo-accent-2); }
+.lo-ns-pinned-row.lo-mc { border-left: 2px solid #9b59b6; }
+.lo-ns-pinned-row .lo-ns-pinned-icon { width: 10px; height: 10px; flex-shrink: 0; }
+.lo-ns-pinned-row.lo-mt .lo-ns-pinned-icon { border-radius: 50%; background: var(--lo-accent-2); }
+.lo-ns-pinned-row.lo-mc .lo-ns-pinned-icon { transform: rotate(45deg); background: #9b59b6; }
+.lo-ns-pinned-row .lo-ns-pinned-title { flex: 1; font-weight: 500; letter-spacing: 0.06em; }
+.lo-ns-pinned-row .lo-ns-pinned-sub { font-size: 9px; color: var(--lo-faint); letter-spacing: 0.08em; }
+#ns-pinned:not(:empty) { border-bottom: 2px solid var(--lo-divider-strong); }
 
 /* ── Onboarding ───────────────────────────────────────────────────────────── */
 .lo-onboarding { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 2000; align-items: center; justify-content: center; }
@@ -2303,6 +2498,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <span class="lo-conn" title="Radio backend status — meshtastic (circle) and meshcore (diamond)">
     <span class="lo-conn-row"><span class="lo-dot" id="hdr-mt-dot"></span><span id="hdr-mt-label">MT --</span></span>
     <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
+    <button class="lo-conn-add lo-conn-add-mt" id="hdr-manage-mt" onclick="showMtManage()" title="View Meshtastic radio settings / self info">&#9671; MT</button>
     <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add / manage secondary MeshCore radio">+ RADIO</button>
   </span>
   <div class="lo-scope" title="Show nodes from: ALL protocols, or filter to just MESHTASTIC / just MESHCORE">
@@ -2335,11 +2531,50 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div><span class="lo-hud-val" id="hud-msgs">0</span> MESSAGES</div>
     <div><span class="lo-hud-val" id="hud-model">--</span> MODEL</div>
     <div><span class="lo-hud-val" id="hud-uptime">0s</span> UPTIME</div>
-    <div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">
+    <!-- SCAN MESH and HW COLOR are Meshtastic-specific (they rescan the MT
+         nodeDB and colour nodes by Meshtastic hw_model). Hidden when scope=MC
+         so the MC view isn't cluttered with controls that don't apply. -->
+    <div id="hud-mt-controls" style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="refreshNodes()" id="hud-refresh-btn" style="pointer-events:auto">SCAN MESH</button>
       <button class="btn btn-sm" onclick="toggleHwColor()" id="hud-hwcolor-btn" style="pointer-events:auto" title="Color nodes by hardware model">HW COLOR</button>
     </div>
     <div id="hw-legend" style="display:none;margin-top:6px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em"></div>
+
+    <!-- MeshCore-scope rail — mirrors the MT block visually (controls + legend
+         + optional empty state) but every piece speaks MeshCore. Purple diamond
+         accents, contact-advert vocabulary, and a PULL CONTACTS action that
+         hits the MC-specific /api/nodes/refresh_mc endpoint. Only visible when
+         scope = MC. -->
+    <div id="hud-mc-controls" style="display:none;margin-top:8px;flex-direction:column;gap:6px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn btn-sm lo-mc-btn" onclick="refreshMcContacts()" id="hud-mc-refresh-btn" style="pointer-events:auto" title="Force the MeshCore radio to re-fetch its contact list">PULL CONTACTS</button>
+        <button class="btn btn-sm lo-mc-btn" onclick="toggleMcFavoritesOnly()" id="hud-mc-fav-btn" style="pointer-events:auto" title="Show only contacts you have starred">FAVORITES</button>
+      </div>
+      <div id="hud-mc-refresh-status" style="font-size:9px;color:var(--lo-faint);letter-spacing:0.05em;min-height:10px"></div>
+      <div id="mc-legend" style="margin-top:2px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em;display:flex;flex-direction:column;gap:3px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:8px;height:8px;background:#9b59b6;display:inline-block;transform:rotate(45deg)"></span>
+          <span>CONTACT (advertised)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:8px;height:8px;background:#c39bd3;display:inline-block;transform:rotate(45deg);opacity:0.55"></span>
+          <span>NO POSITION</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="color:#f1c40f;width:10px;display:inline-block;text-align:center">&#9733;</span>
+          <span>FAVORITE</span>
+        </div>
+      </div>
+      <div id="hud-mc-counts" style="margin-top:4px;font-size:9px;color:var(--lo-faint);letter-spacing:0.05em"></div>
+    </div>
+
+    <!-- MeshCore-scope empty-state hint. Shown when scope=MC and no MC peers
+         have been discovered yet — MC advertisements trickle in over minutes,
+         so a blank canvas doesn't mean the bridge is broken. -->
+    <div id="hud-mc-empty" style="display:none;margin-top:8px;padding:8px;border:1px dashed #9b59b6;font-size:10px;line-height:1.5;color:var(--lo-dim);max-width:280px">
+      <div style="color:#9b59b6;letter-spacing:0.1em;margin-bottom:4px">NO MESHCORE PEERS YET</div>
+      MeshCore discovers peers through advertisements that arrive as they pass nearby. Hit <b>PULL CONTACTS</b> to force a re-fetch, or leave the radio on for a few minutes. Validate the bridge itself from the <b>BRIDGE</b> tab &rarr; <b>RUN SMOKE TEST</b>.
+    </div>
     <div id="proto-legend" style="margin-top:8px;font-size:9px;color:var(--lo-dim);letter-spacing:0.06em;display:flex;gap:12px;align-items:center">
       <span style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;border-radius:50%;background:var(--lo-accent-2);display:inline-block"></span>MESHTASTIC</span>
       <span style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;background:#9b59b6;display:inline-block;transform:rotate(45deg)"></span>MESHCORE</span>
@@ -2358,6 +2593,12 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <span>NODES</span>
       <input type="text" id="ns-search" placeholder="filter..." oninput="renderNodeList()">
     </div>
+    <!-- Pinned public-channel shortcuts — always visible at the top of the
+         sidebar regardless of scope or filter so talking on the main 915MHz
+         public channel is one click away. Each row opens the existing float
+         window whose composer routes through /api/threads/.../send — the
+         channel detection is already wired. -->
+    <div id="ns-pinned"></div>
     <div class="lo-ns-sort">
       <button class="active" onclick="setNodeSort('name',this)">NAME</button>
       <button onclick="setNodeSort('hops',this)">HOPS</button>
@@ -2468,6 +2709,24 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
         </div>
       </div>
     </details>
+
+    <!-- Bridge smoke test: broadcasts a tagged ping on public channel 0 from
+         every connected backend. If both radios are up and the relay is on,
+         each ping should echo on the other network — the mt→mc / mc→mt
+         counters above will tick up and the LIVE FLOW log will show the
+         relay events. Gives operators a one-click "is this actually wired
+         through?" check without having to send a message manually. -->
+    <div class="lo-bridge-section" style="border-color:var(--lo-divider-strong)">
+      <div class="lo-bridge-section-title">VALIDATE — SMOKE TEST</div>
+      <div class="lo-bridge-hint" style="margin-bottom:10px;line-height:1.6">
+        Broadcasts a tagged ping on public channel&nbsp;0 from every connected radio. With the auto-bridge on, the ping should echo on the other network within ~5s — watch the relay counters and LIVE FLOW below. Any peer within range will also see it.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="bridgeSmokeTest()" id="bridge-smoke-btn">RUN SMOKE TEST</button>
+        <span id="bridge-smoke-status" style="font-size:11px;color:var(--lo-faint)"></span>
+      </div>
+      <div id="bridge-smoke-results" style="margin-top:10px;font-size:11px;line-height:1.7"></div>
+    </div>
 
     <div class="lo-bridge-section">
       <div class="lo-bridge-section-title">LIVE FLOW</div>
@@ -3013,6 +3272,7 @@ var App = {
   state: {},
   view: 'mesh',        // 'mesh' | 'traffic' | 'config'
   scope: (function() { try { return localStorage.getItem('loracle_scope') || 'all'; } catch(e) { return 'all'; } })(),  // 'all' | 'mt' | 'mc' — filters nodes/self by protocol across every view
+  mcFavoritesOnly: (function() { try { return localStorage.getItem('loracle_mc_fav_only') === '1'; } catch(e) { return false; } })(),
   selectedNode: null,
   configLoaded: false,
   nodes: [],
@@ -3038,9 +3298,17 @@ var App = {
 function nodeInScope(n) {
   if (!n) return true;
   var s = App.scope || 'all';
-  if (s === 'all') return true;
   var isMC = !!n.isMC;
-  return s === 'mc' ? isMC : !isMC;
+  if (s !== 'all') {
+    if (s === 'mc' ? !isMC : isMC) return false;
+  }
+  // MC-scope favourites-only filter. Self and channel pseudo-nodes always
+  // pass — hiding "MY NODE" or "PUBLIC" just to apply a star filter would
+  // be disorienting.
+  if (s === 'mc' && App.mcFavoritesOnly && !n.isFavorite && !n.isSelf && !n.isChannel) {
+    return false;
+  }
+  return true;
 }
 
 // Recompute the NODES counter in the HUD so it reflects the current scope.
@@ -3078,6 +3346,87 @@ function setScope(scope) {
   try { renderNodeList(); } catch(e) {}
   try { if (typeof updateMapMarkers === 'function') updateMapMarkers(); } catch(e) {}
   try { updateHudNodesCount(); } catch(e) {}
+  try { updateHudScopeControls(); } catch(e) {}
+}
+
+// Swap between the MT-style HUD rail (SCAN MESH + hardware-colour legend) and
+// the MC-style one (PULL CONTACTS + advertisement legend + counts). Called
+// from setScope() and on every poll so the MC counts/empty-state stay fresh
+// as contacts trickle in.
+function updateHudScopeControls() {
+  var scope = App.scope || 'all';
+  var mtCtl = document.getElementById('hud-mt-controls');
+  var mcCtl = document.getElementById('hud-mc-controls');
+  var hwLegend = document.getElementById('hw-legend');
+  var mcEmpty = document.getElementById('hud-mc-empty');
+  // MT controls: visible for 'all' and 'mt'. Hidden in 'mc' because SCAN MESH
+  // only refreshes the Meshtastic nodeDB and HW COLOR is a MT-only concept.
+  if (mtCtl) mtCtl.style.display = (scope === 'mc') ? 'none' : 'flex';
+  if (hwLegend && scope === 'mc') { hwLegend.style.display = 'none'; }
+  else if (hwLegend && App.colorByHwModel) { hwLegend.style.display = ''; }
+  // MC controls: only visible in 'mc' scope (rich view mirrors MT's rail).
+  if (mcCtl) mcCtl.style.display = (scope === 'mc') ? 'flex' : 'none';
+
+  // Derive MC peer counts so the rail can show useful metadata and the
+  // empty-state hint can decide whether to surface itself.
+  var backends = (App.state && App.state.backends) || [];
+  var mcConnected = backends.some(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (p === 'mc' || p === 'meshcore') && b.connected;
+  });
+  var mcPeers = (App.nodes || []).filter(function(n) {
+    return n.isMC && !n.isSelf && !n.isChannel;
+  });
+  var mcWithPos = mcPeers.filter(function(n) { return n.lat && n.lon; }).length;
+  var mcFav = mcPeers.filter(function(n) { return n.isFavorite; }).length;
+  var countsEl = document.getElementById('hud-mc-counts');
+  if (countsEl && scope === 'mc') {
+    countsEl.textContent = mcPeers.length + ' contacts \u00b7 '
+      + mcWithPos + ' with GPS \u00b7 ' + mcFav + ' starred';
+  }
+  var favBtn = document.getElementById('hud-mc-fav-btn');
+  if (favBtn) favBtn.classList.toggle('active', !!App.mcFavoritesOnly);
+
+  if (!mcEmpty) return;
+  if (scope !== 'mc') { mcEmpty.style.display = 'none'; return; }
+  mcEmpty.style.display = (mcConnected && mcPeers.length === 0) ? 'block' : 'none';
+}
+
+// Force the MC backend(s) to re-fetch their contact list instead of waiting
+// for the next 5s tick. Useful when the user just powered up the MC device
+// and doesn't want to sit staring at a blank rail.
+async function refreshMcContacts() {
+  var btn = document.getElementById('hud-mc-refresh-btn');
+  var statusEl = document.getElementById('hud-mc-refresh-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'PULLING\u2026'; }
+  if (statusEl) { statusEl.textContent = 'fetching from radio\u2026'; statusEl.style.color = 'var(--lo-faint)'; }
+  try {
+    var r = await fetch('/api/nodes/refresh_mc', { method: 'POST' });
+    var d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (statusEl) {
+      statusEl.textContent = d.mc_contact_count + ' contact(s) known';
+      statusEl.style.color = '#9b59b6';
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = 'refresh failed: ' + e.message;
+      statusEl.style.color = '#e74c3c';
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'PULL CONTACTS'; }
+  }
+}
+
+// Favourites-only filter for MC scope. Piggybacks on the existing node-list
+// sort path — we keep a flag on App and let renderNodeList / canvas draw
+// paths consult it alongside nodeInScope.
+function toggleMcFavoritesOnly() {
+  App.mcFavoritesOnly = !App.mcFavoritesOnly;
+  try { localStorage.setItem('loracle_mc_fav_only', App.mcFavoritesOnly ? '1' : '0'); } catch (e) {}
+  try { renderNodeList(); } catch (e) {}
+  try { updateHudScopeControls(); } catch (e) {}
+  try { updateHudNodesCount(); } catch (e) {}
 }
 
 // Sync the scope button visual state on first paint so a stored preference
@@ -3231,20 +3580,37 @@ function buildGraph(state) {
   knownNodes.forEach(function(n) { allIds[n] = true; });
   Object.keys(positions).forEach(function(n) { allIds[n] = true; });
 
-  // Add public channel 0 (always present when connected)
-  if (state.connected) {
-    allIds['meshtastic:channel:0'] = true;
-  }
-
   var backends = state.backends || [];
+  // Register a PUBLIC-CHANNEL pseudo-node for every connected backend so the
+  // sidebar's pinned rows and the canvas's "PUBLIC" ring can both reference
+  // them. MT gets the legacy "meshtastic:channel:0" id (existing bridge-relay
+  // paths already recognise it); MC gets "mc:channel:0".
+  var mtConnectedFlag = backends.some(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (p === 'mt' || p === 'meshtastic') && b.connected;
+  });
+  var mcConnectedFlag = backends.some(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (p === 'mc' || p === 'meshcore') && b.connected;
+  });
+  if (state.connected || mtConnectedFlag) allIds['meshtastic:channel:0'] = true;
+  if (mcConnectedFlag) allIds['mc:channel:0'] = true;
+
   // Collect every backend's self-node id so we can keep each "my radio" centered
   // and out of the peer list. Legacy selfId (first backend) is still used as a fallback.
   var selfIds = {};
   backends.forEach(function(b) { if (b.self_node_id) selfIds[b.self_node_id] = true; });
   if (backends.length > 0 && backends[0].self_node_id) selfId = backends[0].self_node_id;
 
-  // Check if node set actually changed — if not, just update data in place
-  var currentIds = Object.keys(allIds).sort().join(',');
+  // Check if node set actually changed — if not, just update data in place.
+  // Also fingerprint the connected-backend shape so attaching a MeshCore radio
+  // mid-session forces a rebuild: without this, a new MC backend is silently
+  // ignored and the MC "MY NODE" diamond never renders.
+  var backendFp = backends.map(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (b.id || p) + (b.connected ? ':1' : ':0') + ':' + (b.self_node_id || '');
+  }).sort().join('|');
+  var currentIds = Object.keys(allIds).sort().join(',') + '//' + backendFp;
   if (currentIds === _prevNodeIds && App.nodes.length > 0) {
     // Just update metadata on existing nodes (no position reset)
     App.nodes.forEach(function(n) {
@@ -3338,7 +3704,16 @@ function buildGraph(state) {
     var isMC = nid.indexOf('mc:') === 0;
     if (isChannel) {
       var chNum = nid.split(':').pop() || '0';
-      shortId = (chNum === '0') ? 'PUBLIC' : 'CH ' + chNum;
+      // When both MT and MC public channels exist on canvas, tag them so two
+      // "PUBLIC" rings aren't indistinguishable in ALL scope. When only one
+      // is present the generic "PUBLIC" label reads cleaner.
+      if (chNum === '0') {
+        shortId = (mtConnectedFlag && mcConnectedFlag)
+          ? (isMC ? 'PUBLIC MC' : 'PUBLIC MT')
+          : 'PUBLIC';
+      } else {
+        shortId = 'CH ' + chNum;
+      }
     }
     var cm = contactMeta[nid] || {};
     var displayLabel = cm.custom_name || m.long_name || m.short_name || shortId;
@@ -4606,6 +4981,89 @@ function bridgeSetStatus(msg, level) {
   el.style.color = (level === 'error') ? '#e74c3c' : 'var(--lo-faint)';
 }
 
+// Two-part bridge validation:
+//   (1) A real broadcast from each radio — proves outbound sends work and lets
+//       nearby peers receive the ping.
+//   (2) A synthetic "incoming peer" injection into the relay in both
+//       directions — proves the relay policy + dedup + send-out actually
+//       forwards cross-protocol. Broadcasts from our own radios never
+//       trigger the relay (it only observes incoming peer traffic), so this
+//       step is what actually exercises the bridge itself.
+async function bridgeSmokeTest() {
+  var btn = document.getElementById('bridge-smoke-btn');
+  var statusEl = document.getElementById('bridge-smoke-status');
+  var resultsEl = document.getElementById('bridge-smoke-results');
+  if (btn) { btn.disabled = true; btn.textContent = 'TESTING\u2026'; }
+  if (statusEl) { statusEl.textContent = 'Running smoke test\u2026'; statusEl.style.color = 'var(--lo-faint)'; }
+  if (resultsEl) resultsEl.innerHTML = '';
+  try {
+    var r = await fetch('/api/bridge/smoke_test', { method: 'POST' });
+    var d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    var results = d.results || [];
+    var broadcasts = results.filter(function(r) { return r.kind === 'broadcast'; });
+    var relays = results.filter(function(r) { return r.kind === 'relay'; });
+
+    function renderRow(res, kind) {
+      var proto = (res.protocol || '?').toUpperCase();
+      var colour = res.ok ? 'var(--lo-accent-2)' : '#e74c3c';
+      var marker = res.ok ? '\u2713' : '\u2717';
+      var detail = res.ok
+        ? (kind === 'relay' ? 'relay.observe() accepted (policy + send OK)' : 'broadcast sent on channel 0')
+        : (res.error || 'unknown error');
+      return '<div><span style="color:' + colour + ';font-weight:500">' + marker + ' ' + proto + '</span> \u2014 ' + escapeHtml(detail) + '</div>';
+    }
+
+    // Relay delta straight from the synchronous stats snapshot. No polling
+    // needed — the synthetic observe runs inline, so stats_after already
+    // reflects it.
+    var before = d.stats_before || {};
+    var after = d.stats_after || {};
+    function dirCount(snap, key) {
+      return (snap.by_direction && snap.by_direction[key] && snap.by_direction[key].relayed) || 0;
+    }
+    var mtMcDelta = dirCount(after, 'meshtastic->meshcore') - dirCount(before, 'meshtastic->meshcore');
+    var mcMtDelta = dirCount(after, 'meshcore->meshtastic') - dirCount(before, 'meshcore->meshtastic');
+
+    var html = '';
+    if (broadcasts.length) {
+      html += '<div style="color:var(--lo-dim);letter-spacing:0.1em;font-size:10px;margin-bottom:4px">1. BROADCAST</div>';
+      html += broadcasts.map(function(r) { return renderRow(r, 'broadcast'); }).join('');
+    }
+    if (relays.length) {
+      html += '<div style="color:var(--lo-dim);letter-spacing:0.1em;font-size:10px;margin:10px 0 4px">2. RELAY PATH (synthetic peer)</div>';
+      html += relays.map(function(r) { return renderRow(r, 'relay'); }).join('');
+      var deltaColour = (mtMcDelta + mcMtDelta > 0) ? 'var(--lo-accent-2)' : '#e67e22';
+      html += '<div style="margin-top:6px;color:' + deltaColour + '">Relay counters: mt\u2192mc +' + mtMcDelta + ', mc\u2192mt +' + mcMtDelta + '</div>';
+    }
+    html += '<div style="margin-top:8px;color:var(--lo-faint)">Ping text: <code style="background:var(--lo-bg-deep);padding:0 4px">' + escapeHtml(d.text || '') + '</code></div>';
+    if (!d.relay_enabled) {
+      html += '<div style="margin-top:4px;color:#e67e22">Auto-relay master is OFF. Turn on AUTO-BRIDGE above to route messages cross-protocol.</div>';
+    }
+    if (resultsEl) resultsEl.innerHTML = html;
+
+    // Status line — pick the most useful thing to say.
+    var broadcastOk = broadcasts.filter(function(r) { return r.ok; }).length;
+    var relayOk = relays.filter(function(r) { return r.ok; }).length;
+    if (relayOk > 0 && (mtMcDelta + mcMtDelta) >= relayOk) {
+      if (statusEl) { statusEl.textContent = '\u2713 Bridge confirmed end-to-end — ' + broadcastOk + ' broadcast(s), ' + relayOk + ' relay path(s) verified.'; statusEl.style.color = 'var(--lo-accent-2)'; }
+    } else if (relayOk > 0) {
+      if (statusEl) { statusEl.textContent = 'Relay accepted the synthetic message but counters did not move. Likely policy-blocked — check your AUTO-BRIDGE toggle or channel rules.'; statusEl.style.color = '#e67e22'; }
+    } else if (broadcastOk === 0) {
+      if (statusEl) { statusEl.textContent = 'No radios responded. Check the MT / MC pills in the header.'; statusEl.style.color = '#e74c3c'; }
+    } else if (broadcastOk === 1) {
+      if (statusEl) { statusEl.textContent = '1 radio broadcast OK, but both radios are needed to test the bridge. Attach a second radio.'; statusEl.style.color = '#e67e22'; }
+    } else {
+      if (statusEl) { statusEl.textContent = 'Broadcasts sent but the relay path was not exercised. See results below.'; statusEl.style.color = '#e67e22'; }
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Smoke test failed: ' + e.message; statusEl.style.color = '#e74c3c'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'RUN SMOKE TEST'; }
+  }
+}
+
 async function bridgePollStats() {
   try {
     var r = await fetch('/api/bridge/stats');
@@ -4719,6 +5177,16 @@ async function poll() {
       addBtn.textContent = mcOn ? '\u25C6 MC' : '+ RADIO';
       addBtn.classList.toggle('on', mcOn);
     }
+    // Mirror pill for the primary Meshtastic radio. Same shape + position as
+    // the MC pill, so both protocols get a "tap to open settings" affordance.
+    // Filled diamond (◆) when connected, hollow (◇) otherwise — visually
+    // mirroring how the MC pill swaps "+ RADIO" for "◆ MC".
+    var mtBtn = document.getElementById('hdr-manage-mt');
+    if (mtBtn) {
+      var mtOn = !!(mt && mt.connected);
+      mtBtn.textContent = mtOn ? '\u25C6 MT' : '\u25C7 MT';
+      mtBtn.classList.toggle('on', mtOn);
+    }
     // Single "any backend up" flag preserves legacy modal + toast behavior.
     var connected = (mt && mt.connected) || (mc && mc.connected);
     if (!connected) { try { connected = !!d.connected; } catch(e) {} }
@@ -4756,6 +5224,7 @@ async function poll() {
     // "visible/total" so it's clear there are hidden peers on the other mesh.
     App._hudTotal = d.node_count || 0;
     updateHudNodesCount();
+    updateHudScopeControls();
     document.getElementById('hud-msgs').textContent = d.message_count || 0;
     document.getElementById('hud-model').textContent = d.model || '--';
     document.getElementById('hud-uptime').textContent = formatUptime(d.uptime || 0);
@@ -5447,11 +5916,81 @@ function setNodeSort(sort, btn) {
   if (btn) btn.classList.add('active');
   renderNodeList();
 }
+// Header "◆ MT" pill handler — mirrors the MC pill. Opens the primary
+// Meshtastic self-window (same panel you'd see by clicking the orange MY
+// NODE dot on the canvas). If MT isn't connected yet, route to the connect
+// flow so the pill does something useful in either state.
+function showMtManage() {
+  var mtSelf = (App.nodes || []).find(function(n) {
+    return n.isSelf && !n.isMC;
+  });
+  if (mtSelf) { openSelfWindow(mtSelf); return; }
+  // No MT self-node materialised yet — fall back to the connection modal so
+  // the user can pair their first radio. showConnectModal is the same
+  // entry point the "no radio detected" path uses.
+  try { showConnectModal(); } catch (e) { /* if modal not ready, no-op */ }
+}
+
+// Open the existing float-window composer for a public-channel node. The
+// channel-0 pseudo-node may not exist in App.nodes yet if buildGraph has
+// not run since the relevant backend came up (first poll after attach), so
+// we synthesize a minimal stand-in that openFloatWindow+floatSend can use.
+function openPublicChannel(protocol) {
+  var id = protocol === 'mc' ? 'mc:channel:0' : 'meshtastic:channel:0';
+  var existing = (App.nodes || []).find(function(n) { return n.id === id; });
+  var label = protocol === 'mc' ? 'PUBLIC CHANNEL \u00b7 MESHCORE' : 'PUBLIC CHANNEL \u00b7 MESHTASTIC';
+  openFloatWindow(existing || {
+    id: id,
+    label: label,
+    isChannel: true,
+    isMC: protocol === 'mc',
+    hops: null,
+  });
+}
+
+// Render the pinned PUBLIC CHANNEL rows at the very top of the NODES sidebar.
+// Visibility tracks backend connected-state (from the header pill logic) so
+// the rows disappear when a radio is unplugged — we don't want to offer a
+// click target that returns "Radio not connected" every time.
+function renderPinnedChannels() {
+  var el = document.getElementById('ns-pinned');
+  if (!el) return;
+  var backends = (App.state && App.state.backends) || [];
+  var mtOn = backends.some(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (p === 'mt' || p === 'meshtastic') && b.connected;
+  });
+  var mcOn = backends.some(function(b) {
+    var p = String(b.protocol || '').toLowerCase();
+    return (p === 'mc' || p === 'meshcore') && b.connected;
+  });
+  var rows = [];
+  function row(proto, on) {
+    if (!on) return '';
+    var cls = proto === 'mc' ? 'lo-mc' : 'lo-mt';
+    var title = proto === 'mc' ? 'PUBLIC CHANNEL' : 'PUBLIC CHANNEL';
+    var sub = proto === 'mc' ? 'MESHCORE \u00b7 CH 0' : 'MESHTASTIC \u00b7 CH 0';
+    return '<div class="lo-ns-pinned-row ' + cls + '" onclick="openPublicChannel(\'' + proto + '\')" title="Broadcast on the 915MHz public channel (' + (proto === 'mc' ? 'MeshCore' : 'Meshtastic') + ')">' +
+      '<span class="lo-ns-pinned-icon"></span>' +
+      '<span class="lo-ns-pinned-title">' + title + '</span>' +
+      '<span class="lo-ns-pinned-sub">' + sub + '</span>' +
+    '</div>';
+  }
+  rows.push(row('mt', mtOn));
+  rows.push(row('mc', mcOn));
+  el.innerHTML = rows.join('');
+}
+
 function renderNodeList() {
+  renderPinnedChannels();
   var list = document.getElementById('ns-list');
   var filter = (document.getElementById('ns-search').value || '').toLowerCase();
   var items = App.nodes.filter(function(n) {
     if (n.isSelf) return false;
+    // Public-channel channel:0 pseudo-nodes are pinned at the top of the
+    // sidebar (see renderPinnedChannels). Skip them here so the same target
+    // doesn't appear twice.
+    if (n.id === 'meshtastic:channel:0' || n.id === 'mc:channel:0') return false;
     if (!nodeInScope(n)) return false;
     if (filter && n.label.toLowerCase().indexOf(filter) === -1 && n.id.toLowerCase().indexOf(filter) === -1) return false;
     return true;

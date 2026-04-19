@@ -2368,9 +2368,17 @@ class StandaloneBridge:
             # unified ("mc:...") id so the dashboard renders MC peers
             # even before they've sent any traffic.
             all_nodes = self._radio_manager.get_all_nodes()
+            added_mc = 0
             for uid in all_nodes:
+                if uid not in self._known_nodes and uid.startswith("mc:"):
+                    added_mc += 1
                 self._known_nodes.add(uid)
             self._node_count = len(self._known_nodes)
+            if added_mc:
+                logger.info(
+                    f"Node sync: merged {added_mc} new MeshCore contact(s) "
+                    f"(total tracked: {len(self._known_nodes)})"
+                )
         except Exception as e:
             logger.debug(f"Node sync error: {e}")
 
