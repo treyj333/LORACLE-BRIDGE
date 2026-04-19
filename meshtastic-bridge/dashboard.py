@@ -4135,6 +4135,47 @@ function renderCanvas() {
   var cx = w/2, cy = h/2;
   var isTraffic = App.view === 'traffic';
 
+  // ── Dot-grid texture ─────────────────────────────────────────────────────
+  // TE / Braun / industrial-panel inspired: a faint dot grid in world space
+  // so it drifts under the mesh when panning and scales with zoom. Every 5th
+  // intersection gets a larger dot so the eye reads a 5×5 "major" grid too
+  // — same grammar as graph paper or the OP-1 front panel. Skipped in
+  // TRAFFIC mode where the dimmed-non-active pass already carries its own
+  // visual weight and extra texture would muddy the signal.
+  if (!isTraffic) {
+    var gridStep = 36;
+    var dotColor = ink;
+    // Screen-density guard: if we zoom out so far that the grid collapses
+    // into a solid field, skip it. Same for extreme zoom-in where the
+    // dots become meaningless giant circles.
+    var screenStep = gridStep * App.zoom;
+    if (screenStep >= 10 && screenStep <= 240) {
+      var worldLeft = -App.panX / App.zoom;
+      var worldTop = -App.panY / App.zoom;
+      var worldRight = (w - App.panX) / App.zoom;
+      var worldBottom = (h - App.panY) / App.zoom;
+      // Snap to the grid so the dots don't shimmer during pan.
+      var gx0 = Math.floor(worldLeft / gridStep) * gridStep;
+      var gy0 = Math.floor(worldTop / gridStep) * gridStep;
+      // Counter-scale the radius so dots stay a constant on-screen size
+      // regardless of zoom — a consistent 1px "minor" / 1.6px "major".
+      var minorR = 0.9 / App.zoom;
+      var majorR = 1.7 / App.zoom;
+      ctx.fillStyle = dotColor;
+      for (var gx = gx0; gx <= worldRight; gx += gridStep) {
+        for (var gy = gy0; gy <= worldBottom; gy += gridStep) {
+          var isMajor = (Math.round(gx / gridStep) % 5 === 0) &&
+                        (Math.round(gy / gridStep) % 5 === 0);
+          ctx.globalAlpha = isMajor ? 0.10 : 0.045;
+          ctx.beginPath();
+          ctx.arc(gx, gy, isMajor ? majorR : minorR, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // In TRAFFIC mode, build a set of node IDs with recent messages
   var activeNodes = {};
   if (isTraffic && App.state && App.state.messages) {

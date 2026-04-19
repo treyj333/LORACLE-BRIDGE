@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 18:15] — Dot-grid texture on the mesh canvas (TE / Braun industrial-panel style)
+
+- What changed:
+  - **Mesh canvas now renders a faint dot-grid behind the nodes.** Painted inside the `ctx.translate(panX,panY) + ctx.scale(zoom,zoom)` block, right before the centre crosshair, so the grid lives in world space — it pans and zooms with the mesh instead of floating independently. Every 5th grid intersection gets a larger, slightly brighter dot so the eye naturally reads a 5×5 "major" grid on top of the fine "minor" grid, same grammar as graph paper or the OP-1 front panel. Dot radius is counter-scaled by `1/zoom` so on-screen size stays constant (~1px minor, 1.6px major) at any zoom level — the dots never bloat into giant circles zoomed-in nor collapse into a smeared field zoomed-out. Alpha is very low (0.045 / 0.10 against `--lo-ink`) so it reads as texture, never as signal.
+  - **Skipped in TRAFFIC view** where the existing "inactive nodes dim to 0.05 alpha" pass already carries a heavy visual load; overlaying a grid would muddy the active-vs-idle contrast the view is designed for.
+  - **Density guards** skip the grid when the on-screen step drops below 10 px (avoids a moiré-like smear at extreme zoom-out) or exceeds 240 px (avoids a sparse checkerboard feel at extreme zoom-in).
+- Why:
+  - User ask: "make a subtle textured background on the mesh, in the style that we have going like teenage engineering or something like that." The LORACLE brand already leans into TE / Braun / Swiss industrial — monospace type, bordered pill chrome, two-letter protocol tags — but the canvas itself was a solid void, which didn't match. A proper TE-style grid needed to (a) be world-space anchored so pan/zoom feels spatial, (b) stay well below the mesh's visual weight so the nodes and edges remain the primary signal, (c) scale without looking silly at any zoom level, and (d) use the existing ink colour so it adapts to the light/dark theme toggle automatically.
+- Impact on project goals:
+  - Pure visual polish — no logic or API changes. Brings the canvas in line with the rest of the dashboard's industrial-panel feel, and gives pan/zoom a sense of place (you can see you're moving through a grid-plane instead of a featureless void). Low alpha + counter-scaled dots keep the texture from ever competing with node/edge rendering; force-directed layout and hit testing are untouched.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `drawMesh()` gains a dot-grid pass between the zoom transform and the centre crosshair.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 17:55] — README refresh for MC parity, icon language, public-channel quick-send, bridge default-on
 
 - What changed:
