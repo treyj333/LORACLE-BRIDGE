@@ -141,6 +141,38 @@ class TestRelayObserve(unittest.TestCase):
         relay.observe("meshtastic", "!abc", "hi2", 0, False)
         self.assertEqual(len(sends), 1)
 
+    def test_stats_by_direction_always_present(self):
+        """A fresh relay must expose both canonical direction keys at zero so
+        the BRIDGE UI can render symmetric MT↔MC columns from first paint —
+        without them, the column for a silent direction would collapse."""
+        relay, _ = self._make_relay()
+        s = relay.stats()
+        self.assertIn("by_direction", s)
+        self.assertEqual(
+            set(s["by_direction"].keys()),
+            {"meshtastic->meshcore", "meshcore->meshtastic"},
+        )
+        for d, counts in s["by_direction"].items():
+            self.assertEqual(counts, {"relayed": 0, "dropped": 0}, msg=d)
+
+    def test_stats_by_direction_splits_relay_and_drop(self):
+        """One MT→MC relay + one MC→MT policy-drop should land in the right
+        buckets, and the aggregate totals should still add up."""
+        # Allowlist only meshtastic's ch0 — so MT traffic on ch0 relays and
+        # MC traffic gets policy-dropped regardless of channel.
+        relay, _ = self._make_relay(policy=ChannelAllowlist([("meshtastic", 0)]))
+        relay.observe("meshtastic", "!abc", "hi", 0, False)       # MT→MC relayed
+        relay.observe("meshcore", "abcdef", "nope", 0, False)     # MC→MT dropped (policy)
+        s = relay.stats()
+        mt_mc = s["by_direction"]["meshtastic->meshcore"]
+        mc_mt = s["by_direction"]["meshcore->meshtastic"]
+        self.assertEqual(mt_mc["relayed"], 1)
+        self.assertEqual(mt_mc["dropped"], 0)
+        self.assertEqual(mc_mt["relayed"], 0)
+        self.assertEqual(mc_mt["dropped"], 1)
+        self.assertEqual(s["relayed"], 1)
+        self.assertEqual(s["dropped"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

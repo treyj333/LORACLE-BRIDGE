@@ -2183,8 +2183,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-bridge-title { display: flex; align-items: baseline; gap: 12px; font-size: 12px; letter-spacing: 0.14em; }
 .lo-bridge-badge { font-size: 9px; letter-spacing: 0.12em; padding: 2px 8px; background: var(--lo-divider); color: var(--lo-ink); border-radius: 2px; }
 .lo-bridge-badge.on { background: #27ae60; color: #fff; }
-.lo-bridge-stats { display: flex; gap: 16px; font-size: 10px; color: var(--lo-dim); letter-spacing: 0.08em; }
+.lo-bridge-stats { display: flex; gap: 18px; font-size: 10px; color: var(--lo-dim); letter-spacing: 0.08em; align-items: flex-start; }
 .lo-bridge-stats b { color: var(--lo-ink); font-weight: 600; margin-left: 4px; }
+.lo-bridge-stat-col { display: flex; flex-direction: column; gap: 2px; padding: 4px 10px; border: 1px solid var(--lo-divider); border-radius: 2px; min-width: 96px; }
+.lo-bridge-stat-dir { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; }
 .lo-bridge-panel { padding: 16px 20px; display: flex; flex-direction: column; gap: 18px; max-width: 900px; }
 .lo-bridge-section { border: 1px solid var(--lo-divider); padding: 12px 14px; background: var(--lo-bg-deep); }
 .lo-bridge-section-title { font-size: 10px; letter-spacing: 0.14em; color: var(--lo-dim); margin-bottom: 10px; }
@@ -2209,6 +2211,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-bridge-flow-row:last-child { border-bottom: none; }
 .lo-bridge-flow-row .time { color: var(--lo-faint); }
 .lo-bridge-flow-row .dir { color: var(--lo-accent); font-weight: 600; }
+.lo-bridge-flow-row .dir.dir-mt { color: var(--lo-accent-2); }  /* MT → MC */
+.lo-bridge-flow-row .dir.dir-mc { color: #9b59b6; }              /* MC → MT */
 .lo-bridge-flow-row .sender { color: var(--lo-ink); }
 .lo-bridge-flow-row .text { color: var(--lo-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lo-bridge-flow-empty { color: var(--lo-faint); text-align: center; padding: 28px 10px; font-size: 10px; }
@@ -2371,9 +2375,27 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <span class="lo-bridge-badge" id="bridge-enabled-badge">OFF</span>
     </div>
     <div class="lo-bridge-stats" id="bridge-stats">
-      <span>relayed: <b id="bridge-relayed">0</b></span>
-      <span>dropped: <b id="bridge-dropped">0</b></span>
-      <span>dedup: <b id="bridge-dedup">0</b></span>
+      <!-- Two mirrored direction columns so MT and MC get equal screen real
+           estate. The aggregate totals live in #bridge-relayed / #bridge-dropped
+           (hidden inputs, kept for anything that still reads the old shape). -->
+      <span class="lo-bridge-stat-col" title="Messages sent from Meshtastic to MeshCore">
+        <span class="lo-bridge-stat-dir" style="color:var(--lo-accent-2)">mt → mc</span>
+        <span>relayed: <b id="bridge-mt-mc-relayed">0</b></span>
+        <span>dropped: <b id="bridge-mt-mc-dropped">0</b></span>
+      </span>
+      <span class="lo-bridge-stat-col" title="Messages sent from MeshCore to Meshtastic">
+        <span class="lo-bridge-stat-dir" style="color:#9b59b6">mc → mt</span>
+        <span>relayed: <b id="bridge-mc-mt-relayed">0</b></span>
+        <span>dropped: <b id="bridge-mc-mt-dropped">0</b></span>
+      </span>
+      <span class="lo-bridge-stat-col" title="Dedup cache size (messages remembered across both directions)">
+        <span class="lo-bridge-stat-dir">dedup</span>
+        <span><b id="bridge-dedup">0</b></span>
+      </span>
+      <!-- Legacy aggregate totals, kept hidden so existing code/tests that
+           still look for them keep working. -->
+      <b id="bridge-relayed" style="display:none">0</b>
+      <b id="bridge-dropped" style="display:none">0</b>
     </div>
   </div>
 
@@ -4517,6 +4539,16 @@ async function bridgePollStats() {
     document.getElementById('bridge-relayed').textContent = d.relayed || 0;
     document.getElementById('bridge-dropped').textContent = d.dropped || 0;
     document.getElementById('bridge-dedup').textContent = d.dedup_size || 0;
+    // Per-direction breakdown — surfaced as two mirrored columns so neither
+    // protocol visually dominates the stats row. Keys from the backend are
+    // always present even at zero (see Relay.stats() in bridge/relay.py).
+    var by = (d && d.by_direction) || {};
+    var mtmc = by['meshtastic->meshcore'] || {};
+    var mcmt = by['meshcore->meshtastic'] || {};
+    document.getElementById('bridge-mt-mc-relayed').textContent = mtmc.relayed || 0;
+    document.getElementById('bridge-mt-mc-dropped').textContent = mtmc.dropped || 0;
+    document.getElementById('bridge-mc-mt-relayed').textContent = mcmt.relayed || 0;
+    document.getElementById('bridge-mc-mt-dropped').textContent = mcmt.dropped || 0;
   } catch(e) {}
 }
 
@@ -4540,16 +4572,21 @@ function bridgeRenderFlow(events) {
   var box = document.getElementById('bridge-flow-log');
   // Clear empty-state if present
   if (box.querySelector('.lo-bridge-flow-empty')) box.innerHTML = '';
-  // Prepend newest events
+  // Prepend newest events. Each row's `dir` cell carries a data-source class so
+  // the arrow can pick up the source-protocol colour (teal for MT→MC, purple
+  // for MC→MT) — readers can tell direction at a glance instead of parsing
+  // "mt→mc" vs "mc→mt" text.
   var html = events.slice().reverse().map(function(e) {
     var time = formatTime(e.timestamp);
-    var dir = (e.source === 'meshtastic' ? 'mt\u2192mc' : 'mc\u2192mt');
+    var fromMT = (e.source === 'meshtastic');
+    var dir = fromMT ? 'mt\u2192mc' : 'mc\u2192mt';
+    var dirClass = fromMT ? 'dir dir-mt' : 'dir dir-mc';
     var sender = e.sender_display || e.sender || '';
     var text = (e.text || '').replace(/^\[.+?\]\s*/, '');
     return (
       '<div class="lo-bridge-flow-row">' +
         '<span class="time">' + escapeHtml(time) + '</span>' +
-        '<span class="dir">' + dir + '</span>' +
+        '<span class="' + dirClass + '">' + dir + '</span>' +
         '<span class="sender">' + escapeHtml(sender) + '</span>' +
         '<span class="text">' + escapeHtml(text) + '</span>' +
       '</div>'

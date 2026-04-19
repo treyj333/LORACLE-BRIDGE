@@ -4,6 +4,26 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 00:15] — BRIDGE tab: per-direction stats + coloured flow-log arrows
+
+- What changed:
+  - **`Relay` tracks per-direction counters.** `bridge/relay.py` gained `_relayed_by_direction` + `_dropped_by_direction` dicts keyed by `"meshtastic->meshcore"` / `"meshcore->meshtastic"`, bumped alongside the existing aggregate counters at every in-loop drop site (DM guard, policy reject, dedup, rate limit) and every successful relay. `stats()` surfaces them under a new `by_direction` block that always populates both canonical keys even at zero, so the UI never has to guess-and-default to "render the other side as empty."
+  - **Two new unit tests.** `test_stats_by_direction_always_present` proves the block is symmetric from birth (both keys, both zeroed). `test_stats_by_direction_splits_relay_and_drop` uses a `ChannelAllowlist([("meshtastic", 0)])` policy to route one MT→MC message through and one MC→MT message into a policy drop, then asserts the per-direction buckets split correctly and the aggregate totals still add up.
+  - **BRIDGE tab stats row redesigned.** `#bridge-stats` used to be a flat trio (`relayed / dropped / dedup`) that didn't distinguish direction. Now it's three bordered columns: MT → MC (teal), MC → MT (purple), DEDUP. Each direction column shows its own `relayed` and `dropped` counts. The legacy `#bridge-relayed` / `#bridge-dropped` elements are kept as hidden aggregates so any external integration or test that still reads the old ids keeps working.
+  - **Flow-log arrows colour by source.** Each `.lo-bridge-flow-row .dir` cell now gets a `dir-mt` (teal) or `dir-mc` (purple) class based on `event.source`. Users can eyeball direction from the colour instead of parsing the `mt→mc` / `mc→mt` text — matches the scope selector and the canvas node colours.
+  - **CSS additions.** `.lo-bridge-stat-col` (bordered flex column), `.lo-bridge-stat-dir` (upper-case direction label), `.dir.dir-mt` / `.dir.dir-mc` (protocol-coloured arrows in the flow log).
+- Why:
+  - Phase 4 of the equal-citizens work. The relay stats were technically symmetric (MT+MC traffic both counted in the same totals) but that framing hid which direction was actually doing the heavy lifting — made it impossible to tell at a glance whether an MT-heavy mesh was dominating or whether the bridge was balanced. Showing two mirrored columns gives MT and MC equal screen real estate in the stats row, which is exactly the visual grammar the rest of the app already uses (scope selector, badges, self-nodes).
+- Impact on project goals:
+  - The BRIDGE tab now mirrors the rest of the equal-citizens UI: every protocol-tagged surface shows MT and MC with matching weight and protocol-coded colour. Per-direction numbers also make it much easier to notice when one half of the bridge is broken (e.g. MT→MC relaying fine, MC→MT dropping everything) — previously that would be invisible behind the aggregate. No schema changes; the `by_direction` block is additive so existing consumers of `/api/bridge/stats` ignore it cleanly.
+- Files modified:
+  - `meshtastic-bridge/bridge/relay.py` — `Dict` import; two new instance dicts; `_bump_direction` helper; bumps added at DM-drop / policy-drop / dedup-drop / rate-limit-drop / relay-success; `stats()` includes the `by_direction` block with both canonical keys always populated.
+  - `meshtastic-bridge/dashboard.py` — `#bridge-stats` rewritten into three bordered columns (MT→MC, MC→MT, dedup); legacy aggregate spans kept hidden; `bridgePollStats()` reads `d.by_direction` and fills the new DOM ids; `bridgeRenderFlow()` tags arrows with `dir-mt` / `dir-mc`; new CSS for the columns and flow-row colours.
+  - `meshtastic-bridge/tests/test_bridge_relay.py` — two new test cases on `Relay.stats().by_direction`.
+- Tests: 308/308 pass.
+
+---
+
 ## [2026-04-18 01:55] — MT/MC equal-citizens pass (Phase 2b: MeshCore-first primary connect)
 
 - What changed:

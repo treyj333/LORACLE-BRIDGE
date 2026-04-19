@@ -17,7 +17,7 @@ Intentional boundaries:
 
 import logging
 import re
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from bridge.dedup import RelayDedupCache
 from bridge.identity import format_bridged, looks_bridged
@@ -77,6 +77,21 @@ class Relay:
         self._relay_count = 0
         self._drop_count = 0
         self._rate_limited_count = 0
+        # Per-direction breakdown so the BRIDGE dashboard can show two
+        # mirrored MT↔MC columns instead of a single combined total.
+        # Keys are "<source>-><dest>" using the same protocol strings the
+        # rest of this module emits (e.g. "meshtastic->meshcore").
+        self._relayed_by_direction: Dict[str, int] = {}
+        self._dropped_by_direction: Dict[str, int] = {}
+
+    def _bump_direction(
+        self, counter: Dict[str, int], source: str, dest: str,
+    ) -> None:
+        """Bump the per-direction counter dict by one for the ``source->dest``
+        key.  Used alongside the aggregate counters so the dashboard can show
+        MT↔MC traffic side-by-side without a second pass over the event log."""
+        key = f"{source}->{dest}"
+        counter[key] = counter.get(key, 0) + 1
 
     def set_policy(self, policy: Policy) -> None:
         """Hot-swap policy (for live config reloads). Thread-safe enough —
@@ -130,15 +145,24 @@ class Relay:
             # conversation is a trust decision, not a priority decision.
             if is_dm:
                 self._drop_count += 1
+                self._bump_direction(
+                    self._dropped_by_direction, source_protocol, dest,
+                )
                 continue
             if not force_relay and not self._policy.should_relay(
                 source_protocol, dest, sender, text, channel, is_dm
             ):
                 self._drop_count += 1
+                self._bump_direction(
+                    self._dropped_by_direction, source_protocol, dest,
+                )
                 continue
             # Loop guard #2: within-TTL fingerprint match.
             if self._dedup.seen(source_protocol, dest, sender, text):
                 self._drop_count += 1
+                self._bump_direction(
+                    self._dropped_by_direction, source_protocol, dest,
+                )
                 logger.debug(
                     f"[bridge] dedup suppressed {source_protocol}->{dest} "
                     f"from {sender}: {text[:40]!r}"
@@ -156,6 +180,9 @@ class Relay:
             ):
                 self._rate_limited_count += 1
                 self._drop_count += 1
+                self._bump_direction(
+                    self._dropped_by_direction, source_protocol, dest,
+                )
                 logger.info(
                     f"[bridge] rate-limited {source_protocol}->{dest} ch{channel} "
                     f"from {sender}"
@@ -179,6 +206,9 @@ class Relay:
 
             self._dedup.record(source_protocol, dest, sender, text)
             self._relay_count += 1
+            self._bump_direction(
+                self._relayed_by_direction, source_protocol, dest,
+            )
             delivered.append(dest)
             logger.info(
                 f"[bridge] {source_protocol}->{dest} ch{channel} "
@@ -200,12 +230,27 @@ class Relay:
         return delivered
 
     def stats(self) -> dict:
-        """Counters for the BRIDGE UI tab (Phase 3+)."""
+        """Counters for the BRIDGE UI tab (Phase 3+).
+
+        Includes a ``by_direction`` block so the dashboard can show MT↔MC
+        traffic in mirrored columns.  Keys are ``"<src>-><dst>"`` using the
+        same protocol strings the relay emits on events — the UI shortens
+        them to ``mt->mc`` / ``mc->mt`` for display.  Always populates both
+        canonical directions (even at zero) so a silent direction still has
+        a column to show — otherwise the UI would look asymmetric."""
+        directions = ["meshtastic->meshcore", "meshcore->meshtastic"]
+        by_direction = {}
+        for d in directions:
+            by_direction[d] = {
+                "relayed": self._relayed_by_direction.get(d, 0),
+                "dropped": self._dropped_by_direction.get(d, 0),
+            }
         s = {
             "relayed": self._relay_count,
             "dropped": self._drop_count,
             "rate_limited": self._rate_limited_count,
             "dedup_size": self._dedup.size(),
+            "by_direction": by_direction,
         }
         if self._rate_limiter is not None:
             max_events, window = self._rate_limiter.limits()

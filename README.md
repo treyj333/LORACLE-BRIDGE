@@ -232,6 +232,8 @@ Neither protocol is the "default"; every node gets an equal teal `mt` or purple 
 
 The first-run wizard is protocol-agnostic: step 1 is labelled "PRIMARY RADIO" (not "MESHTASTIC"), step 2 is "SECOND RADIO (OPTIONAL)", and success copy frames the second radio as a cross-network bridge rather than an optional add-on. Pick `MeshCore` from the protocol dropdown in step 1 and the first-connect flow will wire up an MC radio (same CTA, same success panel, just in MC purple) — users running a MeshCore-only rig never have to touch the "add secondary" path.
 
+The BRIDGE tab's stats row is split into two mirrored direction columns — `MT → MC` (teal) and `MC → MT` (purple) — each showing its own `relayed` / `dropped` counts pulled from `Relay.stats().by_direction`. Flow-log arrows are colour-coded by source protocol, so you can eyeball which direction a relay event came from without reading the `mt→mc` / `mc→mt` text.
+
 ### Node List Sidebar
 
 Click the **☰** button in the title bar to open the node sidebar. Lists all nodes with hops, last heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
