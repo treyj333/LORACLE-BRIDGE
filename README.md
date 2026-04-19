@@ -226,7 +226,7 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 
 ### Protocol Scope Selector — `[ ALL | MT | MC ]`
 
-Sits in the top bar next to the connection dots. Switches every view — canvas, node-list sidebar, map markers, click targets — to show only Meshtastic nodes, only MeshCore nodes, or both. The active button glows teal for MT and purple for MC to match the node colours. Choice is persisted in `localStorage`, so reloading the page remembers what you were looking at.
+Sits in the top bar next to the connection dots. Switches every view — canvas, node-list sidebar, map markers, click targets, and the HUD `NODES` counter (shown as `visible / total` when filtered) — to show only Meshtastic nodes, only MeshCore nodes, or both. The active button glows teal for MT and purple for MC to match the node colours. Choice is persisted in `localStorage`, so reloading the page remembers what you were looking at.
 
 Neither protocol is the "default"; every node gets an equal teal `mt` or purple `mc` badge in the sidebar, and when two radios are connected the centre of the mesh shows both "MY MT" and "MY MC" self-nodes side-by-side. Feature endpoints that only one protocol implements (traceroute, writable LoRa config) return a clean "not supported on this radio" toast instead of silently failing.
 

@@ -3043,6 +3043,29 @@ function nodeInScope(n) {
   return s === 'mc' ? isMC : !isMC;
 }
 
+// Recompute the NODES counter in the HUD so it reflects the current scope.
+// Called both on poll (when node_count updates from the backend) and on
+// scope change (when the visible subset changes client-side).
+function updateHudNodesCount() {
+  var el = document.getElementById('hud-nodes');
+  if (!el) return;
+  var scope = App.scope || 'all';
+  if (scope === 'all') {
+    el.textContent = App._hudTotal || 0;
+    return;
+  }
+  // Count visible peer nodes client-side — exclude self-nodes and channels
+  // so the figure matches what the sidebar shows.
+  var visible = 0;
+  (App.nodes || []).forEach(function(n) {
+    if (n.isSelf || n.isChannel) return;
+    if (nodeInScope(n)) visible++;
+  });
+  // "visible / total" makes it obvious there are hidden peers on the other mesh.
+  var total = App._hudTotal || 0;
+  el.textContent = total && total !== visible ? (visible + ' / ' + total) : visible;
+}
+
 function setScope(scope) {
   if (scope !== 'all' && scope !== 'mt' && scope !== 'mc') scope = 'all';
   App.scope = scope;
@@ -3054,6 +3077,7 @@ function setScope(scope) {
   // sidebar list is event-driven so nudge it. Map view layers also need a refresh.
   try { renderNodeList(); } catch(e) {}
   try { if (typeof updateMapMarkers === 'function') updateMapMarkers(); } catch(e) {}
+  try { updateHudNodesCount(); } catch(e) {}
 }
 
 // Sync the scope button visual state on first paint so a stored preference
@@ -4727,8 +4751,11 @@ async function poll() {
     }
     App._lastKnownNodeIds = new Set(currIds);
 
-    // HUD
-    document.getElementById('hud-nodes').textContent = d.node_count || 0;
+    // HUD — node count honours the current protocol scope so the "0 NODES"
+    // figure reflects what the user can actually see. When filtered we show
+    // "visible/total" so it's clear there are hidden peers on the other mesh.
+    App._hudTotal = d.node_count || 0;
+    updateHudNodesCount();
     document.getElementById('hud-msgs').textContent = d.message_count || 0;
     document.getElementById('hud-model').textContent = d.model || '--';
     document.getElementById('hud-uptime').textContent = formatUptime(d.uptime || 0);

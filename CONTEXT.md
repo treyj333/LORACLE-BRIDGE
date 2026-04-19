@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 01:40] — Hardware smoke-test plan + HUD nodes counter respects scope
+
+- What changed:
+  - **New `SMOKE_TEST.md`** at the repo root — a hand-run checklist covering dual-radio connect, protocol scope selector, MeshCore-first connect, cross-protocol DM (both local and remote-via-`!dm`), BRIDGE tab per-direction stats, feature-parity 501s for MC, and the deliberate scope-is-visibility-not-access-control behaviour. Written so the user can run through it against their actual MT + MC rigs on their own time and capture findings to chat. First draft; expected to evolve.
+  - **HUD NODES counter now respects `App.scope`.** The top-left HUD used to show the raw backend total (`d.node_count`) regardless of filter, which contradicted everything else scope-aware in the UI. Now: scope='all' shows the plain total; scope='mt' or 'mc' shows `"visible / total"` (e.g. `3 / 5`) so the user can see both the filtered subset and the fact that hidden peers exist on the other mesh. Implemented as `updateHudNodesCount()` called from the poll loop (replacing the direct write) and from `setScope()` so the number updates instantly on filter change, not only on the next poll.
+- Why:
+  - B completes the equal-citizens rollout by giving you something to run against real hardware — the only thing our Phase 1-4 + A work hasn't been touched by. C fixes the last visual inconsistency in the scope selector: every other scope-respecting surface (canvas, sidebar, map, bridge stats, self-nodes) already flips with the filter; the HUD counter was a lone holdout that always showed the full mesh regardless. Small polish but it closes the loop on what "scope selector" means from a user-perception standpoint.
+- Impact on project goals:
+  - No functional changes from B — it's purely documentation/test-ops. C is a two-line logic change plus a new helper; no regressions, no perf cost (only touches `textContent` when the filter changes or the poll fires, same cadence as before). Combined, Phase 1-4 plus A-C delivers the full "MT and MC are equals" vision end-to-end, and gives you a path to validate it on hardware before we move on.
+- Files modified:
+  - `SMOKE_TEST.md` (new) — nine-section hand-run checklist keyed to concrete commits and expected UI text.
+  - `meshtastic-bridge/dashboard.py` — new `updateHudNodesCount()` helper; called from `setScope()` and from the main poll's HUD block; `App._hudTotal` stashes the last reported backend total so scope changes can recompute without waiting for the next poll.
+- Tests: 315/315 pass (no new tests — the behaviour is client-side DOM manipulation that our test harness doesn't cover, validated via preview-eval with fake state: `all → "5"`, `mt → "3 / 5"`, `mc → "2 / 5"`).
+
+---
+
 ## [2026-04-19 01:05] — Cross-protocol DM via `!dm <name-or-id> <text>`
 
 - What changed:
