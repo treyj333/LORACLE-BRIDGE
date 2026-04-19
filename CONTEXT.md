@@ -4,6 +4,30 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 16:45] — MC canvas edges, per-protocol channel roots, wider MT/MC self gap, canvas zoom, MC device-query cache
+
+- What changed:
+  - **MC peers now draw edges between each other instead of dangling off the MT self-node.** `buildGraph()`'s same-protocol link filter had a `!c.isSelf || …` guard that let cross-protocol self-nodes through as candidates. A fresh MC peer with no GPS would fall into the hash-assigned sameProto fallback (`c.isSelf || …`) which always included MT self, so the peer randomly linked to MT. In MC scope `nodeInScope()` filtered the MT self-node out, and with it the link — so MC scope showed a scatter of dots with no visible topology. Fixed by tightening both filters to strict protocol match (`!!c.isMC === !!n.isMC`). MT and MC trees now stay cleanly separate; MC peers root to MY MC, MT peers to MY MT.
+  - **`mc:channel:0` now links to MY MC, not MY MT.** The channel-to-self-root loop previously hard-coded `mtRoot` for every channel, so the MC public-channel pseudo-node drew a line back to the Meshtastic self-node — confusing in ALL scope and invisible in MC scope. Now: `chRoot = n.isMC ? mcRoot : mtRoot`.
+  - **MT and MC self-nodes now sit 180 px apart (was 36 px).** When two radios are connected, the `selfOffsets` anchors moved from ±18 px to ±90 px so the two sub-trees root at visibly distinct hubs instead of piling up at the centre. Initial impulse was to bump the global force constants too, but that rippled every peer cluster — not what we wanted. Global spacing stays at the original values (charge -60, link distance 60, collision 25); only the self-node gap widened.
+  - **Canvas now supports mouse-wheel + trackpad-pinch zoom.** New `App.zoom` (default 1, clamped 0.3–4) applied via `ctx.scale(z, z)` after the existing pan translate. Wheel handler uses `e.preventDefault()` + `Math.exp(-deltaY * 0.0015)` for smooth exponential scaling, and anchors the zoom on the cursor world-position so pointing at a node and zooming in keeps that node under the cursor (standard map-app behaviour). macOS trackpad pinch events land here as synthetic `wheel` events with `ctrlKey` so the same handler covers both gestures. Click + hover hit-tests were updated to divide the screen → world math by `App.zoom` (with a world-space click radius of `60 / zoom` so hit targets feel the same size on screen at any zoom level). Double-click now resets pan AND zoom, giving a reliable "home" gesture.
+  - **MC backend caches `get_self_info()` for 30s + cancels timed-out device-query tasks.** The dashboard polls `/api/state` every ~2s, which was calling `get_self_info()` → `send_device_query()` → 10s timeout on every poll. Each dropped/timed-out future left an asyncio Task pending in the event loop, which later logged `Task was destroyed but it is pending!` when GC collected the coroutine (seen ~3×/minute in the user's live log). Fix: 30s TTL cache on the device info dict (it's mostly static), explicit `future.cancel()` on timeout, and a dropped-timeout also pushes the next retry out the full TTL instead of hammering the radio every 2s.
+- Why:
+  - User report on actual hardware:
+    1. MC scope showed 0/80 nodes with no visible mesh because MC peers had no edges drawn (root cause: they were all latched onto MT self, which MC scope hid).
+    2. Both PUBLIC channel rings gravitated to MT MY NODE on the canvas — wrong mental model; each channel should attach to the radio that actually speaks it.
+    3. Two MY NODE anchors packed too close together so the MT and MC trees tangled visually at the centre.
+    4. User wanted zoom because 80 MT nodes on a laptop screen are small, and wanted to pinch-zoom on a trackpad naturally.
+    5. The live `standalone_bridge` log was spamming "Task was destroyed but it is pending" every ~20s from the `send_device_query()` asyncio coroutines — harmless but noisy, and it was stressing the BLE-paired MC radio with a query every dashboard poll.
+- Impact on project goals:
+  - MC scope is visually honest now — it draws the MeshCore sub-tree as its own connected graph instead of a scatter of dangling dots. ALL scope reads correctly too: MT and MC render as two visibly-separate trees rooted 180 px apart with their respective public-channel rings attached to the correct self. Zoom makes the dashboard usable at 50–100 node densities on small screens. MC backend stops stressing the radio and quiets the log.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `buildGraph()` link-filter guards; channel-root assignment; `selfOffsets` widened; new `App.zoom` state; wheel/pinch handler + cursor-anchored zoom math; draw-loop `ctx.scale()`; click + hover hit tests use `App.zoom`; double-click resets zoom too.
+  - `meshtastic-bridge/radio/meshcore_backend.py` — `_self_info_cache` / `_self_info_last_fetch` / `_self_info_ttl` state; `get_self_info()` returns cached copy within TTL, cancels pending future on timeout, shortens device-query timeout from 10s to 5s.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 15:45] — MC parity pass: MY MC self-node, pinned public channels, ◆ MT pill, smoke-test button, dashboard crash fixes
 
 - What changed:

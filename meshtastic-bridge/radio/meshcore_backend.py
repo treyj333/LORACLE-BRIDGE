@@ -54,6 +54,14 @@ class MeshCoreBackend(RadioBackend):
         self._thread: Optional[threading.Thread] = None
         self._contacts: Dict[str, dict] = {}
         self._subscriptions = []
+        # Device-query cache. get_self_info() is called on every /api/state
+        # poll (every ~2s from the dashboard); without a cache the MC radio
+        # was getting a send_device_query() round trip each poll, and every
+        # timeout/drop left an asyncio Task pending in the event loop which
+        # later logged "Task was destroyed but it is pending!" on GC.
+        self._self_info_cache: Dict[str, object] = {"self_node_id": None}
+        self._self_info_last_fetch: float = 0.0
+        self._self_info_ttl: float = 30.0
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -218,19 +226,46 @@ class MeshCoreBackend(RadioBackend):
         return result
 
     def get_self_info(self) -> dict:
-        info = {"self_node_id": None}
+        """Return cached device info (hw / fw / self_node_id).
+
+        Cached for ``self._self_info_ttl`` seconds (default 30s). The
+        dashboard polls ``/api/state`` every ~2s; without the cache, every
+        poll fired a ``send_device_query()`` round trip at the MC radio,
+        and any timeout left an asyncio Task pending in the event loop
+        (surfaced later as "Task was destroyed but it is pending!" when
+        GC collected the coroutine). We also cancel the underlying future
+        on timeout so the task is torn down cleanly instead of lingering.
+        """
         if self._meshcore is None or self._loop is None:
-            return info
+            return dict(self._self_info_cache)
+        now = time.time()
+        if (now - self._self_info_last_fetch) < self._self_info_ttl:
+            return dict(self._self_info_cache)
+        future = None
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._meshcore.commands.send_device_query(), self._loop
             )
-            result = future.result(timeout=10)
+            result = future.result(timeout=5)
             if hasattr(result, "payload") and isinstance(result.payload, dict):
-                info.update(result.payload)
+                # Merge in place so callers see the latest fields without
+                # overwriting any we've cached from a prior successful run.
+                self._self_info_cache.update(result.payload)
+            self._self_info_last_fetch = now
         except Exception as e:
+            # Timeout or any other error — cancel the still-running
+            # coroutine so it doesn't linger as a pending Task on the
+            # event loop (which is what produces the GC warning).
+            if future is not None and not future.done():
+                try:
+                    future.cancel()
+                except Exception:
+                    pass
+            # Push the next retry out by the full TTL instead of hammering
+            # the radio on every 2s dashboard poll when it's misbehaving.
+            self._self_info_last_fetch = now
             logger.debug(f"MeshCore device query failed: {e}")
-        return info
+        return dict(self._self_info_cache)
 
     def get_connection_address(self) -> str:
         if self._connection_type == "ble":

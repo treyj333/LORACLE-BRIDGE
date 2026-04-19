@@ -211,7 +211,7 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 - **Color nodes by device type**: the **HW COLOR** button in the HUD is **on by default** — T-Beam, Heltec, RAK, T-Deck, Station, Nano each get a distinct color. A legend appears under the HUD listing the models in view. Toggle off and your preference persists across sessions.
 - **Message send status**: outbound messages show a pill next to the text — ⧗ (sending, pulsing), → (sent), ✓ (radio ACK), ✓✓ (delivered), ✗ (failed). Failures are surfaced in-UI instead of vanishing silently.
 
-**Drag the canvas** to pan around and see nodes outside the viewport. **Double-click** to reset the view. Nodes gently drift and breathe when the mesh is idle. A toast fires whenever a new node comes online mid-session.
+**Drag the canvas** to pan around and see nodes outside the viewport. **Scroll wheel or trackpad-pinch** to zoom in and out (zoom anchors on the cursor, like a map app). **Double-click** to reset both pan and zoom. Nodes gently drift and breathe when the mesh is idle. A toast fires whenever a new node comes online mid-session.
 
 ### Views
 

@@ -3288,6 +3288,7 @@ var App = {
   ribbonData: [],
   panX: 0,
   panY: 0,
+  zoom: 1,                // canvas zoom level; wheel + trackpad pinch both drive this
   unreadCounts: {},
 };
 
@@ -3550,7 +3551,35 @@ function initCanvas() {
   App.canvas.addEventListener('mouseup', function() { _panStart = null; });
   App.canvas.addEventListener('mouseleave', function() { _panStart = null; });
   App.canvas.addEventListener('click', onCanvasClick);
-  App.canvas.addEventListener('dblclick', function() { App.panX = 0; App.panY = 0; });
+  // Double-click resets both pan and zoom so the user always has a "home"
+  // gesture when the viewport has drifted or scaled too far.
+  App.canvas.addEventListener('dblclick', function() { App.panX = 0; App.panY = 0; App.zoom = 1; });
+
+  // Wheel + trackpad-pinch zoom. Zoom anchors on the cursor position so
+  // scrolling in toward a node keeps that node under the mouse (standard
+  // map-app behaviour). Trackpad pinch events land here as `wheel` events
+  // with the `ctrlKey` modifier synthesised by the OS — same handler.
+  App.canvas.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var rect = App.canvas.getBoundingClientRect();
+    var sx = e.clientX - rect.left;
+    var sy = e.clientY - rect.top;
+    // World coords of the cursor *before* the zoom change.
+    var wx = (sx - App.panX) / App.zoom;
+    var wy = (sy - App.panY) / App.zoom;
+    // Pick the zoom delta. Pinch-zoom (ctrlKey) tends to emit small
+    // deltas on every tick; plain wheel emits larger ones. Both should
+    // feel smooth, so scale by the raw deltaY either way.
+    var factor = Math.exp(-e.deltaY * 0.0015);
+    var nextZoom = App.zoom * factor;
+    if (nextZoom < 0.3) nextZoom = 0.3;
+    if (nextZoom > 4) nextZoom = 4;
+    App.zoom = nextZoom;
+    // Re-anchor pan so the point the user pointed at stays put on screen.
+    App.panX = sx - wx * App.zoom;
+    App.panY = sy - wy * App.zoom;
+  }, { passive: false });
+
   requestAnimationFrame(renderLoop);
 }
 
@@ -3660,9 +3689,13 @@ function buildGraph(state) {
     var fallbackProto = (App.scope === 'mc') ? 'mc' : (App.scope === 'mt' ? 'mt' : '');
     selfBackends.push({ id: 'primary', protocol: fallbackProto, connected: !!state.connected, self_node_id: null });
   }
+  // Two radios → pull the MT and MC self-nodes well apart so peers root to
+  // distinct anchors and the two sub-trees don't visually tangle at the
+  // centre. ±90px (~a peer's width) keeps both hubs on screen at default
+  // zoom but reads clearly as "two separate home bases."
   var selfOffsets = selfBackends.length === 1
     ? [{dx: 0, dy: 0}]
-    : [{dx: -18, dy: 0}, {dx: 18, dy: 0}];
+    : [{dx: -90, dy: 0}, {dx: 90, dy: 0}];
   var primarySelfKey = null;
   selfBackends.forEach(function(b, i) {
     var protoLc = String(b.protocol || '').toLowerCase();
@@ -3791,14 +3824,20 @@ function buildGraph(state) {
     // Only check the last 20 linked nodes (nearest in link order = closest hops)
     var check = linkedList.slice(-20);
     check.forEach(function(c) {
-      // Prefer same-protocol ancestors so MT and MC trees stay untangled.
-      if (!c.isSelf && !!c.isMC !== !!n.isMC) return;
+      // Same-protocol ancestors only. Previously the filter kept cross-
+      // protocol *self-nodes* as candidates ("!c.isSelf || same-proto"),
+      // which let an MC peer latch onto the MT MY NODE — and then the link
+      // vanished in MC scope because the MT self was filtered out of the
+      // view. Strict protocol match keeps MT and MC trees cleanly separate.
+      if (!!c.isMC !== !!n.isMC) return;
       var d = gpsDeg(n, c);
       if (d < bestScore) { best = c; bestScore = d; }
     });
-    // No GPS on either side — hash-assign to a linked same-proto node, falling back to root
+    // No GPS on either side — hash-assign to a linked same-proto node,
+    // falling back to the preferred (same-proto) root. Same strict
+    // protocol match as above, for the same reason.
     if (bestScore === Infinity) {
-      var sameProto = linkedList.filter(function(c) { return c.isSelf || !!c.isMC === !!n.isMC; });
+      var sameProto = linkedList.filter(function(c) { return !!c.isMC === !!n.isMC; });
       best = sameProto[hashStr(n.id) % sameProto.length] || preferredRoot;
     }
     links.push({ source: best, target: n });
@@ -3806,9 +3845,15 @@ function buildGraph(state) {
     linkedList.push(n);
   });
 
-  // Channels link to MY NODE (primary self-root)
+  // Channels link to their own protocol's MY NODE so mc:channel:0 reads
+  // as "attached to MY MC" and meshtastic:channel:0 as "attached to MY MT".
+  // Previously both hard-coded mtRoot, which meant the MC public ring
+  // drew a line back to the MT self dot — confusing in ALL scope and
+  // invisible in MC scope (the MT self was filtered out).
   nodes.forEach(function(n) {
-    if (n.isChannel) links.push({ source: mtRoot, target: n });
+    if (!n.isChannel) return;
+    var chRoot = n.isMC ? mcRoot : mtRoot;
+    if (chRoot) links.push({ source: chRoot, target: n });
   });
 
   App.nodes = nodes;
@@ -4034,6 +4079,7 @@ function renderCanvas() {
   ctx.clearRect(0, 0, w, h);
   ctx.save();
   ctx.translate(App.panX, App.panY);
+  ctx.scale(App.zoom, App.zoom);
 
   var cx = w/2, cy = h/2;
   var isTraffic = App.view === 'traffic';
@@ -4300,14 +4346,20 @@ var _mouseX = 0, _mouseY = 0, _panStart = null, _isPanning = false;
 function onCanvasClick(e) {
   if (_isPanning) { _isPanning = false; return; }
   var rect = App.canvas.getBoundingClientRect();
-  var mx = e.clientX - rect.left - App.panX, my = e.clientY - rect.top - App.panY;
+  // Map screen pixels back to world (pre-zoom, pre-pan) coordinates so the
+  // hit test still lines up with where nodes are drawn after zooming.
+  var z = App.zoom || 1;
+  var mx = (e.clientX - rect.left - App.panX) / z;
+  var my = (e.clientY - rect.top - App.panY) / z;
   var closest = null, closestDist = Infinity;
+  // Click radius stays a constant 60 px on-screen regardless of zoom, so
+  // hit areas feel the same when zoomed out as they do zoomed in.
+  var hitRadiusWorld = 60 / z;
   App.nodes.forEach(function(n) {
     if (!nodeInScope(n)) return;
     var dx = n.x - mx, dy = n.y - my;
     var dist = Math.sqrt(dx*dx + dy*dy);
-    // Click radius scales with node size so larger nodes are easier to hit.
-    if (dist < 60 && dist < closestDist) { closest = n; closestDist = dist; }
+    if (dist < hitRadiusWorld && dist < closestDist) { closest = n; closestDist = dist; }
   });
   if (closest) {
     openFloatWindow(closest);
@@ -4316,13 +4368,16 @@ function onCanvasClick(e) {
 
 // Hover-cursor hit test, called from the main mousemove handler.
 function _updateHoverCursor(mxRel, myRel) {
-  var mx = mxRel - App.panX, my = myRel - App.panY;
+  var z = App.zoom || 1;
+  var mx = (mxRel - App.panX) / z;
+  var my = (myRel - App.panY) / z;
   var hit = false;
+  var hitRadiusWorld = 60 / z;
   for (var i = 0; i < App.nodes.length; i++) {
     var n = App.nodes[i];
     if (!nodeInScope(n)) continue;
     var dx = n.x - mx, dy = n.y - my;
-    if (Math.sqrt(dx*dx + dy*dy) < 60) { hit = true; break; }
+    if (Math.sqrt(dx*dx + dy*dy) < hitRadiusWorld) { hit = true; break; }
   }
   if (App.canvas) App.canvas.style.cursor = hit ? 'pointer' : '';
 }
