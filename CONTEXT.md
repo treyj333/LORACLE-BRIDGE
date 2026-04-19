@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 17:10] — Icon consistency (MT=circle / MC=diamond everywhere) + self-echo into relay for public-channel sends
+
+- What changed:
+  - **MT header pill uses a circle glyph instead of a diamond.** Previously the `◆ MT` / `◇ MT` pill used `\u25C6` / `\u25C7` (black/white diamond), inconsistent with the MT=circle convention every other surface in the dashboard uses: the header status dot (`border-radius: 50%`), the pinned sidebar icon (`.lo-ns-pinned-row.lo-mt` circle), the self-node canvas shape (`drawDiamond` vs `ctx.arc`), the proto legend swatches, and the self-panel icon. Flipped to `\u25CF` / `\u25CB` (black/white circle) so the pill reads as MT, not as a second MC. The comment header for `showMtManage()` also updated from "◆ MT" to "● MT".
+  - **Typing on a public channel now echoes through the relay automatically.** `api_thread_send()` in dashboard.py now calls `_bridge._relay.observe(source_proto, me_id, text, channel_num, False)` after a successful public-channel send. Without this, the relay — which only hooks `CHANNEL_MSG_RECV` events — never saw our own outgoing broadcasts because most radio libraries don't deliver a local echo of self-sent messages to their listeners. The sender id comes from `_get_self_node_id()` on the MT side or `get_self_info().self_node_id` on the MC side; falls back to the literal `"me"` if neither is available. Wrapped in a try/except so a relay failure can't flunk the original send. Loop guard #1 (`looks_bridged()`) still prevents already-prefixed text from bouncing back, and the dedup cache protects against the same message getting observed twice.
+- Why:
+  - User screenshot showed the header pills both using filled diamonds (`◆ MT` + `◆ MC`), making the MT pill indistinguishable from the MC one. The rest of the app already used MT=circle / MC=diamond consistently — just the new `◆ MT` pill I added earlier had reached for the wrong glyph. Fix was one line + a comment update.
+  - User also asked why a message they sent on the MeshCore public channel from the dashboard didn't show up on the Meshtastic side. Root cause was the missing self-echo: only incoming peer traffic triggers the relay, so a message typed into the bridge's own compose never had a path into `_relay.observe()`. The fix closes the gap and matches the mental model ("public channel means both meshes hear it").
+- Impact on project goals:
+  - Two small but high-visibility QoL fixes. Icon consistency restores the "MT is circle, MC is diamond" language across the dashboard so the two protocols never mirror each other by accident. The self-echo is the last piece of "public channel really is public" — typing in either PUBLIC CHANNEL row now reaches both meshes' listeners, which is what operators expected all along. Trust posture unchanged: DMs still never relay (the guard in `Relay.observe()` catches `is_dm=True` before any cross-protocol work), force-relay prefixes still bypass policy, and `looks_bridged()` prevents any re-bridging loop.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `hdr-manage-mt` glyphs flipped circle; `showMtManage` header comment updated; self-echo block added in `api_thread_send()` right after message-status `sent`.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 16:45] — MC canvas edges, per-protocol channel roots, wider MT/MC self gap, canvas zoom, MC device-query cache
 
 - What changed:

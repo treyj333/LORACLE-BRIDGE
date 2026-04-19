@@ -1058,6 +1058,42 @@ def api_thread_send(thread_id):
 
         _bridge._message_store.update_status(msg_id, "sent")
         record_message("out", thread_id, text)
+
+        # Self-echo into the relay for public-channel broadcasts. The relay
+        # only observes *incoming* peer traffic — a message we typed on the
+        # bridge itself never fires CHANNEL_MSG_RECV locally, so without
+        # this call the other mesh never hears it. With this, typing on the
+        # PUBLIC CHANNEL MC compose gets relayed to MT as
+        # "from meshcore (…): <text>" (and vice versa), matching the mental
+        # model operators have for "public channel means everyone on both
+        # meshes sees it." Loop guard #1 (looks_bridged) and the dedup
+        # cache still protect against relayed-back re-broadcasts.
+        if is_channel and hasattr(_bridge, "_relay"):
+            try:
+                source_proto = "meshcore" if routing_id.startswith("mc:") else "meshtastic"
+                me_id = None
+                if source_proto == "meshtastic":
+                    try:
+                        me_id = _bridge._get_self_node_id()
+                    except Exception:
+                        me_id = None
+                else:
+                    try:
+                        mgr = getattr(_bridge, "_radio_manager", None)
+                        if mgr is not None:
+                            for b in mgr.get_backends():
+                                proto_val = getattr(b.protocol, "value", str(b.protocol))
+                                if proto_val in ("mc", "meshcore") and b.is_connected():
+                                    info = b.get_self_info() or {}
+                                    me_id = info.get("self_node_id") or info.get("name")
+                                    break
+                    except Exception:
+                        me_id = None
+                me_id = me_id or "me"
+                _bridge._relay.observe(source_proto, me_id, text, channel_num, False)
+            except Exception as e:
+                logger.debug(f"Self-echo relay observe failed: {e}")
+
         return jsonify({"ok": True, "msg_id": msg_id, "status": "sent"})
     except Exception as e:
         try:
@@ -5234,12 +5270,13 @@ async function poll() {
     }
     // Mirror pill for the primary Meshtastic radio. Same shape + position as
     // the MC pill, so both protocols get a "tap to open settings" affordance.
-    // Filled diamond (◆) when connected, hollow (◇) otherwise — visually
-    // mirroring how the MC pill swaps "+ RADIO" for "◆ MC".
+    // MT uses a CIRCLE glyph (● / ○) to stay consistent with the MT=circle /
+    // MC=diamond convention used everywhere else in the dashboard (status
+    // dot, sidebar icons, self-node canvas shape, proto legend).
     var mtBtn = document.getElementById('hdr-manage-mt');
     if (mtBtn) {
       var mtOn = !!(mt && mt.connected);
-      mtBtn.textContent = mtOn ? '\u25C6 MT' : '\u25C7 MT';
+      mtBtn.textContent = mtOn ? '\u25CF MT' : '\u25CB MT';
       mtBtn.classList.toggle('on', mtOn);
     }
     // Single "any backend up" flag preserves legacy modal + toast behavior.
@@ -5971,8 +6008,8 @@ function setNodeSort(sort, btn) {
   if (btn) btn.classList.add('active');
   renderNodeList();
 }
-// Header "◆ MT" pill handler — mirrors the MC pill. Opens the primary
-// Meshtastic self-window (same panel you'd see by clicking the orange MY
+// Header "● MT" pill handler — mirrors the MC pill. Opens the primary
+// Meshtastic self-window (same panel you'd see by clicking the teal MY
 // NODE dot on the canvas). If MT isn't connected yet, route to the connect
 // flow so the pill does something useful in either state.
 function showMtManage() {
