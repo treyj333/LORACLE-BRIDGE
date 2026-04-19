@@ -939,10 +939,6 @@ class StandaloneBridge:
         if len(self._bridge_events) > 200:
             # Trim to the last 200 — bounded buffer for dashboard polling.
             del self._bridge_events[:-200]
-        try:
-            _emit_sse("bridge.relay", {"event": event})
-        except Exception as e:
-            logger.debug(f"[bridge] SSE emit error: {e}")
         # Persist to audit log (Phase 5).
         try:
             self._bridge_event_store.insert(
@@ -959,10 +955,10 @@ class StandaloneBridge:
             logger.debug(f"[bridge] audit-log insert error: {e}")
         # Back-fill the destination thread's message store so the relayed
         # message shows up in that protocol's PUBLIC CHANNEL thread panel.
-        # Without this, the user typing on PUBLIC CHANNEL MC sees their
-        # message in the MC thread but nothing in the MT thread — even
-        # though the message *did* cross the air. With it, both composers
-        # display the same message traveling cross-protocol in real time.
+        # IMPORTANT: this must run *before* the SSE emit below, otherwise
+        # the client races with it — receives the push, hits /api/threads
+        # to refresh, and the GET returns 404 "Contact not found" because
+        # the upsert hasn't landed yet. Reordering eliminates the flicker.
         try:
             dest = event.get("dest") or ""
             ch = int(event.get("channel", 0))
@@ -980,6 +976,9 @@ class StandaloneBridge:
                         protocol=dest,
                         backend_id=dest_contact_id,
                         short_name=f"CH {ch}" if ch else "PUBLIC",
+                        is_channel=True,
+                        channel_idx=ch,
+                        channel_name=f"Channel {ch}",
                     )
                 except Exception:
                     pass
@@ -993,6 +992,12 @@ class StandaloneBridge:
                 )
         except Exception as e:
             logger.debug(f"[bridge] dest-thread backfill error: {e}")
+        # Emit SSE only after the DB writes above so clients that react to
+        # the push find fresh data, not a 404.
+        try:
+            _emit_sse("bridge.relay", {"event": event})
+        except Exception as e:
+            logger.debug(f"[bridge] SSE emit error: {e}")
         # Fire addon hook (Phase 5).
         for addon in self._addons:
             try:
@@ -1003,7 +1008,17 @@ class StandaloneBridge:
                 )
 
     def _on_receive(self, packet, interface):
-        """Handle incoming text message from the mesh."""
+        """Handle incoming text message from the mesh.
+
+        Observation, persistence, relay, addon notification, and coverage
+        logging happen for every message regardless of ``public_talk`` /
+        ``auto_greet``. Those flags only gate **outbound AI behaviour**
+        (replying on the public channel, auto-DMing new nodes). Previously
+        `public_talk=False` returned early here, which meant public-channel
+        peer messages were silently dropped — never persisted, never relayed,
+        never visible in the dashboard. The user's mental model is "turn off
+        AI replies" not "stop receiving messages," so separate those concerns.
+        """
         try:
             sender = packet.get("fromId", "unknown")
             to_id = packet.get("toId", "")
@@ -1029,25 +1044,75 @@ class StandaloneBridge:
             else:
                 is_dm = True  # legacy fallback
 
-            # Public channel: only reply when explicitly addressed (or to !cmds).
-            # This keeps the bridge silent on casual chat. Trigger word logic
-            # lives in the module-level _is_addressed_to_ai() helper.
+            # ── Dedup (applies to every path: persistence, relay, AI) ─────
+            # Without this a burst of identical retransmits would double-write
+            # to the DB, double-feed the relay, and double-queue inference.
+            content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+            cache_key = (sender, content_hash)
+            now = time.time()
+            if cache_key in _dedup_cache and (now - _dedup_cache[cache_key]) < DEDUP_TTL:
+                logger.debug(f"Duplicate from {sender}, ignoring")
+                return
+            _dedup_cache[cache_key] = now
+
+            # ── Visibility + storage (unconditional) ──────────────────────
+            self._known_nodes.add(sender)
+            self._node_count = len(self._known_nodes)
+            ch_label = "DM" if is_dm else f"ch{channel}"
+            logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
+            record_message("in", sender, text.strip())
+
+            rssi_val = packet.get("rxRssi")
+            snr_val = packet.get("rxSnr")
+            hop_start = packet.get("hopStart")
+            hop_limit = packet.get("hopLimit")
+            hops = None
+            if hop_start is not None and hop_limit is not None:
+                h = int(hop_start) - int(hop_limit)
+                if 0 <= h <= 30:
+                    hops = h
+
+            self._persist_incoming(
+                protocol, sender, text.strip(), channel, is_dm,
+                rssi=rssi_val, snr=snr_val, hops=hops,
+            )
+
+            try:
+                self._relay.observe(protocol, sender, text.strip(), channel, is_dm)
+            except Exception as e:
+                logger.warning(f"[bridge] relay.observe(meshtastic) error: {e}")
+
+            if (rssi_val is not None or snr_val is not None):
+                pos = self._node_positions.get(sender)
+                if pos and pos.get("lat") is not None and pos.get("lon") is not None:
+                    self.coverage.record(
+                        sender, pos["lat"], pos["lon"], rssi=rssi_val, snr=snr_val
+                    )
+
+            for addon in self._addons:
+                try:
+                    addon.on_message(sender, text.strip(), packet)
+                except Exception as e:
+                    logger.warning(f"Addon {addon.name} on_message error: {e}")
+
+            # Greeter — respects its own enabled flag internally.
+            try:
+                self.greeter.maybe_greet(sender)
+            except Exception as e:
+                logger.debug(f"Greeter maybe_greet error: {e}")
+
+            # ── AI-reply gate (the only place public_talk matters) ────────
+            # DMs always queue for AI. Public-channel messages only queue if
+            # public_talk is on AND the message addresses the bot AND we're
+            # not in per-channel cooldown.
             if not is_dm:
                 if not self.public_talk:
-                    return  # public-channel talk hard-disabled via CLI
+                    return
                 if not _is_addressed_to_ai(text):
-                    # Still let addon observers see public traffic (Brief etc.)
-                    for addon in self._addons:
-                        try:
-                            addon.on_message(sender, text.strip(), packet)
-                        except Exception as e:
-                            logger.debug(f"Addon {addon.name} observer error: {e}")
                     logger.debug(
                         f"Public ch{channel} from {sender} not addressed to AI, ignoring"
                     )
                     return
-                # Per-channel cooldown — stops a chain of trigger-word messages
-                # from saturating the public channel with bot replies.
                 last = self._channel_last_send.get(channel, 0)
                 if time.time() - last < PUBLIC_CHANNEL_COOLDOWN_SECS:
                     logger.info(
@@ -1059,17 +1124,6 @@ class StandaloneBridge:
                 self._channel_last_send[channel] = time.time()
                 logger.info(f"Public ch{channel}: addressed by {sender}")
 
-            # Deduplication
-            content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-            cache_key = (sender, content_hash)
-            now = time.time()
-
-            if cache_key in _dedup_cache and (now - _dedup_cache[cache_key]) < DEDUP_TTL:
-                logger.debug(f"Duplicate from {sender}, ignoring")
-                return
-
-            _dedup_cache[cache_key] = now
-
             # Rate limiting — prevent spam while inference is running
             if sender in self._node_last_active:
                 elapsed_since_last = now - self._node_last_active[sender]
@@ -1079,60 +1133,6 @@ class StandaloneBridge:
                         f"({elapsed_since_last:.0f}s < {RATE_LIMIT_SECS}s cooldown)"
                     )
                     return
-
-            # Track nodes
-            self._known_nodes.add(sender)
-            self._node_count = len(self._known_nodes)
-            try:
-                self.greeter.maybe_greet(sender)
-            except Exception as e:
-                logger.debug(f"Greeter maybe_greet error: {e}")
-
-            ch_label = "DM" if is_dm else f"ch{channel}"
-            logger.info(f"Received from {sender} ({ch_label}): {text[:100]}")
-            record_message("in", sender, text.strip())
-
-            # Extract packet metadata for persistence + coverage logging
-            rssi_val = packet.get("rxRssi")
-            snr_val = packet.get("rxSnr")
-            hop_start = packet.get("hopStart")
-            hop_limit = packet.get("hopLimit")
-            hops = None
-            if hop_start is not None and hop_limit is not None:
-                h = int(hop_start) - int(hop_limit)
-                if 0 <= h <= 30:
-                    hops = h
-
-            # Persist to SQLite via shared helper (also used by secondary-radio ingest)
-            self._persist_incoming(
-                protocol, sender, text.strip(), channel, is_dm,
-                rssi=rssi_val, snr=snr_val, hops=hops,
-            )
-
-            # Bridge relay observation — may re-broadcast to MeshCore.
-            # Policy/dedup/loop-guard decisions all live inside the Relay.
-            try:
-                self._relay.observe(protocol, sender, text.strip(), channel, is_dm)
-            except Exception as e:
-                logger.warning(f"[bridge] relay.observe(meshtastic) error: {e}")
-
-            # Coverage sample — log signal strength against the sender's last
-            # known position, if we have one and the packet carries RSSI/SNR.
-            rssi = packet.get("rxRssi")
-            snr = packet.get("rxSnr")
-            if (rssi is not None or snr is not None):
-                pos = self._node_positions.get(sender)
-                if pos and pos.get("lat") is not None and pos.get("lon") is not None:
-                    self.coverage.record(
-                        sender, pos["lat"], pos["lon"], rssi=rssi, snr=snr
-                    )
-
-            # Notify addon observers
-            for addon in self._addons:
-                try:
-                    addon.on_message(sender, text.strip(), packet)
-                except Exception as e:
-                    logger.warning(f"Addon {addon.name} on_message error: {e}")
 
             self._request_queue.put(("meshtastic", sender, text.strip(), channel, is_dm))
 

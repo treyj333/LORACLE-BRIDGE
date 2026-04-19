@@ -4,6 +4,25 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 20:15] — Public-channel peer messages now persist + thread panel stops flickering
+
+- What changed:
+  - **`_on_receive` restructured: persistence, relay observation, coverage logging, addon notification, and node tracking all happen unconditionally.** Only the AI-reply path is gated by `public_talk`. Previously `public_talk=False` returned early *before* any persistence, which meant that after I flipped `public_talk` to default OFF in the DM-only-inference work, public-channel peer traffic was silently dropped — never written to the message store, never relayed to MC, never visible in the dashboard. The user's mental model is "turn off AI replies," not "stop receiving messages," so persistence and relay now always run; only the AI queue gets bypassed when the flag is off.
+  - **`_on_bridge_relay` reordered** so the destination-thread back-fill (contact upsert + message insert) runs *before* the SSE emit. Previously the SSE fired first, the client reacted by hitting `/api/threads/<id>` to refresh, and the GET returned `404 "Contact not found"` because the upsert hadn't landed yet. That 404 triggered a toast and wiped the panel to "NO MESSAGES YET," then the next successful load brought the messages back — the flickering the user was seeing. Reordering + also tagging the upserted channel contact with `is_channel=True` + `channel_idx` eliminates the race entirely.
+  - **`GET /api/threads/<thread_id>` returns an empty-but-well-formed response for channel threads that don't have a contact row yet** (e.g. opening `PUBLIC CHANNEL · MESHTASTIC` before any traffic). Previously it 404ed, the client's `callApi` helper showed a "Contact not found" error toast, and the panel wiped to empty — which flickered back and forth against the real state on every poll tick. Now channel threads always return a stub contact with `is_channel=True` + empty messages, so the panel renders "NO MESSAGES YET" cleanly instead of error-toasting.
+- Why:
+  - User report on hardware: "The Meshtastic window flickers between showing messages and saying 'contact not found' — I don't think I'm getting messages from other nodes on public channel." Two distinct bugs conflated into the same symptom:
+    1. The flicker was the SSE/GET race described above (and the not-yet-used channel thread returning 404).
+    2. The missing peer messages was the `public_talk=False` gate dropping everything before persistence. The earlier DM-only-inference commit intended to gate AI replies only; it accidentally disabled the whole receive path for public channels.
+- Impact on project goals:
+  - Public-channel peer traffic is now visible in the dashboard again even when AI replies are turned off — which is the operator's most-expected behaviour ("I want to see what everyone's saying, I just don't want my node butting in"). The thread-panel flicker is gone: both PUBLIC CHANNEL panels now reload cleanly through the SSE push path without race-flash-404 cycles. No new API surface; three localised edits.
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — `_on_receive` rewritten so persistence/relay/addons/dedup run unconditionally; AI-queue gating moved to the end of the function. `_on_bridge_relay` reordered (back-fill before SSE emit); channel contact upsert now sets `is_channel / channel_idx / channel_name`.
+  - `meshtastic-bridge/dashboard.py` — `GET /api/threads/<thread_id>` returns a stub contact + empty messages for channel threads with no row yet, instead of 404.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 19:50] — TX diagnostic logging + square-dot background texture
 
 - What changed:

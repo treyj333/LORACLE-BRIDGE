@@ -937,6 +937,27 @@ def api_thread_detail(thread_id):
         return jsonify({"error": "Not initialized"}), 503
     contact = _bridge._contact_store.get(thread_id)
     if contact is None:
+        # Channel threads (meshtastic:channel:0 / mc:channel:0) are a valid
+        # empty-state — the user might be opening the PUBLIC CHANNEL panel
+        # before any inbound or outbound traffic. Returning 404 here used
+        # to flicker a "Contact not found" toast on every poll tick, which
+        # looked broken. Return an empty-but-well-formed response instead
+        # so the panel just renders "NO MESSAGES YET" cleanly.
+        if "channel:" in thread_id:
+            proto = "meshcore" if thread_id.startswith("mc:") else "meshtastic"
+            try:
+                ch = int(thread_id.rsplit(":", 1)[-1])
+            except ValueError:
+                ch = 0
+            stub_contact = {
+                "contact_id": thread_id,
+                "protocol": proto,
+                "short_name": f"CH {ch}" if ch else "PUBLIC",
+                "long_name": f"Channel {ch}",
+                "is_channel": True,
+                "channel_idx": ch,
+            }
+            return jsonify({"contact": stub_contact, "messages": []})
         return jsonify({"error": "Contact not found"}), 404
     messages = _bridge._message_store.get_thread(thread_id, limit=50)
     return jsonify({"contact": contact, "messages": messages})
