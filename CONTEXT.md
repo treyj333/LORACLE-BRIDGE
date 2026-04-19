@@ -4,6 +4,25 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 17:55] — README refresh for MC parity, icon language, public-channel quick-send, bridge default-on
+
+- What changed:
+  - **Legend table rewrite** in The Network Canvas section — the old "Orange dot (center) — MY NODE" / "Hexagons — public channels" was stale and single-protocol. Replaced with a six-row shape+colour table that documents the canonical language: teal circle for MT self, purple diamond for MC self, teal circle for MT peers, purple diamond for MC peers, empty ring for public channel 0 (colour matches the owning protocol). Added a one-liner "Circle = Meshtastic, diamond = MeshCore, always" so the convention is impossible to miss.
+  - **Header Radio Pills section** now spelled `● MT + ◆ MC` (circle + diamond) instead of `◆ MT + ◆ MC`. Same edit carried into the dashboard-dual-radio-UI bullet list.
+  - **New "Public Channel Quick-Send" section** explaining the pinned sidebar rows + the self-echo-into-relay behaviour — typing on either PUBLIC CHANNEL composer now crosses to the other mesh and shows up in both thread panels in real time. Calls out that DMs never cross (unchanged).
+  - **Bridge Smoke Test section** tightened with a closing line on when to use it ("any time you want to confirm the bridge is wired through end-to-end without needing a second device in range").
+  - **Cross-Protocol Bridge section header text** updated to match current reality: auto-bridge is ON by default for public channel 0 when a second radio attaches (it was "off by default" before). Added a bullet for the self-echo behaviour under Features Shipped. Mentioned the smoke-test button.
+  - **Dashboard dual-radio UI bullets** expanded to document: the new `● MT` / `◆ MC` management pills, the ~180 px MT↔MC self-node gap, the scroll-wheel / trackpad-pinch zoom, and the public-channel auto-cross.
+- Why:
+  - User explicitly asked for the docs to be updated. Several of the recent landings (MC parity, icon flip, self-echo, thread back-fill, bridge-default-on) had changed the real dashboard behaviour in ways the README no longer reflected — a new reader following the "Orange dot (center)" table on hardware with both radios attached would see two centre-dots + two PUBLIC rings + circle-and-diamond shapes, none of which were documented. Also, the README was still saying "bridge is off by default" even though seeding defaults turn it on the moment a second radio is attached.
+- Impact on project goals:
+  - README now matches the dashboard people actually see. New users reading top-to-bottom get the right mental model on first pass: MT and MC are equal citizens, shape+colour is the protocol cue, public-channel quick-send is one click, bridge validation is one button, and the bridge turns itself on for the common case. No code changes; documentation-only.
+- Files modified:
+  - `README.md` — legend table, Header Radio Pills section, new Public Channel Quick-Send section, Bridge Smoke Test closing line, Cross-Protocol Bridge section rewrite, dashboard-dual-radio-UI bullets.
+- Tests: 315/315 pass (no code changes).
+
+---
+
 ## [2026-04-19 17:35] — Cross-protocol relay visibility: dest-thread back-fill + better self-echo sender name
 
 - What changed:

@@ -195,14 +195,18 @@ LORACLE's interface is a **living force-directed mesh visualization**. Every nod
 
 | Element | What It Is |
 |---------|-----------|
-| **Orange dot (center)** | Your radio — "MY NODE" |
-| **Teal dots** | Peer nodes on the mesh |
-| **Hexagons** | Public channels — click to broadcast |
-| **Hop-chained links** | Nodes link through their relay path (direct → 1-hop → 2-hop), not a star |
+| **Orange circle (center)** | Your Meshtastic radio — `MY MT` |
+| **Purple diamond (center)** | Your MeshCore radio — `MY MC` (appears when an MC radio is attached) |
+| **Teal circles** | Meshtastic peer nodes on the mesh |
+| **Purple diamonds** | MeshCore peer nodes on the mesh |
+| **Empty ring (teal or purple)** | Public channel 0 for that protocol — click to broadcast |
+| **Hop-chained links** | Nodes link through their relay path (direct → 1-hop → 2-hop), not a star. MT and MC keep separate trees; cross-protocol peers never share an edge |
 | **Line thickness** | Signal strength — thick = strong, dotted = weak |
 | **Orange badges** | Unread message count per node |
 | **Gold star** | Favorited node — sorted to the top of the sidebar |
 | **Red dot** | Low battery warning (≤20%) |
+
+Shape + colour language is the universal "which protocol is this?" cue across every surface — canvas nodes, sidebar icons, status pills, legend, self-info panels. **Circle = Meshtastic, diamond = MeshCore, always.**
 
 **Click any node** to open a thread panel with full message history (up to 50 messages), signal info, battery/voltage, temperature, hardware model, hop count, and a composer. Toggle AI auto-reply, star as a favorite, rename with a custom nickname, or run a traceroute — all from the same panel.
 
@@ -250,13 +254,17 @@ Click the **☰** button in the title bar to open the node sidebar. At the very 
 
 The top-left corner shows live stats (nodes, messages, model, uptime). The control rail underneath **swaps based on the scope filter**: in `ALL` / `MT` it shows the Meshtastic `SCAN MESH` + `HW COLOR` pair plus the per-hardware colour legend; switching to `MC` replaces both with MeshCore-flavoured controls (`PULL CONTACTS` to force a contact-list refetch, `FAVORITES` to hide everyone you haven't starred, live counts of `contacts / with GPS / starred`, and an advertisement-based legend). The bottom strip shows a packet activity ribbon.
 
-### Header Radio Pills — `◆ MT` + `◆ MC`
+### Header Radio Pills — `● MT` + `◆ MC`
 
-Right of the two connection indicators (`MT ON` / `MC ON`) sit a pair of **management pills**. Each opens that radio's self-info panel (status, transport, node id, battery/voltage/temperature, hardware model, uptime) — the same panel you get by clicking the MY NODE dot on the canvas. Colour-matched to the protocol: teal for MT, purple for MC. When a radio isn't connected the MT pill reads `◇ MT` and falls through to the connect modal; the MC pill reads `+ RADIO` and opens the add-secondary-radio wizard.
+Right of the two connection indicators (`MT ON` / `MC ON`) sit a pair of **management pills**. Each opens that radio's self-info panel (status, transport, node id, battery/voltage/temperature, hardware model, uptime) — the same panel you get by clicking the MY NODE dot on the canvas. Shape + colour match the protocol: **teal circle (`● MT`)** for Meshtastic, **purple diamond (`◆ MC`)** for MeshCore. When a radio isn't connected the MT pill reads `○ MT` and falls through to the connect modal; the MC pill reads `+ RADIO` and opens the add-secondary-radio wizard.
+
+### Public Channel Quick-Send
+
+The node sidebar pins two **PUBLIC CHANNEL rows** at the very top — one for each connected radio. Clicking either opens a composer that broadcasts on public channel 0 for that protocol. With the auto-bridge on, **typing in either composer also echoes through the relay to the other protocol**, so a message you type on `PUBLIC CHANNEL · MESHCORE` appears on the Meshtastic mesh as `from meshcore (<your-name>): <text>` (and vice versa). The relayed copy is also written back into the destination thread's message store, so **both composers show the message crossing in real time** — no need to hop to the BRIDGE tab to see the relay fire. All the usual guards still apply: DMs never cross, already-bridged text is loop-suppressed, and the dedup cache prevents echoes.
 
 ### Bridge Smoke Test
 
-The BRIDGE tab has a **VALIDATE — SMOKE TEST** section with a one-click `RUN SMOKE TEST` button. It (1) broadcasts a tagged ping on public channel 0 from every connected radio so nearby peers hear it, then (2) injects a synthetic "incoming peer" message through `Relay.observe()` in both directions so the relay policy + dedup + cross-protocol send actually fire (broadcasts from your own radio never trigger the relay — it only observes incoming peer traffic). The result panel shows send-level outcomes, the pre/post counter delta, and a pass/fail summary within ~1 s.
+The BRIDGE tab has a **VALIDATE — SMOKE TEST** section with a one-click `RUN SMOKE TEST` button. It (1) broadcasts a tagged ping on public channel 0 from every connected radio so nearby peers hear it, then (2) injects a synthetic "incoming peer" message through `Relay.observe()` in both directions so the relay policy + dedup + cross-protocol send actually fire (broadcasts from your own radio never trigger the relay — it only observes incoming peer traffic). The result panel shows send-level outcomes, the pre/post counter delta, and a pass/fail summary within ~1 s. Use this any time you want to confirm the bridge is wired through end-to-end without needing a second device in range.
 
 The dashboard updates every 2 seconds. To change the port:
 
@@ -297,19 +305,21 @@ Messages from both networks land in the same dashboard — same node list, same 
 **Bridge just works.** When both radios are up for the first time, LORACLE automatically turns on bidirectional public-channel (channel 0) relay so messages cross without any config. Messages are tagged `from meshtastic (Alice): …` / `from meshcore (…): …` so recipients on the other network see at a glance where each message came from. If you want to turn the auto-bridge off (or back on), the BRIDGE tab has a single-click toggle at the top labeled **Auto-relay public channel 0 between Meshtastic and MeshCore**. The old per-channel rule editor is still there behind an `ADVANCED RULES` disclosure for multi-channel setups and the AI-gated urgency filter.
 
 **Dashboard dual-radio UI:**
-- **Top bar** shows each backend's connection state independently — a teal circle for Meshtastic (`MT ON/OFF/--`) and a purple diamond for MeshCore (`MC ON/OFF/--`), and a `+ RADIO` button that opens the add/manage modal (turns into `◆ MC` when a MeshCore radio is attached).
-- **Mesh canvas** draws both "my radios" at center when both backends are connected — an orange circle labeled `MY MT` and a purple diamond labeled `MY MC`. Peers render with the same shape+color convention (circle = Meshtastic, diamond = MeshCore), and the two meshes stay as visually-separate sub-trees.
+- **Top bar** shows each backend's connection state independently — a teal circle for Meshtastic (`● MT ON/OFF/--`) and a purple diamond for MeshCore (`◆ MC ON/OFF/--`). Right of those sit matching management pills: `● MT` (circle) opens the Meshtastic self-info panel, `◆ MC` (diamond) opens the MeshCore self-info panel. An unconnected MC pill reads `+ RADIO` and launches the add-secondary-radio wizard.
+- **Mesh canvas** draws both "my radios" at center when both backends are connected — an orange circle labeled `MY MT` ~90 px to the left, a purple diamond labeled `MY MC` ~90 px to the right, so the two trees root at visibly-distinct hubs instead of piling up. Peers render with the same shape + colour convention (circle = Meshtastic, diamond = MeshCore) and the two meshes stay as visually-separate sub-trees — cross-protocol peers never share an edge.
+- **Scroll-wheel / trackpad-pinch zoom** on the canvas (anchored on the cursor). Double-click resets both pan and zoom.
 - **Protocol legend** under the HUD (`● MESHTASTIC` / `◆ MESHCORE`) is always visible.
-- **Unified messaging.** Clicking any peer (MT or MC) opens the same panel and send flow. DMs route through RadioManager so MeshCore peers are first-class — send arrives on the right radio automatically.
-- **Clicking your own radio** opens a live telemetry panel with protocol, transport, node ID, battery % / voltage, temperature, humidity, channel util, hardware model, uptime, and node/message counts.
+- **Unified messaging.** Clicking any peer (MT or MC) opens the same panel and send flow. DMs route through RadioManager so MeshCore peers are first-class — send arrives on the right radio automatically. Public-channel broadcasts on either protocol also auto-cross via the relay (messages show up in both PUBLIC CHANNEL threads in real time).
+- **Clicking your own radio** opens a live telemetry panel with protocol, transport, node ID, battery % / voltage, temperature, humidity, channel util, hardware model, uptime, and node/message counts. Works the same for MT and MC — the panel tints teal or purple based on which self-node you clicked.
 
 ### Cross-Protocol Bridge (v2 Phases 2–5 — software-complete)
 
-With `--second-radio` set and the bridge enabled, channel messages can cross between the two networks. The bridge is **off by default**; turn it on via the BRIDGE tab in the dashboard or by POSTing to `/api/bridge/config`.
+When both a Meshtastic and a MeshCore radio are attached, channel messages cross between the two networks automatically. **Public channel 0 relay is ON by default** the first time a second radio is attached — no configuration required for the common case. Toggle it on/off from the BRIDGE tab's `Auto-relay public channel 0` checkbox, or hand-edit per-channel rules in the `ADVANCED RULES` disclosure.
 
 Features shipped:
 
-- **BRIDGE tab in the dashboard** — live ON/OFF badge, relayed/dropped/dedup counters, per-channel rule editor (source / channel / mode), scrolling flow log showing every relay as it happens.
+- **BRIDGE tab in the dashboard** — live ON/OFF badge, relayed/dropped/dedup counters split into mirrored `MT → MC` / `MC → MT` columns, per-channel rule editor (source / channel / mode), scrolling flow log with colour-coded direction arrows showing every relay as it happens, plus a **VALIDATE — SMOKE TEST** button that exercises the full relay path both ways in ~1 s (no second device required).
+- **Self-echo for dashboard sends** — messages typed on either PUBLIC CHANNEL composer inside the bridge also feed into `Relay.observe()` so they cross to the other mesh. Without this, user-initiated sends never triggered the relay (it only observes incoming peer traffic). Relayed copies are written back to the destination thread's message store, so both composers display the message traveling cross-protocol.
 - **Per-channel rules** — three modes:
   - `off` — channel does not bridge.
   - `always` — every channel broadcast crosses (Akita-parity dumb bridge).
