@@ -4794,6 +4794,17 @@ async function floatSend(nodeId, inputEl) {
     }
   }
   loadFloatData(nodeId);  // reconciles with server truth (replaces optimistic row)
+
+  // If this was a public-channel send, the self-echo path on the server
+  // has already back-filled the OTHER protocol's PUBLIC CHANNEL thread
+  // with the relayed copy. If that thread is open in another window,
+  // refresh it now so the user sees the message cross in real time
+  // instead of waiting up to 4s for the next poll tick.
+  if (nodeId === 'meshtastic:channel:0' && _openWindows['mc:channel:0']) {
+    loadFloatData('mc:channel:0');
+  } else if (nodeId === 'mc:channel:0' && _openWindows['meshtastic:channel:0']) {
+    loadFloatData('meshtastic:channel:0');
+  }
 }
 
 async function floatTrace(nodeId) {
@@ -5481,18 +5492,23 @@ async function poll() {
       } catch(e) {}
     }
 
-    // Refresh open panel
-    if (App.selectedNode) {
-      if (isSelfId(App.selectedNode) && _openWindows[App.selectedNode]) {
-        // Self panel reads straight from App.state — refresh every poll (free).
-        loadSelfData(App.selectedNode);
-      } else {
-        // Peer panels hit /api/threads — soft refresh every 5 polls (~10s)
-        if (!App._panelRefreshCount) App._panelRefreshCount = 0;
-        App._panelRefreshCount++;
-        if (App._panelRefreshCount % 5 === 0) openNodePanel(App.selectedNode);
+    // Refresh open panels. Previously only `App.selectedNode` refreshed,
+    // so a user with both PUBLIC CHANNEL MT and PUBLIC CHANNEL MC open
+    // wouldn't see new messages on the unselected one until they clicked
+    // back into it. Now: self panels refresh every poll (free — client
+    // side), and peer/channel panels refresh every 2 polls (~4s) across
+    // every open window. 4s is the sweet spot for "feels live" without
+    // hammering /api/threads.
+    if (!App._panelRefreshCount) App._panelRefreshCount = 0;
+    App._panelRefreshCount++;
+    var doPeerRefresh = (App._panelRefreshCount % 2 === 0);
+    Object.keys(_openWindows).forEach(function(nid) {
+      if (isSelfId(nid)) {
+        loadSelfData(nid);
+      } else if (doPeerRefresh) {
+        loadFloatData(nid);
       }
-    }
+    });
   } catch(e) {}
 }
 

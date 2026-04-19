@@ -4,6 +4,21 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 19:10] — All open thread panels auto-refresh + opposite-side public channel refresh on send
+
+- What changed:
+  - **All open thread panels now auto-refresh**, not just `App.selectedNode`. Previously the poll loop only called `openNodePanel(App.selectedNode)` every 5 polls (~10s), so a user with both PUBLIC CHANNEL MT and PUBLIC CHANNEL MC open cascaded wouldn't see new messages on the one that wasn't "selected" (last clicked). Now the poll iterates `_openWindows` and refreshes every open peer/channel panel — peer panels every 2 polls (~4s, down from 10s), self-panels every poll (they're free, client-side read of `App.state`).
+  - **Send triggers an immediate refresh of the opposite-side public-channel panel.** When a user presses send on `PUBLIC CHANNEL MT`, the server's `_on_bridge_relay` hook has already back-filled the `mc:channel:0` thread with the relayed copy. `floatSend()` now checks whether the OTHER PUBLIC CHANNEL window is also open and calls `loadFloatData()` on it immediately, so the user sees the message cross in real time instead of waiting up to 4s for the next poll tick. Same thing for MC→MT.
+- Why:
+  - User observation on hardware: "I don't receive the MeshCore message on Meshtastic unless I press send on a new message from Meshtastic to MeshCore." The bridge was doing the right thing server-side — MC→MT relay fired on the self-echo, destination thread got back-filled into the MT message store — but the MT thread panel was only refreshing the currently-selected window, every 10s. Pressing send in the MT composer triggered `floatSend() → loadFloatData(mt)` which pulled the backlog. Looked like "sending unblocks the backlog" but really it was "sending explicitly refetches the thread while the background refresh was idle." Both fixes close that gap.
+- Impact on project goals:
+  - Cross-protocol messaging now *feels* live end-to-end. Both PUBLIC CHANNEL thread panels can be open side-by-side and update within ~4s of any relay; send-triggered refresh brings the opposite side to near-instant so the common case (user typing + watching the other radio echo) feels immediate. No server changes; purely a client-side polling-behaviour fix.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — poll loop iterates `_openWindows` instead of single `App.selectedNode`; refresh cadence bumped 10s → 4s for peer/channel panels; `floatSend()` triggers an immediate refresh of the opposite public-channel window.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 18:55] — Tighter dot-grid + removed centre crosshair
 
 - What changed:
