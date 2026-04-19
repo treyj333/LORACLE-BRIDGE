@@ -1078,6 +1078,11 @@ def api_thread_send(thread_id):
                     except Exception:
                         me_id = None
                 else:
+                    # MC side: try the backend's device-query response
+                    # first, then fall back to whatever the Meshtastic
+                    # radio calls itself (same owner in most rigs), then
+                    # finally "bridge" — reads as "from meshcore (Alice):"
+                    # instead of a generic "from meshcore (me):".
                     try:
                         mgr = getattr(_bridge, "_radio_manager", None)
                         if mgr is not None:
@@ -1089,7 +1094,17 @@ def api_thread_send(thread_id):
                                     break
                     except Exception:
                         me_id = None
-                me_id = me_id or "me"
+                    if not me_id:
+                        try:
+                            iface = getattr(_bridge, "interface", None)
+                            if iface is not None:
+                                my = getattr(iface, "getMyUser", None)
+                                if callable(my):
+                                    u = my() or {}
+                                    me_id = u.get("longName") or u.get("shortName")
+                        except Exception:
+                            me_id = None
+                me_id = me_id or "bridge"
                 _bridge._relay.observe(source_proto, me_id, text, channel_num, False)
             except Exception as e:
                 logger.debug(f"Self-echo relay observe failed: {e}")

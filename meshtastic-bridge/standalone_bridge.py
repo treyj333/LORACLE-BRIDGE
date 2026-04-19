@@ -935,6 +935,42 @@ class StandaloneBridge:
             )
         except Exception as e:
             logger.debug(f"[bridge] audit-log insert error: {e}")
+        # Back-fill the destination thread's message store so the relayed
+        # message shows up in that protocol's PUBLIC CHANNEL thread panel.
+        # Without this, the user typing on PUBLIC CHANNEL MC sees their
+        # message in the MC thread but nothing in the MT thread — even
+        # though the message *did* cross the air. With it, both composers
+        # display the same message traveling cross-protocol in real time.
+        try:
+            dest = event.get("dest") or ""
+            ch = int(event.get("channel", 0))
+            if dest in ("meshtastic", "meshcore"):
+                dest_contact_id = (
+                    f"meshtastic:channel:{ch}" if dest == "meshtastic"
+                    else f"mc:channel:{ch}"
+                )
+                # Make sure the contact row exists so the message has a
+                # home. upsert is idempotent — re-stamping an existing
+                # channel contact just refreshes its short_name.
+                try:
+                    self._contact_store.upsert(
+                        contact_id=dest_contact_id,
+                        protocol=dest,
+                        backend_id=dest_contact_id,
+                        short_name=f"CH {ch}" if ch else "PUBLIC",
+                    )
+                except Exception:
+                    pass
+                self._message_store.insert(
+                    contact_id=dest_contact_id,
+                    direction="in",
+                    author="bridge",
+                    text=event.get("text", ""),
+                    protocol=dest,
+                    delivery_status="sent",
+                )
+        except Exception as e:
+            logger.debug(f"[bridge] dest-thread backfill error: {e}")
         # Fire addon hook (Phase 5).
         for addon in self._addons:
             try:

@@ -4,6 +4,22 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 17:35] — Cross-protocol relay visibility: dest-thread back-fill + better self-echo sender name
+
+- What changed:
+  - **Relayed messages now back-fill the destination thread's message store.** `StandaloneBridge._on_bridge_relay()` — already called for every successful `Relay.observe()` — now inserts the relayed copy into the destination contact thread (`meshtastic:channel:<n>` or `mc:channel:<n>`) with `direction="in"`, `author="bridge"`, and the prefixed `from <src> (<name>): <text>` body. Also upserts the channel contact first so the message has a home row even if the user never visited that thread before. The practical effect: typing on PUBLIC CHANNEL MC now makes the relayed copy show up in the PUBLIC CHANNEL MT composer too — both thread panels display the message crossing, instead of one showing it and the other looking empty. This applies to all relays, not just self-echo, so peer-to-peer cross-protocol traffic (e.g. "ATLAVOX M1A3 67ec" → MC from the user's log) is now visible in the MC thread too.
+  - **Self-echo sender-name resolution improved.** Previously the MC self-echo fell through to the literal string `"me"` because `MeshCoreBackend.get_self_info()` doesn't surface a stable `self_node_id`, so relayed messages read as "from meshcore (me):" — generic and unhelpful. New hierarchy: (1) MC backend's `self_node_id` / `name` from `get_self_info()`; (2) the Meshtastic `interface.getMyUser()` `longName` / `shortName` (same owner in most rigs); (3) literal `"bridge"` — reads as "from meshcore (Alice):" when the MT radio is named, or "from meshcore (bridge):" as a reasonable fallback.
+- Why:
+  - Direct user observation on hardware: MT → MC and MC → MT relays were firing and visible in terminal logs + BRIDGE tab LIVE FLOW, but not appearing in the "other side" composer. User mental model was "typing on PUBLIC CHANNEL MC should travel to PUBLIC CHANNEL MT" — the actual wire message was traveling but the UI never reflected that because the relay never wrote back to `_message_store` under the destination thread id. Same reason the "(me)" tag looked ugly — it's what happens when the self-echo path can't resolve a real name. Both are UX gaps between "the bridge works" and "the bridge *looks* like it works."
+- Impact on project goals:
+  - Cross-protocol relay is now visually honest end-to-end. User types on either PUBLIC CHANNEL composer → message appears in both thread panels (outgoing in the source, incoming-prefixed in the destination) → can eyeball the flow without context-switching to the BRIDGE tab. Real peer traffic also now shows up in both threads. Sender names read as actual owner names instead of a hardcoded "me." No new API surface; just richer default behaviour in existing paths. All relay guards (DM suppression, looks_bridged loop guard, dedup cache, rate limiter) still apply unchanged.
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — `_on_bridge_relay` now upserts the destination channel contact and inserts the relayed message into `_message_store` under the destination thread id, author="bridge", direction="in".
+  - `meshtastic-bridge/dashboard.py` — self-echo block in `api_thread_send` now falls back through MC device-query → Meshtastic owner name → "bridge" (instead of "me") for the relay sender.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 17:10] — Icon consistency (MT=circle / MC=diamond everywhere) + self-echo into relay for public-channel sends
 
 - What changed:
