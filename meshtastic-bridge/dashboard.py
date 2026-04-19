@@ -1062,20 +1062,36 @@ def api_thread_send(thread_id):
         # RadioManager routes to the meshtastic backend.
         routing_id = "mt:" + thread_id
 
+    # Loud TX diagnostics so when a user reports "dashboard says sent but my
+    # second radio doesn't receive," the terminal log tells us exactly which
+    # path ran and how the underlying radio call returned. Every send logs a
+    # "TX start" line (which backend, which channel, message length, ack?)
+    # and a "TX done" line so missing TXs are trivially spottable.
+    logger.info(
+        f"TX start: thread={thread_id!r} routing={routing_id!r} "
+        f"is_channel={is_channel} channel_num={channel_num} "
+        f"len={len(text)}"
+    )
     try:
         # Prefer RadioManager whenever it has a connected matching backend —
         # that's the only way to reach the MeshCore side, and it keeps the
         # meshtastic side behaving the same as before.
         sent_via_manager = False
+        send_path_taken = None
         try:
             mgr = getattr(_bridge, "_radio_manager", None)
             if mgr is not None:
                 proto_short = "mc" if routing_id.startswith("mc:") else "mt"
                 if mgr._find_backend_for_protocol(proto_short) is not None:
+                    send_path_taken = f"RadioManager[{proto_short}]"
+                    logger.info(
+                        f"TX via {send_path_taken}: is_dm={not is_channel} "
+                        f"channel={channel_num}"
+                    )
                     mgr.send(routing_id, text, channel=channel_num, is_dm=not is_channel)
                     sent_via_manager = True
         except Exception as e:
-            logger.debug(f"RadioManager send failed, falling back: {e}")
+            logger.warning(f"TX via RadioManager failed: {type(e).__name__}: {e}")
 
         if not sent_via_manager:
             # Fallback: legacy Meshtastic-only path. MC threads without a
@@ -1088,11 +1104,21 @@ def api_thread_send(thread_id):
             want_ack = os.environ.get("DEBUG_WANT_ACK") == "1"
             if is_channel:
                 from meshtastic import BROADCAST_ADDR
+                send_path_taken = "MT-legacy[channel]"
+                logger.info(
+                    f"TX via {send_path_taken}: dest={BROADCAST_ADDR} "
+                    f"channelIndex={channel_num} wantAck={want_ack}"
+                )
                 _bridge.interface.sendText(text, destinationId=BROADCAST_ADDR, channelIndex=channel_num, wantAck=want_ack)
             else:
                 native = thread_id[3:] if thread_id.startswith("mt:") else thread_id
+                send_path_taken = "MT-legacy[dm]"
+                logger.info(
+                    f"TX via {send_path_taken}: dest={native!r} wantAck={want_ack}"
+                )
                 _bridge.interface.sendText(text, destinationId=native, wantAck=want_ack)
 
+        logger.info(f"TX done: path={send_path_taken} thread={thread_id!r}")
         _bridge._message_store.update_status(msg_id, "sent")
         record_message("out", thread_id, text)
 
@@ -4208,12 +4234,12 @@ function renderCanvas() {
   if (!isTraffic) {
     // Tighter grid (was 36 → 24) so the texture reads as more obviously
     // gridded at default zoom. Zoom-out still looks clean because the
-    // "major" ring absorbs visibility when the minor step gets tiny.
+    // "major" square absorbs visibility when the minor step gets tiny.
     var gridStep = 24;
     var dotColor = ink;
     // Screen-density guard: if we zoom out so far that the minor grid
-    // collapses into a smear we draw only the major dots. At extreme
-    // zoom-in we skip altogether so giant circles don't appear.
+    // collapses into a smear we draw only the major squares. At extreme
+    // zoom-in we skip altogether so the squares don't grow into blocks.
     var screenStep = gridStep * App.zoom;
     var majorOnly = screenStep < 9;
     if (screenStep <= 240) {
@@ -4221,25 +4247,23 @@ function renderCanvas() {
       var worldTop = -App.panY / App.zoom;
       var worldRight = (w - App.panX) / App.zoom;
       var worldBottom = (h - App.panY) / App.zoom;
-      // Snap to the grid so the dots don't shimmer during pan.
+      // Snap to the grid so the squares don't shimmer during pan.
       var gx0 = Math.floor(worldLeft / gridStep) * gridStep;
       var gy0 = Math.floor(worldTop / gridStep) * gridStep;
-      // Counter-scale the radius so dots stay a constant on-screen size
-      // regardless of zoom — a consistent ~1px "minor" / ~1.8px "major".
-      var minorR = 0.85 / App.zoom;
-      var majorR = 1.8 / App.zoom;
+      // Squares, uniform size (same as the old "major" circle radius —
+      // ~1.8px radius ≈ 3.6px side). Counter-scaled by 1/zoom so the
+      // on-screen size stays constant regardless of zoom. Major/minor
+      // differentiation happens via alpha, not size — cleaner read.
+      var squareSide = 3.6 / App.zoom;
+      var half = squareSide / 2;
       ctx.fillStyle = dotColor;
       for (var gx = gx0; gx <= worldRight; gx += gridStep) {
         for (var gy = gy0; gy <= worldBottom; gy += gridStep) {
           var isMajor = (Math.round(gx / gridStep) % 5 === 0) &&
                         (Math.round(gy / gridStep) % 5 === 0);
           if (majorOnly && !isMajor) continue;
-          // Slightly bolder than the original pass so the grid feels
-          // intentional instead of accidental. Major ring stays distinct.
           ctx.globalAlpha = isMajor ? 0.13 : 0.06;
-          ctx.beginPath();
-          ctx.arc(gx, gy, isMajor ? majorR : minorR, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.fillRect(gx - half, gy - half, squareSide, squareSide);
         }
       }
       ctx.globalAlpha = 1;

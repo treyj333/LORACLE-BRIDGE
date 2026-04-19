@@ -120,13 +120,25 @@ class MeshCoreBackend(RadioBackend):
     def send_broadcast(self, text: str, channel: int = 0) -> None:
         if not self.is_connected() or self._loop is None:
             raise ConnectionError("MeshCore radio not connected")
+        logger.info(
+            f"MC send_broadcast start: ch={channel} len={len(text)}"
+        )
         future = asyncio.run_coroutine_threadsafe(
             self._meshcore.commands.send_chan_msg(channel, text),
             self._loop,
         )
         result = future.result(timeout=30)
-        if hasattr(result, "type") and result.type == EventType.ERROR:
+        # Loud per-send logging so we can tell the difference between "radio
+        # returned OK and we relied on it" vs "lib returned an error we
+        # silently upgraded to a string." An OK result lets send_broadcast
+        # return successfully; anything else raises.
+        res_type = getattr(result, "type", None)
+        if res_type == EventType.ERROR:
+            logger.warning(
+                f"MC send_broadcast ERROR from lib: {getattr(result, 'payload', None)!r}"
+            )
             raise RuntimeError(f"MeshCore broadcast failed: {result.payload}")
+        logger.info(f"MC send_broadcast ok: result_type={res_type}")
 
     # ── Protocol-optional features ───────────────────────────────────────
     # MeshCore has no traceroute or LoRa-config-write surface yet; only a

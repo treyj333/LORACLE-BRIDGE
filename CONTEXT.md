@@ -4,6 +4,23 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 19:50] — TX diagnostic logging + square-dot background texture
+
+- What changed:
+  - **Loud per-send logging in `api_thread_send` + `MeshCoreBackend.send_broadcast`.** Every outbound UI send now logs `TX start: thread=… routing=… is_channel=… len=…`, then the path taken (`RadioManager[mt/mc]` vs `MT-legacy[channel/dm]`) with the key params (BROADCAST_ADDR, channelIndex, wantAck, or MC channel+len), then `TX done: path=…`. MC backend logs `MC send_broadcast start / ok / ERROR` around the `send_chan_msg` round trip and surfaces the lib's result type. Lets an operator eyeball the terminal after a "dashboard says sent but my second radio didn't receive" report and immediately see which path ran, whether the lib returned an error the dashboard silently swallowed, or whether the send path was skipped entirely. Instrumentation only — no behaviour change.
+  - **Background grid is now squares instead of circles, all uniform size.** Replaced `ctx.arc()` with `ctx.fillRect()` at `3.6 / zoom` world-size (≈ 2× the old major circle radius, so each square reads at roughly the visual weight of the previous major dot). Major/minor differentiation is now purely alpha-driven (`0.13 / 0.06`), not size-driven. Alignment stays snapped to the 24 px grid step. Looks more architectural/blueprint vs. the previous dotted feel.
+- Why:
+  - User report on hardware: "Messages send from the UI (dashboard shows delivered) but my second radio on the same protocol isn't receiving. Same for MC. May be broken direct protocol-to-protocol." Dashboard code looks correct but we can't see what the radio libs actually do at run time — logging is the fastest way to narrow "send was skipped" vs "lib raised silently" vs "radio did TX but peer didn't hear it" (the last being a physics problem, not a software one).
+  - User aesthetic ask: "Make the background squares instead of circles, same radius as the current bigger circles." Matches what they were picturing for the TE/industrial feel.
+- Impact on project goals:
+  - Zero behaviour change on the send path — purely observability. Next time the user reports a missing TX we'll be able to read the terminal and say "path X ran, lib returned Y, check radio Z" instead of guessing. Visual change is purely texture, no logic shift.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — TX-start/done logging in `api_thread_send`; grid draw uses `fillRect` with uniform `squareSide` and alpha-only major/minor differentiation.
+  - `meshtastic-bridge/radio/meshcore_backend.py` — `send_broadcast` logs start + ok/error around the coroutine future.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 19:30] — SSE push for messages + bridge relays (sub-100ms "feels instant" UX)
 
 - What changed:
