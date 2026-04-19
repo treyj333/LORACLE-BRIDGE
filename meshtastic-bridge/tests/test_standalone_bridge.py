@@ -115,6 +115,112 @@ class TestCommandDispatch(unittest.TestCase):
         self.assertIn("test-model", result)
 
 
+class TestCrossProtocolDm(unittest.TestCase):
+    """Test the !dm command that lets a remote user DM across protocols."""
+
+    def setUp(self):
+        self.bridge = _make_bridge()
+        # RadioManager is real on the bridge — swap in a mock so we can assert
+        # the outbound send shape without plumbing real backends.
+        self.bridge._radio_manager = MagicMock()
+        # Seed a handful of contacts on both sides so the name-lookup branches
+        # have something to find.  The real ContactStore exposes upsert().
+        store = self.bridge._contact_store
+        store.upsert(
+            "mc:mcalice", "meshcore", "mc-0",
+            short_name="mcali", long_name="Alice MC", is_channel=0,
+        )
+        store.upsert(
+            "!mtbob111", "meshtastic", "mt-0",
+            short_name="mtbob", long_name="Bob MT", is_channel=0,
+        )
+        store.upsert(
+            "mc:dup", "meshcore", "mc-0",
+            short_name="dup", long_name="Twin MC", is_channel=0,
+        )
+        store.upsert(
+            "!mtdup222", "meshtastic", "mt-0",
+            short_name="dup", long_name="Twin MT", is_channel=0,
+        )
+
+    def _enable_cross_dm(self, on=True):
+        self.bridge._settings_store.set(self.bridge._CROSS_DM_KEY, on)
+
+    def test_usage_on_missing_args(self):
+        result = self.bridge._handle_command("!mtsender", "!dm")
+        self.assertIn("Usage:", result or "")
+        self.bridge._radio_manager.send.assert_not_called()
+
+    def test_not_found_when_name_missing(self):
+        result = self.bridge._handle_command("!mtsender", "!dm ghost hi there")
+        self.assertIn("no contact named", result or "")
+        self.bridge._radio_manager.send.assert_not_called()
+
+    def test_cross_protocol_dm_blocked_when_flag_off(self):
+        """MT sender → MC target without the opt-in flag should be refused,
+        and nothing should hit the radio manager."""
+        result = self.bridge._handle_command(
+            "!mtsender", "!dm mcali hello there",
+        )
+        self.assertIn("disabled", (result or "").lower())
+        self.bridge._radio_manager.send.assert_not_called()
+
+    def test_cross_protocol_dm_forwards_when_enabled(self):
+        self._enable_cross_dm(True)
+        result = self.bridge._handle_command(
+            "!mtsender", "!dm mcali hello there",
+        )
+        self.assertIn("meshcore", (result or "").lower())
+        self.bridge._radio_manager.send.assert_called_once()
+        call_args = self.bridge._radio_manager.send.call_args
+        target, text = call_args[0][0], call_args[0][1]
+        self.assertEqual(target, "mc:mcalice")
+        # Cross-protocol DMs carry a sender-provenance tag so the recipient
+        # knows where the message came from.
+        self.assertIn("from meshtastic", text)
+        self.assertIn("hello there", text)
+        self.assertEqual(call_args[1].get("is_dm"), True)
+
+    def test_same_protocol_dm_always_allowed(self):
+        """A same-mesh DM via !dm is always permitted — the opt-in flag only
+        gates the cross-protocol path. No sender tag on same-protocol."""
+        result = self.bridge._handle_command(
+            "!mtsender", "!dm mtbob hi nearby",
+        )
+        self.assertIn("sent", (result or "").lower())
+        self.bridge._radio_manager.send.assert_called_once()
+        _, text = self.bridge._radio_manager.send.call_args[0][:2]
+        self.assertEqual(text, "hi nearby")
+
+    def test_ambiguous_other_mesh_returns_candidates(self):
+        self._enable_cross_dm(True)
+        # Two identical custom_names on the target side would confuse the
+        # resolver. Add a second MC contact named "twin" to collide.
+        self.bridge._contact_store.upsert(
+            "mc:twin2", "meshcore", "mc-0",
+            short_name="twin", long_name="Twin Two", is_channel=0,
+        )
+        self.bridge._contact_store.upsert(
+            "mc:twin1", "meshcore", "mc-0",
+            short_name="twin", long_name="Twin One", is_channel=0,
+        )
+        result = self.bridge._handle_command("!mtsender", "!dm twin hello")
+        self.assertIn("ambiguous", (result or "").lower())
+        self.bridge._radio_manager.send.assert_not_called()
+
+    def test_concrete_id_bypasses_lookup(self):
+        """A caller who already knows the target's unified id should skip the
+        contact lookup — useful when names don't exist yet or collide."""
+        self._enable_cross_dm(True)
+        self.bridge._handle_command(
+            "!mtsender", "!dm mc:abcdef hi from MT",
+        )
+        self.bridge._radio_manager.send.assert_called_once()
+        self.assertEqual(
+            self.bridge._radio_manager.send.call_args[0][0], "mc:abcdef",
+        )
+
+
 class TestOverflowPager(unittest.TestCase):
     """Test the !more pager mechanism."""
 

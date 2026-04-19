@@ -63,6 +63,58 @@ class ContactStore:
         rows = self._db.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    def find_by_name(
+        self,
+        name: str,
+        protocol: Optional[str] = None,
+    ) -> List[dict]:
+        """Case-insensitive fuzzy name lookup across ``custom_name``,
+        ``long_name``, ``short_name`` (in that priority order).
+
+        Used by the cross-protocol ``!dm <name>`` command to resolve a human
+        nickname to a concrete contact id on the other mesh.  Channels are
+        excluded — DMs don't target a channel row.  When *protocol* is given
+        (``"meshtastic"`` or ``"meshcore"``), only that side is searched.
+
+        Returns a list of matching contact dicts, sorted so exact-match and
+        custom-name hits come first (an exact match on a custom nickname
+        beats a substring match on a long_name that happens to contain the
+        same letters).
+        """
+        if not name or not name.strip():
+            return []
+        needle = name.strip().lower()
+        like = f"%{needle}%"
+        query = (
+            "SELECT * FROM contacts WHERE is_channel = 0 AND ("
+            "   lower(custom_name) LIKE ?"
+            "   OR lower(long_name) LIKE ?"
+            "   OR lower(short_name) LIKE ?"
+            ")"
+        )
+        params = [like, like, like]
+        if protocol:
+            query += " AND protocol = ?"
+            params.append(protocol)
+        rows = self._db.execute(query, params).fetchall()
+        contacts = [dict(r) for r in rows]
+
+        def _rank(c: dict) -> tuple:
+            # Lower rank sorts first. Priority: exact custom name → exact
+            # long name → exact short name → prefix-match custom → substring.
+            cn = (c.get("custom_name") or "").lower()
+            ln = (c.get("long_name") or "").lower()
+            sn = (c.get("short_name") or "").lower()
+            if cn == needle: return (0, cn)
+            if ln == needle: return (1, ln)
+            if sn == needle: return (2, sn)
+            if cn.startswith(needle): return (3, cn)
+            if ln.startswith(needle): return (4, ln)
+            return (5, cn or ln or sn)
+
+        contacts.sort(key=_rank)
+        return contacts
+
     def list_with_preview(self) -> List[dict]:
         """List contacts with last message preview for sidebar."""
         rows = self._db.execute("""

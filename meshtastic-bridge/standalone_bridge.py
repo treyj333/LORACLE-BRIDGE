@@ -1840,6 +1840,9 @@ class StandaloneBridge:
         self._command_registry["!clear"] = (self._cmd_clear, "reset conversation")
         self._command_registry["!ping"] = (self._cmd_ping, "connectivity test")
         self._command_registry["!more"] = (self._cmd_more, "next page of long response")
+        self._command_registry["!dm"] = (
+            self._cmd_dm, "<name-or-id> <text> - DM a user on the other mesh",
+        )
         if self.rag_enabled:
             self._command_registry["!rag"] = (self._cmd_rag, "on/off - toggle knowledge base")
             self._command_registry["!docs"] = (self._cmd_docs, "list documents")
@@ -1901,6 +1904,132 @@ class StandaloneBridge:
         remaining, _ts = entry
         del self._overflow[node_id]
         return remaining
+
+    # Settings key for the cross-protocol DM feature flag.  Off by default —
+    # bridging private messages across protocols is a trust decision that the
+    # operator has to opt into, per the same reasoning as Relay's is_dm guard.
+    _CROSS_DM_KEY = "cross_protocol_dm_enabled"
+
+    def _infer_protocol(self, node_id: str) -> str:
+        """Return the sender's protocol (``"meshtastic"`` | ``"meshcore"``)
+        from a unified or raw node id.  MC ids are always ``mc:``-prefixed;
+        everything else is treated as Meshtastic (raw ``!abc`` or ``mt:!abc``)."""
+        if isinstance(node_id, str) and node_id.startswith("mc:"):
+            return "meshcore"
+        return "meshtastic"
+
+    def _cmd_dm(self, node_id: str, arg: str) -> str:
+        """`!dm <name-or-id> <text>` — send a DM to a user on the other mesh.
+
+        Resolves the first positional arg as either:
+          * a concrete unified id (``mc:abcdef``, ``mt:!abc12345``)
+          * a raw Meshtastic id (``!abc12345``) — normalised to ``mt:…``
+          * a nickname / long-name / short-name looked up in the contacts DB
+
+        Cross-protocol DM has to be explicitly enabled in settings
+        (``cross_protocol_dm_enabled``) — same opt-in posture as the Relay
+        class, which blocks cross-protocol DMs at the bridge layer.  Local
+        (same-protocol) DM via ``!dm`` is always allowed since the sender
+        could have addressed it natively.
+        """
+        parts = arg.split(None, 1) if arg else []
+        if len(parts) < 2:
+            return (
+                "Usage: !dm <name-or-id> <text>. "
+                "Target can be a nickname (looked up across both meshes) or "
+                "a concrete id like mc:abcdef or !a1b2c3d4."
+            )
+        target_raw, text = parts[0].strip(), parts[1].strip()
+        if not text:
+            return "!dm: message body is empty."
+
+        source_proto = self._infer_protocol(node_id)
+        sender_native = node_id.split(":", 1)[1] if ":" in node_id else node_id
+
+        # 1) Direct unified / raw ids bypass the name lookup.
+        target_unified = None
+        target_proto = None
+        if target_raw.startswith("mc:"):
+            target_unified = target_raw
+            target_proto = "meshcore"
+        elif target_raw.startswith("mt:"):
+            target_unified = target_raw
+            target_proto = "meshtastic"
+        elif target_raw.startswith("!") and len(target_raw) == 9:
+            target_unified = f"mt:{target_raw}"
+            target_proto = "meshtastic"
+        else:
+            # 2) Nickname lookup across both protocols. Prefer the OTHER
+            #    protocol when a name matches on both sides — the command's
+            #    whole point is cross-mesh reach, so same-protocol collisions
+            #    yield to the remote side unless the user disambiguated.
+            matches = self._contact_store.find_by_name(target_raw)
+            if not matches:
+                return f"!dm: no contact named '{target_raw}' on either mesh."
+            # Drop the sender themselves from the match set — no self-DM.
+            matches = [m for m in matches if m.get("id") != node_id]
+            if not matches:
+                return f"!dm: '{target_raw}' only matched yourself."
+            # Split into other-protocol / same-protocol buckets.
+            other_proto = "meshcore" if source_proto == "meshtastic" else "meshtastic"
+            other_hits = [m for m in matches if m.get("protocol") == other_proto]
+            same_hits = [m for m in matches if m.get("protocol") == source_proto]
+            chosen = None
+            if len(other_hits) == 1:
+                chosen = other_hits[0]
+            elif len(other_hits) > 1:
+                names = ", ".join(
+                    (m.get("custom_name") or m.get("long_name") or m.get("short_name") or m["id"])
+                    for m in other_hits[:5]
+                )
+                return f"!dm: '{target_raw}' is ambiguous on the other mesh: {names}"
+            elif len(same_hits) == 1:
+                chosen = same_hits[0]
+            elif len(same_hits) > 1:
+                names = ", ".join(
+                    (m.get("custom_name") or m.get("long_name") or m.get("short_name") or m["id"])
+                    for m in same_hits[:5]
+                )
+                return f"!dm: '{target_raw}' is ambiguous: {names}"
+            if chosen is None:
+                return f"!dm: no contact named '{target_raw}' on either mesh."
+            target_unified = chosen["id"]
+            target_proto = chosen.get("protocol")
+
+        # 3) Gate cross-protocol DM behind the opt-in flag.  Same-protocol
+        #    DM is always allowed — it's a convenience on top of what the
+        #    sender could already do natively.
+        is_cross = (target_proto != source_proto)
+        if is_cross and not self._settings_store.get(self._CROSS_DM_KEY, False):
+            return (
+                "!dm: cross-protocol DM is disabled on this bridge. "
+                "Enable it in the dashboard CONFIG tab to let this command "
+                "forward DMs across the MT/MC boundary."
+            )
+
+        # 4) Build the outgoing text.  For cross-protocol sends, prefix with
+        #    a `from <proto> (<sender>):` tag so the recipient knows who
+        #    sent it and where from, mirroring the public-channel relay.
+        if is_cross:
+            sender_display = sender_native[-6:] if len(sender_native) > 6 else sender_native
+            outgoing = f"from {source_proto} ({sender_display}): {text}"
+        else:
+            outgoing = text
+
+        try:
+            self._radio_manager.send(target_unified, outgoing, channel=0, is_dm=True)
+        except Exception as e:
+            logger.warning(
+                f"!dm: send to {target_unified} failed: {e}"
+            )
+            return f"!dm: send failed ({e})"
+
+        target_label = target_unified.split(":", 1)[-1]
+        return (
+            f"Sent DM to {target_label} on {target_proto}."
+            if is_cross
+            else f"Sent DM to {target_label}."
+        )
 
     def _cmd_rag(self, node_id: str, arg: str) -> str:
         if not self.rag_enabled:

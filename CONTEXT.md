@@ -4,6 +4,28 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 01:05] — Cross-protocol DM via `!dm <name-or-id> <text>`
+
+- What changed:
+  - **New `ContactsStore.find_by_name(name, protocol=None)`** — case-insensitive substring lookup across `custom_name`, `long_name`, `short_name` (channels excluded). Returns matches ranked so exact custom-name hits outrank substring matches on long-names; optional protocol filter lets the caller ask "only look on the MC side." Used by the new `!dm` command to resolve nicknames to concrete contact ids on the other mesh.
+  - **New `!dm <target> <text>` command** in `StandaloneBridge._command_registry`. Target resolution: raw unified ids (`mc:abcdef` / `mt:!abc12345`) and bare Meshtastic ids (`!abc12345`) bypass the lookup; anything else is matched against the contacts DB across both protocols, preferring the *other* mesh when a name matches on both sides (the whole point of the command is cross-mesh reach). Ambiguous matches return a candidate list instead of guessing. Cross-protocol sends are prefixed `from <source> (<sender>): <text>` so the recipient knows who and where from, mirroring the existing public-channel relay.
+  - **New `_infer_protocol(node_id)` helper** — tiny utility to detect a sender's protocol from a unified / raw node id without threading new args through every command handler's signature. `mc:`-prefixed ids are MeshCore; everything else is Meshtastic.
+  - **Opt-in behaviour behind `cross_protocol_dm_enabled` SettingsStore flag** — off by default because bridging private messages across protocols is a trust decision, same reasoning as the existing `Relay.observe()` DM guard. Same-mesh `!dm` by nickname is always allowed (it's a convenience, not a trust decision; the sender could reach the target natively). Cross-mesh `!dm` returns a "disabled on this bridge" hint when the flag is off so remote users know why.
+  - **New `GET/POST /api/cross-dm` endpoints** + a CONFIG-tab CROSS-PROTOCOL DM section with a single checkbox. `loadConfigData()` seeds the checkbox from the persisted flag; `cfgToggleCrossDm()` POSTs changes and fires a toast.
+  - **Seven new unit tests** in `TestCrossProtocolDm` covering: missing-args usage hint, not-found, cross-protocol refused when flag off, cross-protocol forwarded when flag on (with sender-tag prefix), same-mesh DM always allowed (no tag), ambiguous name → candidate list returned, concrete unified id bypasses the lookup.
+- Why:
+  - The earlier phases delivered equal treatment for the *local* bridge operator — they could DM any peer, regardless of protocol, because the RadioManager was already protocol-agnostic. What was missing was cross-mesh reach *for remote users*: an MT node on the edge of the mesh had no way to DM an MC peer without also running this bridge themselves. Public channel 0 auto-relayed broadcasts, but `Relay.observe()` explicitly dropped DMs at the bridge layer (a privacy default). `!dm` is the opt-in escape hatch: operators who want their bridge to carry cross-protocol DMs can flip the CONFIG checkbox, and users on either mesh can then message each other by nickname.
+- Impact on project goals:
+  - Closes the last big "equal citizens" gap: the two user bases really can intermingle now, not just see each other's public traffic. The trust posture is preserved — off by default, explicit per-operator opt-in — so nothing about the default flow changes for anyone who doesn't want their bridge carrying private messages. `!dm` also works purely as a same-mesh convenience (nickname-to-id resolver) without needing the flag, which lowers the adoption cost: operators who just want the nickname ergonomic without the cross-mesh step can leave the flag off and still get value.
+- Files modified:
+  - `meshtastic-bridge/db/contacts.py` — `find_by_name(name, protocol=None)` with ranked substring match across the three name columns.
+  - `meshtastic-bridge/standalone_bridge.py` — `_infer_protocol` helper, `_cmd_dm` handler, `_CROSS_DM_KEY` settings key, `!dm` registered in `_init_commands`.
+  - `meshtastic-bridge/dashboard.py` — CROSS-PROTOCOL DM CONFIG section, `GET/POST /api/cross-dm` endpoints, `cfgToggleCrossDm()`, and `loadConfigData()` seed.
+  - `meshtastic-bridge/tests/test_standalone_bridge.py` — new `TestCrossProtocolDm` class with seven cases.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 00:15] — BRIDGE tab: per-direction stats + coloured flow-log arrows
 
 - What changed:

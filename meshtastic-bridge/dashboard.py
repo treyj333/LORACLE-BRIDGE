@@ -830,6 +830,41 @@ def api_ai_replies_set():
     return jsonify({"ok": True, "enabled": _bridge._ai_replies_enabled})
 
 
+# Cross-protocol DM opt-in. Lives under the same `!dm` command in
+# standalone_bridge's command registry; this endpoint flips the SettingsStore
+# flag that the handler checks.  GET is provided so the CONFIG tab can reflect
+# the persisted state on page load.
+
+_CROSS_DM_SETTINGS_KEY = "cross_protocol_dm_enabled"
+
+
+@app.route("/api/cross-dm", methods=["GET"])
+def api_cross_dm_get():
+    if _bridge is None:
+        return jsonify({"enabled": False})
+    try:
+        val = _bridge._settings_store.get(_CROSS_DM_SETTINGS_KEY, False)
+    except Exception:
+        val = False
+    return jsonify({"enabled": bool(val)})
+
+
+@app.route("/api/cross-dm", methods=["POST"])
+def api_cross_dm_set():
+    """Toggle the cross-protocol DM feature flag.  Off by default — bridging
+    private messages across protocols is a trust decision, so it has to be
+    explicitly opted into per bridge operator."""
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get("enabled", False))
+    try:
+        _bridge._settings_store.set(_CROSS_DM_SETTINGS_KEY, enabled)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "enabled": enabled})
+
+
 # ─── Thread / Contact endpoints ─────────────────────────────────────────────
 
 @app.route("/api/threads", methods=["GET"])
@@ -2516,6 +2551,21 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div class="lo-form-row">
         <span class="lo-form-label"></span>
         <span style="font-size:10px;color:var(--lo-faint)">When on, LORACLE answers incoming messages. When off, it logs but stays quiet.</span>
+      </div>
+    </div>
+  </details>
+
+  <!-- Cross-protocol DM — off by default, opt-in per bridge operator. -->
+  <details class="lo-section">
+    <summary class="lo-section-head">CROSS-PROTOCOL DM</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">!dm COMMAND</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-cross-dm" onchange="cfgToggleCrossDm(this.checked)"> Allow <code>!dm &lt;name&gt; &lt;text&gt;</code> to forward DMs across the MT/MC boundary</label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <span style="font-size:10px;color:var(--lo-faint);line-height:1.7">Same-mesh <code>!dm</code> (DM someone on your own side by nickname) always works. Cross-mesh DM is off by default — bridging private messages is a trust decision. When enabled, a remote MT user can type <code>!dm alice hi</code> and the bridge delivers it as a DM on the MC side (and vice versa), tagged with the sender's network.</span>
       </div>
     </div>
   </details>
@@ -5477,6 +5527,11 @@ async function loadConfigData() {
   if (cd) { document.getElementById('cfg-max-len').value = cd.max_response_length; document.getElementById('cfg-max-len-val').textContent = cd.max_response_length; document.getElementById('cfg-compression').checked = cd.compression_enabled; }
   // RAG
   cfgLoadRagDocs(); cfgLoadDbStats(); cfgLoadRouting(); cfgLoadPacks(); cfgLoadChannels(); cfgLoadRadio();
+  // Cross-protocol DM opt-in
+  try {
+    var xd = await callApi('GET', '/api/cross-dm');
+    if (xd) document.getElementById('cfg-cross-dm').checked = !!xd.enabled;
+  } catch(e) {}
 }
 
 async function cfgRefreshModels() {
@@ -5490,6 +5545,10 @@ async function cfgSwitchModel() { var m = document.getElementById('cfg-model-sel
 async function cfgSavePrompt() { var d = await callApi('POST', '/api/system-prompt', {prompt: document.getElementById('cfg-prompt').value}); if (d && d.ok) { showToast('Prompt saved'); _configDirty = false; } }
 async function cfgApplySettings() { var d = await callApi('POST', '/api/config', { max_response_length: parseInt(document.getElementById('cfg-max-len').value), compression_enabled: document.getElementById('cfg-compression').checked }); if (d && d.ok) { showToast('Settings applied'); _configDirty = false; } }
 async function cfgToggleAiReplies(on) { await callApi('POST', '/api/ai-replies', {enabled: on}); }
+async function cfgToggleCrossDm(on) {
+  var d = await callApi('POST', '/api/cross-dm', {enabled: on});
+  if (d && d.ok) showToast(on ? 'Cross-protocol DM enabled' : 'Cross-protocol DM disabled');
+}
 async function cfgToggleRag(on) { await callApi('POST', '/api/rag/toggle', {enabled: on}); }
 async function cfgIngestUrl() { var url = document.getElementById('cfg-url-input').value.trim(); if (!url) return; var st = document.getElementById('cfg-url-status'); st.textContent = 'Fetching...'; var d = await callApi('POST', '/api/rag/ingest-url', {url: url}); if (d && d.ok) { st.innerHTML = '<span style="color:var(--lo-accent-2)">\u2713 ' + escapeHtml(d.filename) + '</span>'; document.getElementById('cfg-url-input').value = ''; cfgLoadRagDocs(); } else { st.innerHTML = '<span style="color:#c0392b">Error</span>'; } }
 async function cfgUploadFile() { var input = document.getElementById('cfg-file-upload'); if (!input.files.length) return; var fd = new FormData(); fd.append('file', input.files[0]); try { var r = await fetch('/api/rag/ingest-file', {method:'POST',body:fd}); var d = await r.json(); if (d.ok) { showToast('Uploaded: ' + d.filename); input.value = ''; cfgLoadRagDocs(); } else showToast(d.error||'Failed','error'); } catch(e) { showToast('Error','error'); } }

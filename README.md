@@ -234,6 +234,14 @@ The first-run wizard is protocol-agnostic: step 1 is labelled "PRIMARY RADIO" (n
 
 The BRIDGE tab's stats row is split into two mirrored direction columns — `MT → MC` (teal) and `MC → MT` (purple) — each showing its own `relayed` / `dropped` counts pulled from `Relay.stats().by_direction`. Flow-log arrows are colour-coded by source protocol, so you can eyeball which direction a relay event came from without reading the `mt→mc` / `mc→mt` text.
 
+### Cross-Protocol DM — `!dm <name-or-id> <text>`
+
+A new mesh command lets users on either protocol DM someone on the *other* mesh. The bridge resolves `<name-or-id>`:
+- Raw unified ids (`mc:abcdef`, `mt:!abc12345`) and bare Meshtastic ids (`!abc12345`) are used directly.
+- Anything else is looked up by `custom_name` / `long_name` / `short_name` against the contacts DB. When a name matches on both meshes, the *other* mesh wins (the command's whole point is cross-mesh reach). Ambiguous matches get a candidate list back instead of a guess.
+
+Cross-mesh delivery is **off by default** — bridging private messages across protocols is a trust decision. Flip the `CROSS-PROTOCOL DM` toggle in the CONFIG tab to enable it on your bridge. Same-mesh `!dm` by nickname always works and is just a convenience. Cross-mesh sends are prefixed `from meshtastic (…): <text>` (or `from meshcore (…): …`) so the recipient knows where the message came from, mirroring the public-channel relay tag.
+
 ### Node List Sidebar
 
 Click the **☰** button in the title bar to open the node sidebar. Lists all nodes with hops, last heard time, and unread count. Sort by name, hops, heard, or unread. Filter with the search box. Click any row to open that node's floating window.
