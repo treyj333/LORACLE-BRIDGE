@@ -820,6 +820,7 @@ class StandaloneBridge:
                     hops_traveled=hops, rx_rssi=rssi, rx_snr=snr,
                 )
                 self._contact_store.increment_unread(sender)
+                sse_contact_id = sender
             else:
                 chan_id = f"{protocol}:channel:{channel}"
                 chan_name = f"Channel {channel}"
@@ -836,6 +837,17 @@ class StandaloneBridge:
                     is_channel_msg=True,
                 )
                 self._contact_store.increment_unread(chan_id)
+                sse_contact_id = chan_id
+            # Push-notify connected dashboards so any open thread panel for
+            # this contact refreshes instantly instead of waiting for the
+            # next 4s poll tick. Matches what record_message() does for
+            # outgoing sends; this closes the gap for inbound peer traffic.
+            try:
+                _emit_sse("thread_updated", {
+                    "contact_id": sse_contact_id, "direction": "in",
+                })
+            except Exception:
+                pass
         except Exception as e:
             logger.debug(f"DB persist error: {e}")
 

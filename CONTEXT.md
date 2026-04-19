@@ -4,6 +4,26 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 19:30] — SSE push for messages + bridge relays (sub-100ms "feels instant" UX)
+
+- What changed:
+  - **Frontend now subscribes to `/api/events`** (Server-Sent Events) at dashboard init. The server already had a working SSE endpoint and was emitting events for every message-store write and every successful bridge relay; the frontend just never connected to it. New `EventSource` wired in the bottom-of-body init block with exponential back-off reconnection (1s → 30s) so wifi hiccups don't break the live feed permanently. The `/api/state` poll stays on at 2s as a safety net.
+  - **Three event types handled:**
+    - `heartbeat` — ignored, server fallback every ~15s to keep the connection warm.
+    - `thread_updated` — fired by `record_message()` (outgoing) and `_persist_incoming()` (incoming, newly wired). Handler refreshes any open float window for that contact, and nudges the sidebar so unread badges recompute.
+    - `bridge.relay` — fired from `_on_bridge_relay` on every successful cross-protocol relay. Handler refreshes both public-channel threads if open (so the relayed copy appears instantly on both sides) and re-runs `bridgePollEvents` + `bridgePollStats` if the BRIDGE tab is visible, so the LIVE FLOW log and counters tick immediately instead of waiting for the 2.5s bridge-tab poll tick.
+  - **`_persist_incoming` now emits `thread_updated` SSE** for inbound peer traffic. Previously only `record_message()` (outgoing) fired the event, which meant an open thread panel wouldn't see a new incoming DM/channel message until the next 4s peer-panel refresh tick. Incoming is the more latency-sensitive direction (user is waiting for a response), so this closes the most visible gap.
+- Why:
+  - User ask: "Apple-level seamless. Even 4s feels too slow. Is there a way to do this without refreshing — just a ping — or bump the refresh to 2s?" The codebase already had the push infrastructure fully wired server-side but unused on the client. Hooking it up gives sub-100ms updates for the two surfaces most users actually watch (thread panels, bridge flow log), without inventing any new plumbing. Polling stays as a fallback for correctness — SSE drops are tolerated, not fatal.
+- Impact on project goals:
+  - End-to-end latency for in-dashboard message rendering drops from 4000ms (worst case on peer panels) to under ~100ms on the happy path. BRIDGE tab LIVE FLOW similarly drops from 2500ms to <100ms. Polls stay on as fallback so any SSE disconnect is covered within 2-4s. Architecture is now "SSE first, poll as safety net" — the canonical way to do realtime on a Flask + vanilla-JS stack without introducing WebSockets or a message broker.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — new `EventSource('/api/events')` subscriber block at the end of the main init IIFE with exponential-backoff reconnect; handlers for `thread_updated` and `bridge.relay` events. Minor reference fix: `bridgePollFlow` → `bridgePollEvents`.
+  - `meshtastic-bridge/standalone_bridge.py` — `_persist_incoming()` now emits `_emit_sse("thread_updated", …)` after inserting into the message store so inbound peer traffic pushes to connected dashboards.
+- Tests: 315/315 pass.
+
+---
+
 ## [2026-04-19 19:10] — All open thread panels auto-refresh + opposite-side public channel refresh on send
 
 - What changed:

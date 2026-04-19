@@ -6469,6 +6469,76 @@ initCanvas();
 showConnectModal();
 poll();
 setInterval(poll, 2000);
+
+// ─── Server-Sent Events (push-based updates) ───────────────────────────────
+// The server emits events for every message write and every successful
+// bridge relay. Subscribing here lets us react in under ~100ms instead of
+// waiting for the next 2s poll tick, which is the difference between
+// "feels clunky" and "feels instant." The /api/state poll stays on as a
+// safety net — if the EventSource drops (wifi hiccup, server restart), we
+// lose at most 2s of snappiness, not correctness.
+(function() {
+  var es = null;
+  var retryDelay = 1000;  // ms, doubles on each failure, capped at 30s
+  function _handle(ev) {
+    var d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (!d || !d.type) return;
+    switch (d.type) {
+      case 'heartbeat':
+        return;
+      case 'thread_updated':
+        // A message was written to this contact's thread. If a float
+        // window is open for that contact, refresh it right now.
+        if (d.contact_id && _openWindows[d.contact_id]) {
+          loadFloatData(d.contact_id);
+        }
+        // Unread badge may have changed — nudge the sidebar too.
+        try { if (typeof renderNodeList === 'function') renderNodeList(); } catch (e) {}
+        break;
+      case 'bridge.relay':
+        // The relay just completed a cross-protocol send. On_bridge_relay
+        // back-fills the destination thread's message store, so if that
+        // thread is open in a float window, refresh. Also bump the bridge
+        // tab's flow log if we're on that view.
+        var inner = d.event || {};
+        var destProto = inner.dest || '';
+        var ch = inner.channel;
+        if (destProto && (ch === 0 || ch === '0' || typeof ch === 'undefined')) {
+          var destId = destProto === 'meshcore' ? 'mc:channel:0' : 'meshtastic:channel:0';
+          if (_openWindows[destId]) loadFloatData(destId);
+          var srcId = destProto === 'meshcore' ? 'meshtastic:channel:0' : 'mc:channel:0';
+          if (_openWindows[srcId]) loadFloatData(srcId);
+        }
+        // BRIDGE tab flow log + stats refresh, so the user doesn't wait
+        // for the 2.5s BRIDGE poll tick to see the event they just caused.
+        try {
+          if (App.view === 'bridge') {
+            if (typeof bridgePollEvents === 'function') bridgePollEvents();
+            if (typeof bridgePollStats === 'function') bridgePollStats();
+          }
+        } catch (e) {}
+        break;
+    }
+  }
+  function _connect() {
+    try {
+      es = new EventSource('/api/events');
+      retryDelay = 1000;  // reset on successful (re)connect
+      es.onmessage = _handle;
+      es.onerror = function() {
+        try { es.close(); } catch (e) {}
+        es = null;
+        setTimeout(_connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000);
+      };
+    } catch (e) {
+      setTimeout(_connect, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    }
+  }
+  _connect();
+})();
 </script>
 </body>
 </html>"""
