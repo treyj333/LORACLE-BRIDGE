@@ -4,6 +4,28 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-19 18:40] — DM-only inference by default: auto-greet + public-channel AI replies now OFF
+
+- What changed:
+  - **Greeter default flipped from ON → OFF.** `StandaloneBridge.__init__` parameter `auto_greet: bool = True` → `False`; CLI `--auto-greet` default `True` → `False`. The bridge no longer auto-DMs a welcome to every new node it sees. Existing users who rely on the greeter can flip it back on from the new CONFIG toggle or keep the `--auto-greet` CLI flag, which still works as an explicit override.
+  - **Public-channel AI replies default flipped from ON → OFF.** Same treatment for `public_talk`: constructor default and CLI default both now `False`. AI inference runs on DMs only; public-channel messages still flow through the bridge relay and show up in the dashboard, but the bot no longer answers "loracle, what's the weather?" broadcasts unless the operator explicitly turns it on.
+  - **Both settings are now SettingsStore-backed.** New class constants `_AUTO_GREET_KEY = "auto_greet_enabled"` and `_PUBLIC_TALK_KEY = "public_talk_enabled"`. Constructor reads from `SettingsStore` first and falls back to the constructor/CLI arg when the stored value is unset, so the dashboard toggle survives restarts. New helper methods `set_auto_greet(bool)` / `set_public_talk(bool)` persist to SettingsStore AND flip the live `greeter.enabled` / `self.public_talk` flags, so changes take effect on the next incoming message without a bridge restart.
+  - **New `/api/messaging-prefs` endpoint** (GET + POST) exposes the toggles. GET returns `{auto_greet, public_talk}` read from the live bridge state; POST accepts either key and calls the corresponding setter.
+  - **New CONFIG tab section: "MESSAGING BEHAVIOUR".** Two checkboxes with explainer copy describing what each does, when you'd want it on, and the DM-only default. Seeds from `/api/messaging-prefs` in `loadConfigData()`; writes via `cfgToggleAutoGreet` / `cfgTogglePublicTalk` with toast confirmation. Placed just above the CROSS-PROTOCOL DM section so all "who can the bot talk to" controls cluster together. Opened by default (not collapsed) so first-time visitors see the toggles without hunting.
+- Why:
+  - User on hardware observation: they sent a message to the public channel from a peer radio and got an AI DM in response. Two problems in one event:
+    1. The greeter had queued a welcome DM to the new node (no request from the user, just first-sighting auto-greet).
+    2. Even when the bot was addressed by name on a public channel, its reply route hard-codes `is_dm=True` in `_processing_loop()` so the reply went back as a DM rather than staying on the channel — confusing and violating "stay out of DMs unless someone DMed you first."
+  - User's mental model: "AI inference only on DMs. Let me text normally on public channels without the bot interposing. Don't cold-message people on first sight." Flipping both defaults to OFF matches that model exactly, and keeping both toggles available means anyone who wants the old behaviour (e.g. hosted LORACLE answering public-channel chatter) can re-enable with one click.
+- Impact on project goals:
+  - The bridge is now silent by default until explicitly DMed. No cold greetings, no public-channel interjections, no AI-reply-to-channel-message behaviour that routed as a DM. Operators who want either feature get a one-click, restart-free toggle in CONFIG. The trust posture matches "I just want a mesh bridge + a private AI, not a chatty bot" — what most operators actually want.
+- Files modified:
+  - `meshtastic-bridge/standalone_bridge.py` — constructor defaults, CLI defaults, SettingsStore seed at construct-time, `_AUTO_GREET_KEY` / `_PUBLIC_TALK_KEY` class constants, `set_auto_greet()` / `set_public_talk()` helpers.
+  - `meshtastic-bridge/dashboard.py` — `/api/messaging-prefs` GET/POST, CONFIG tab MESSAGING BEHAVIOUR section with two toggles + explainer copy, `loadConfigData()` seeds, `cfgToggleAutoGreet` / `cfgTogglePublicTalk` handlers.
+- Tests: 315/315 pass. The existing greeter tests keep passing because they construct the Greeter directly (bypass the bridge's SettingsStore read); public-talk tests construct the bridge with `public_talk=True` explicitly.
+
+---
+
 ## [2026-04-19 18:15] — Dot-grid texture on the mesh canvas (TE / Braun industrial-panel style)
 
 - What changed:

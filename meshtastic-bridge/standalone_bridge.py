@@ -212,9 +212,9 @@ class StandaloneBridge:
         rag_dir: Optional[str] = None,
         dashboard_port: int = 8000,
         addon_config: Optional[Dict[str, dict]] = None,
-        auto_greet: bool = True,
+        auto_greet: bool = False,
         greet_message: Optional[str] = None,
-        public_talk: bool = True,
+        public_talk: bool = False,
         protocol: str = "auto",
         ai_replies_enabled: bool = True,
         second_radio: Optional[str] = None,
@@ -271,7 +271,7 @@ class StandaloneBridge:
         self._traceroute_results: Dict[str, dict] = {}  # dest_id -> {route, timestamp}
         self._last_nodedb_refresh: float = 0.0  # last time we re-scanned interface.nodes
         self._channel_last_send: Dict[int, float] = {}  # public-channel reply cooldown
-        self.public_talk = public_talk  # respond on public channels when addressed
+        # public_talk resolved below from SettingsStore (or CLI fallback)
 
         # ── Bridge relay (LORACLE v2 Phase 2 + Phase 5) ─────────────────
         # Cross-protocol relay between Meshtastic and MeshCore. The relay
@@ -311,15 +311,25 @@ class StandaloneBridge:
         )
         self.coverage = CoverageLogger(coverage_path)
 
-        # Greeter — proactively DM new nodes a brief welcome
+        # Greeter — proactively DM new nodes a brief welcome. The persisted
+        # SettingsStore value wins over the CLI default so the dashboard
+        # toggle survives restarts — user can still override via --auto-greet
+        # on the command line (CLI arg is treated as "set" only when the
+        # stored value is absent).
         greeter_path = os.path.join(
             os.path.expanduser("~"), ".mesh-llm", "greeted_nodes.json"
         )
+        stored_greet = self._settings_store.get(self._AUTO_GREET_KEY, None)
+        initial_greet = bool(stored_greet) if stored_greet is not None else auto_greet
         self.greeter = GreeterService(
             path=greeter_path,
             message=greet_message or DEFAULT_GREETING,
-            enabled=auto_greet,
+            enabled=initial_greet,
         )
+        # Same persistence pattern for public-channel AI replies. Off by
+        # default matches user intent: DM-only inference.
+        stored_talk = self._settings_store.get(self._PUBLIC_TALK_KEY, None)
+        self.public_talk = bool(stored_talk) if stored_talk is not None else public_talk
 
         # RAG
         self.rag_enabled = rag_enabled
@@ -1945,6 +1955,29 @@ class StandaloneBridge:
     # bridging private messages across protocols is a trust decision that the
     # operator has to opt into, per the same reasoning as Relay's is_dm guard.
     _CROSS_DM_KEY = "cross_protocol_dm_enabled"
+    # Messaging-behaviour toggles. Persisted in SettingsStore so the dashboard
+    # CONFIG checkboxes survive restarts. Both default OFF so the bridge is
+    # silent unless the operator explicitly asks for AI involvement:
+    #   auto_greet_enabled — proactively DM a welcome to brand-new nodes
+    #   public_talk_enabled — respond to public-channel messages that name-tag
+    #                         the bot (instead of DM-only inference)
+    _AUTO_GREET_KEY = "auto_greet_enabled"
+    _PUBLIC_TALK_KEY = "public_talk_enabled"
+
+    def set_auto_greet(self, enabled: bool) -> None:
+        """Persist + live-toggle the auto-greet feature. New value takes
+        effect on the next incoming message (Greeter reads the flag before
+        it queues), so the user doesn't have to restart the bridge."""
+        self._settings_store.set(self._AUTO_GREET_KEY, bool(enabled))
+        if hasattr(self, "greeter") and self.greeter is not None:
+            self.greeter.enabled = bool(enabled)
+
+    def set_public_talk(self, enabled: bool) -> None:
+        """Persist + live-toggle the public-channel AI reply feature. Takes
+        effect immediately — the next public-channel message to arrive will
+        either be answered (if True) or ignored (if False)."""
+        self._settings_store.set(self._PUBLIC_TALK_KEY, bool(enabled))
+        self.public_talk = bool(enabled)
 
     def _infer_protocol(self, node_id: str) -> str:
         """Return the sender's protocol (``"meshtastic"`` | ``"meshcore"``)
@@ -2577,8 +2610,8 @@ def parse_args():
         "--auto-greet",
         dest="auto_greet",
         action="store_true",
-        default=True,
-        help="Auto-DM new mesh nodes a brief welcome (default: on)",
+        default=False,
+        help="Auto-DM new mesh nodes a brief welcome (default: off — toggle from dashboard CONFIG)",
     )
     parser.add_argument(
         "--no-auto-greet",
@@ -2595,8 +2628,8 @@ def parse_args():
         "--public-talk",
         dest="public_talk",
         action="store_true",
-        default=True,
-        help="Respond to public-channel messages that address LORACLE by name (default: on)",
+        default=False,
+        help="Respond to public-channel messages that address LORACLE by name (default: off — DM only)",
     )
     parser.add_argument(
         "--no-public-talk",

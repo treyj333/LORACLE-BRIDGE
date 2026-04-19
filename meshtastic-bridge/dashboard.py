@@ -879,6 +879,43 @@ def api_cross_dm_set():
     return jsonify({"ok": True, "enabled": enabled})
 
 
+# Reply-behaviour toggles. Both default OFF so the bridge is silent unless
+# the operator explicitly turns on auto-greet or public-channel replies —
+# matches the "only respond to DMs" mental model most operators expect.
+@app.route("/api/messaging-prefs", methods=["GET"])
+def api_messaging_prefs_get():
+    if _bridge is None:
+        return jsonify({"auto_greet": False, "public_talk": False})
+    try:
+        greeter_on = bool(getattr(_bridge.greeter, "enabled", False)) if hasattr(_bridge, "greeter") else False
+    except Exception:
+        greeter_on = False
+    return jsonify({
+        "auto_greet": greeter_on,
+        "public_talk": bool(getattr(_bridge, "public_talk", False)),
+    })
+
+
+@app.route("/api/messaging-prefs", methods=["POST"])
+def api_messaging_prefs_set():
+    if _bridge is None:
+        return jsonify({"error": "Bridge not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    changed = {}
+    try:
+        if "auto_greet" in data:
+            val = bool(data["auto_greet"])
+            _bridge.set_auto_greet(val)
+            changed["auto_greet"] = val
+        if "public_talk" in data:
+            val = bool(data["public_talk"])
+            _bridge.set_public_talk(val)
+            changed["public_talk"] = val
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "changed": changed})
+
+
 # ─── Thread / Contact endpoints ─────────────────────────────────────────────
 
 @app.route("/api/threads", methods=["GET"])
@@ -2861,6 +2898,32 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div class="lo-form-row">
         <span class="lo-form-label"></span>
         <span style="font-size:10px;color:var(--lo-faint)">When on, LORACLE answers incoming messages. When off, it logs but stays quiet.</span>
+      </div>
+    </div>
+  </details>
+
+  <!-- Reply-behaviour toggles. Both default OFF so the bridge is silent
+       unless the operator asks for AI involvement. Matches the "only
+       respond to DMs" mental model — no auto-greeting, no public-channel
+       replies. -->
+  <details class="lo-section" open>
+    <summary class="lo-section-head">MESSAGING BEHAVIOUR</summary>
+    <div class="lo-section-body">
+      <div class="lo-form-row">
+        <span class="lo-form-label">AUTO-GREET</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-auto-greet" onchange="cfgToggleAutoGreet(this.checked)"> DM a one-time welcome to brand-new nodes as they appear on the mesh</label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <span style="font-size:10px;color:var(--lo-faint);line-height:1.7">Off by default. When on, the bridge sends a single DM to each new node the first time it's seen. Turn it on if you want your node to introduce itself; leave it off to stay silent until someone DMs you first.</span>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label">PUBLIC-CHANNEL REPLIES</span>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="cfg-public-talk" onchange="cfgTogglePublicTalk(this.checked)"> Respond on the public channel when a message addresses the bot by name</label>
+      </div>
+      <div class="lo-form-row">
+        <span class="lo-form-label"></span>
+        <span style="font-size:10px;color:var(--lo-faint);line-height:1.7">Off by default — AI inference runs on DMs only. Public-channel traffic still flows through the bridge relay and shows up in the dashboard, but the bot won't answer a "loracle, what's the weather?" broadcast unless you flip this on.</span>
       </div>
     </div>
   </details>
@@ -6246,6 +6309,17 @@ async function loadConfigData() {
     var xd = await callApi('GET', '/api/cross-dm');
     if (xd) document.getElementById('cfg-cross-dm').checked = !!xd.enabled;
   } catch(e) {}
+  // Messaging behaviour toggles (auto-greet + public-channel AI replies).
+  // Both default OFF to match "DM-only inference" user expectation.
+  try {
+    var mp = await callApi('GET', '/api/messaging-prefs');
+    if (mp) {
+      var g = document.getElementById('cfg-auto-greet');
+      var p = document.getElementById('cfg-public-talk');
+      if (g) g.checked = !!mp.auto_greet;
+      if (p) p.checked = !!mp.public_talk;
+    }
+  } catch(e) {}
 }
 
 async function cfgRefreshModels() {
@@ -6262,6 +6336,14 @@ async function cfgToggleAiReplies(on) { await callApi('POST', '/api/ai-replies',
 async function cfgToggleCrossDm(on) {
   var d = await callApi('POST', '/api/cross-dm', {enabled: on});
   if (d && d.ok) showToast(on ? 'Cross-protocol DM enabled' : 'Cross-protocol DM disabled');
+}
+async function cfgToggleAutoGreet(on) {
+  var d = await callApi('POST', '/api/messaging-prefs', {auto_greet: on});
+  if (d && d.ok) showToast(on ? 'Auto-greet on — will DM new nodes' : 'Auto-greet off');
+}
+async function cfgTogglePublicTalk(on) {
+  var d = await callApi('POST', '/api/messaging-prefs', {public_talk: on});
+  if (d && d.ok) showToast(on ? 'Public-channel replies on' : 'Public-channel replies off — DM only');
 }
 async function cfgToggleRag(on) { await callApi('POST', '/api/rag/toggle', {enabled: on}); }
 async function cfgIngestUrl() { var url = document.getElementById('cfg-url-input').value.trim(); if (!url) return; var st = document.getElementById('cfg-url-status'); st.textContent = 'Fetching...'; var d = await callApi('POST', '/api/rag/ingest-url', {url: url}); if (d && d.ok) { st.innerHTML = '<span style="color:var(--lo-accent-2)">\u2713 ' + escapeHtml(d.filename) + '</span>'; document.getElementById('cfg-url-input').value = ''; cfgLoadRagDocs(); } else { st.innerHTML = '<span style="color:#c0392b">Error</span>'; } }
