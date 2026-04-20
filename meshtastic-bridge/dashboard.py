@@ -1111,6 +1111,26 @@ def api_thread_send(thread_id):
     )
 
     is_channel = "channel:" in thread_id
+    # Reject DM sends to anonymous channel-broadcast pseudo-ids before
+    # they reach the RadioManager. mc:unknown (legacy) and mc:anon:*
+    # (new) are created for incoming channel messages where the sender's
+    # pubkey isn't transmitted — MC channel broadcasts are anonymous by
+    # design. DM'ing them raises a cryptic "Invalid public key hex
+    # string" in the MC lib; catch it here with a user-readable error.
+    if thread_id.startswith("mc:") and not is_channel:
+        mc_native = thread_id[3:]
+        if mc_native == "unknown" or mc_native.startswith("anon:"):
+            update_message(
+                msg_id,
+                delivery_status="failed",
+                error="Cannot DM: sender is anonymous (channel broadcast). Reply on the public channel instead.",
+            )
+            return jsonify({
+                "ok": False,
+                "error": "Cannot DM an anonymous channel sender — MeshCore channel "
+                         "broadcasts don't carry sender identity. Reply on the public "
+                         "channel instead.",
+            }), 400
     # Normalise the outgoing id into a form RadioManager understands.
     # Thread IDs come in several shapes depending on how the contact was
     # created: ``mt:!abc`` / ``!abc`` / ``meshtastic:channel:0`` / ``mc:abcdef``
@@ -4913,6 +4933,34 @@ async function openFloatWindow(node) {
   win.style.left = wx + 'px'; win.style.top = wy + 'px';
   var label = node.label || node.id.slice(-6);
   var eid = node.id.replace(/[^a-zA-Z0-9]/g, '_');
+  // Anonymous MC channel-broadcast senders have pseudo-ids like
+  // "mc:anon:0:tn03" or the legacy "mc:unknown" — the MC protocol
+  // doesn't transmit sender pubkey on channel broadcasts, so we have
+  // no identity to DM them with. Replace the composer with a short
+  // explainer so the user doesn't type a message, click SEND, and
+  // get a confusing server error. Suggest the PUBLIC CHANNEL as the
+  // right reply target.
+  var mcNative = node.id.indexOf('mc:') === 0 ? node.id.slice(3) : '';
+  var isAnonMc = (mcNative === 'unknown' || mcNative.indexOf('anon:') === 0);
+  var composerHtml;
+  if (isAnonMc) {
+    composerHtml =
+      '<div class="lo-fw-composer lo-fw-composer-disabled" style="flex-direction:column;align-items:stretch;padding:10px;gap:6px">' +
+        '<div style="color:#9b59b6;font-size:11px;letter-spacing:0.05em">\u25C7 CHANNEL SENDER \u2014 CAN\u2019T DM</div>' +
+        '<div style="color:var(--lo-dim);font-size:10px;line-height:1.5">' +
+          'MeshCore channel broadcasts don\u2019t carry a sender pubkey \u2014 there\u2019s ' +
+          'no address to DM. Reply on the <strong>PUBLIC CHANNEL \u00b7 MESHCORE</strong> ' +
+          'thread instead, or wait for ' + escapeHtml(label) + ' to advertise a contact card.' +
+        '</div>' +
+      '</div>';
+  } else {
+    composerHtml =
+      '<div class="lo-fw-composer">' +
+        '<span class="lo-prompt">\u003e</span>' +
+        '<input type="text" placeholder="message ' + escapeHtml(label) + '..." onkeydown="if(event.key===\'Enter\'){event.preventDefault();floatSend(\'' + escapeHtml(node.id) + '\',this)}">' +
+        '<button class="lo-send" onclick="floatSend(\'' + escapeHtml(node.id) + '\',this.previousElementSibling)">SEND</button>' +
+      '</div>';
+  }
   win.innerHTML =
     '<div class="lo-fw-header" onmousedown="startDragWin(event,this.parentElement)">' +
       '<span class="lo-fw-name" id="fw-title-' + eid + '" ondblclick="floatStartRename(\'' + escapeHtml(node.id) + '\')" title="Double-click to rename">' + escapeHtml(label) + '</span>' +
@@ -4921,11 +4969,7 @@ async function openFloatWindow(node) {
     '<div class="lo-fw-meta" id="fw-m-' + eid + '">Loading...</div>' +
     '<div class="lo-fw-actions" id="fw-a-' + eid + '"></div>' +
     '<div class="lo-fw-messages" id="fw-g-' + eid + '"><div class="lo-fw-empty">LOADING...</div></div>' +
-    '<div class="lo-fw-composer">' +
-      '<span class="lo-prompt">\u003e</span>' +
-      '<input type="text" placeholder="message ' + escapeHtml(label) + '..." onkeydown="if(event.key===\'Enter\'){event.preventDefault();floatSend(\'' + escapeHtml(node.id) + '\',this)}">' +
-      '<button class="lo-send" onclick="floatSend(\'' + escapeHtml(node.id) + '\',this.previousElementSibling)">SEND</button>' +
-    '</div>';
+    composerHtml;
   document.getElementById('float-windows').appendChild(win);
   _openWindows[node.id] = win;
   _bringWinToFront(win);
@@ -5063,13 +5107,32 @@ async function loadFloatData(nodeId) {
   var aiLabel = aiVal === 1 ? 'AI: ON' : aiVal === 0 ? 'AI: OFF' : 'AI: AUTO';
   var aiClass = aiVal === 1 ? ' on' : '';
   var isChannel = nodeId.indexOf('channel:') !== -1;
+  // MeshCore has no traceroute — the MC firmware doesn't expose it.
+  // MC pseudo-ids for anon channel broadcasts (mc:anon:*, mc:unknown)
+  // also can't be AI-replied to (no DM target) or traced (not MT).
+  var isMC = nodeId.indexOf('mc:') === 0;
+  var mcNative = isMC ? nodeId.slice(3) : '';
+  var isAnonMc = isMC && (mcNative === 'unknown' || mcNative.indexOf('anon:') === 0);
   var favOn = !!contact.is_favorite;
   var favLabel = favOn ? '\u2605 FAV' : '\u2606 FAV';
   var favClass = favOn ? ' on' : '';
-  actEl.innerHTML = '<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>' +
-    (isChannel ? '' : ' <button class="' + favClass + '" onclick="floatToggleFavorite(\'' + escapeHtml(nodeId) + '\')">' + favLabel + '</button>') +
-    (isChannel ? '' : ' <button onclick="floatStartRename(\'' + escapeHtml(nodeId) + '\')">RENAME</button>') +
-    (isChannel ? '' : ' <button onclick="floatTrace(\'' + escapeHtml(nodeId) + '\')">TRACE</button>');
+  var parts = [];
+  // AI toggle: skip entirely for anon MC (can't DM → can't auto-reply).
+  if (!isAnonMc) {
+    parts.push('<button class="' + aiClass + '" onclick="floatToggleAi(\'' + escapeHtml(nodeId) + '\')">' + aiLabel + '</button>');
+  }
+  // FAV + RENAME are both fine for MC/anon (operator can star + label).
+  if (!isChannel) {
+    parts.push('<button class="' + favClass + '" onclick="floatToggleFavorite(\'' + escapeHtml(nodeId) + '\')">' + favLabel + '</button>');
+    parts.push('<button onclick="floatStartRename(\'' + escapeHtml(nodeId) + '\')">RENAME</button>');
+    // TRACE: MT-only (MC firmware has no traceroute surface — see
+    // radio/meshcore_backend.py comment about FeatureNotSupported).
+    // Hiding the button avoids confused clicks on "not supported" toasts.
+    if (!isMC) {
+      parts.push('<button onclick="floatTrace(\'' + escapeHtml(nodeId) + '\')">TRACE</button>');
+    }
+  }
+  actEl.innerHTML = parts.join(' ');
   // Use custom_name in the header if set
   var titleEl = document.getElementById('fw-title-' + eid);
   if (titleEl && contact.custom_name) titleEl.textContent = contact.custom_name;

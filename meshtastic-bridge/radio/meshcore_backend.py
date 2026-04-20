@@ -23,6 +23,20 @@ except ImportError:
 logger = logging.getLogger("radio.meshcore")
 
 
+def _looks_like_hex(s: str) -> bool:
+    """Cheap guard: does this string look like a valid pubkey prefix?
+    MC pubkeys are even-length hex; the lib blows up with ValueError if
+    you try to DM "unknown" or any non-hex value. We validate before
+    sending so operators get a clear error instead of a cryptic one."""
+    if not s or len(s) % 2 != 0:
+        return False
+    try:
+        bytes.fromhex(s)
+        return True
+    except ValueError:
+        return False
+
+
 class MeshCoreBackend(RadioBackend):
     """RadioBackend for MeshCore companion radios."""
 
@@ -119,6 +133,19 @@ class MeshCoreBackend(RadioBackend):
     def send_direct_message(self, to_native_id: str, text: str) -> None:
         if not self.is_connected() or self._loop is None:
             raise ConnectionError("MeshCore radio not connected")
+        # Validate the target is a real pubkey prefix before handing it
+        # to the MC lib — which otherwise raises a cryptic
+        # ValueError("Invalid public key hex string: <whatever>").
+        # Non-hex targets come from channel-broadcast pseudo-ids like
+        # "anon:0:tn03" that shouldn't be DM'd at all (channel senders
+        # are anonymous in the MC protocol).
+        if not _looks_like_hex(to_native_id):
+            raise ValueError(
+                f"Cannot DM MeshCore node — '{to_native_id}' is not a valid pubkey "
+                "(channel-broadcast senders are anonymous and cannot receive DMs). "
+                "Wait for the sender to advertise their contact card, or send to "
+                "the public channel instead."
+            )
         future = asyncio.run_coroutine_threadsafe(
             self._meshcore.commands.send_msg(to_native_id, text),
             self._loop,
@@ -521,7 +548,17 @@ class MeshCoreBackend(RadioBackend):
             return
         try:
             payload = event.payload if hasattr(event, "payload") else event
-            pubkey_prefix = payload.get("pubkey_prefix", "unknown")
+            pk_raw = str(payload.get("pubkey_prefix") or "").strip()
+            if not _looks_like_hex(pk_raw):
+                # DM without a valid sender pubkey — the MC protocol
+                # guarantees one on CONTACT_MSG_RECV, so this only
+                # happens on malformed/truncated frames. Log and drop
+                # rather than synthesizing a fake "unknown" contact.
+                logger.warning(
+                    f"[mc] DM received with invalid pubkey_prefix={pk_raw!r} — dropping"
+                )
+                return
+            pubkey_prefix = pk_raw
             text = payload.get("text", "")
             sender_ts = payload.get("sender_timestamp", time.time())
 
@@ -556,12 +593,28 @@ class MeshCoreBackend(RadioBackend):
             logger.error(f"Error converting MeshCore message: {e}")
 
     async def _on_channel_message(self, event):
-        """Handle incoming channel/broadcast message."""
+        """Handle incoming channel/broadcast message.
+
+        MC channel broadcasts are ANONYMOUS by design — the firmware's
+        CHANNEL_MSG_RECV payload carries no sender pubkey (see
+        meshcore/reader.py:280-294, fields are channel_idx / text /
+        sender_timestamp but NO pubkey_prefix). Most MC companion apps
+        embed the sender's name in the text as ``"<Name>: <text>"`` by
+        convention — we parse that here for display + relay tagging.
+        The resulting sender id is a deterministic pseudo-id
+        (``mc:anon:<slug>``) so repeated messages from the same named
+        sender group into one "thread" but DM attempts fail cleanly
+        (send_direct_message validates hex — see that method).
+        Previously: payload.get("pubkey_prefix", "unknown") fell back to
+        the literal string "unknown", producing the ID "mc:unknown"
+        that the UI surfaced as a contact. Users who tried to DM it
+        got ValueError("Invalid public key hex string: unknown") from
+        the MC lib, and AI auto-reply silently failed the same way.
+        """
         if self._callback is None:
             return
         try:
             payload = event.payload if hasattr(event, "payload") else event
-            pubkey_prefix = payload.get("pubkey_prefix", "unknown")
             text = payload.get("text", "")
             channel = payload.get("channel", 0)
             sender_ts = payload.get("sender_timestamp", time.time())
@@ -569,14 +622,42 @@ class MeshCoreBackend(RadioBackend):
             if not text or not text.strip():
                 return
 
-            display_name = self._resolve_contact_name(pubkey_prefix)
-            short = pubkey_prefix[:6] if len(pubkey_prefix) > 6 else pubkey_prefix
+            # Only trust pubkey_prefix if it's actually a non-empty hex
+            # string. MC lib doesn't set it on channel messages; if some
+            # future firmware does, gracefully accept the hex value.
+            pk_prefix_raw = str(payload.get("pubkey_prefix") or "").strip()
+            pk_prefix = pk_prefix_raw if _looks_like_hex(pk_prefix_raw) else ""
+
+            display_name: Optional[str] = None
+            text_stripped = text.strip()
+
+            if pk_prefix:
+                display_name = self._resolve_contact_name(pk_prefix)
+                short = pk_prefix[:6]
+                native_id = pk_prefix
+            else:
+                # Parse "Name: text" convention (e.g. "TN03: hello").
+                # Name must be <= 16 chars of letters/digits/_-/space.
+                # Match at beginning; strip the prefix from the visible
+                # text for relay tagging so downstream consumers don't
+                # re-prefix the sender name.
+                import re
+                m = re.match(r"^([A-Za-z0-9_\- ]{1,16})\s*:\s*(.+)$", text_stripped)
+                if m:
+                    display_name = m.group(1).strip()
+                    text_stripped = m.group(2).strip() or text_stripped
+                # Pseudo-id so repeated anon messages from the same named
+                # sender aggregate, but the id never matches valid hex so
+                # DM attempts fail fast (send_direct_message guard).
+                slug = re.sub(r"[^a-z0-9]+", "-", (display_name or "").lower()).strip("-") or "anon"
+                native_id = f"anon:{channel}:{slug}"
+                short = display_name or "anon"
 
             node = UnifiedNode(
-                id=UnifiedNode.make_id(Protocol.MESHCORE, pubkey_prefix),
+                id=UnifiedNode.make_id(Protocol.MESHCORE, native_id),
                 protocol=Protocol.MESHCORE,
-                backend_native_id=pubkey_prefix,
-                short_name=short,
+                backend_native_id=native_id,
+                short_name=short[:6],
                 long_name=display_name,
                 last_heard=time.time(),
             )
@@ -584,7 +665,7 @@ class MeshCoreBackend(RadioBackend):
             msg = UnifiedMessage(
                 protocol=Protocol.MESHCORE,
                 node=node,
-                text=text.strip(),
+                text=text_stripped,
                 channel=channel,
                 is_dm=False,
                 rssi=None,

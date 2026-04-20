@@ -143,9 +143,33 @@ def init_db(path: str) -> sqlite3.Connection:
     db.execute("PRAGMA foreign_keys=ON")
     db.executescript(_TABLES)
     _ensure_contact_columns(db)
+    _cleanup_unknown_mc_contacts(db)
     db.commit()
     logger.info(f"Database ready: {path}")
     return db
+
+
+def _cleanup_unknown_mc_contacts(db: sqlite3.Connection) -> None:
+    """Remove legacy mc:unknown contact rows + their messages.
+
+    The old `_on_channel_message` handler fell back to "unknown" as a
+    sender id whenever an MC channel broadcast arrived (which is
+    always — the MC protocol doesn't transmit sender pubkey on channel
+    broadcasts). That created a fake `mc:unknown` contact row that the
+    UI surfaced as a DM target; every DM attempt to it failed with
+    `ValueError: Invalid public key hex string: unknown` because the
+    MC lib rightly refuses non-hex pubkeys. The runtime fix
+    (meshcore_backend.py) stops creating new `mc:unknown` rows; this
+    migration clears existing ones on next bridge start."""
+    try:
+        cur = db.execute("SELECT COUNT(*) FROM contacts WHERE id = 'mc:unknown'")
+        n = cur.fetchone()[0]
+        if n:
+            db.execute("DELETE FROM messages WHERE contact_id = 'mc:unknown'")
+            db.execute("DELETE FROM contacts WHERE id = 'mc:unknown'")
+            logger.info(f"Migration: removed {n} legacy mc:unknown contact row(s) and their messages")
+    except sqlite3.Error as e:
+        logger.debug(f"mc:unknown cleanup skipped: {e}")
 
 
 def _ensure_contact_columns(db: sqlite3.Connection) -> None:
