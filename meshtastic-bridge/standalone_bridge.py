@@ -898,6 +898,10 @@ class StandaloneBridge:
         """
         if dest_protocol == "meshtastic":
             if not self.interface or not self._is_interface_alive():
+                logger.warning(
+                    "[bridge] MT send refused — interface not alive "
+                    "(check serial/USB connection)"
+                )
                 raise ConnectionError("primary meshtastic interface not alive")
             self.interface.sendText(
                 text,
@@ -2273,7 +2277,10 @@ class StandaloneBridge:
             # Verify localNode is accessible (used by _sendPacket for hop_limit)
             _ = self.interface.localNode
             return True
-        except (AttributeError, OSError) as e:
+        except Exception as e:
+            # v2.5.1: broadened from (AttributeError, OSError) — any exception
+            # from the probe is a valid "not alive" signal (ConnectionResetError,
+            # TimeoutError, MeshInterfaceError, etc.).
             logger.debug(f"Interface health check failed: {e}")
             return False
 

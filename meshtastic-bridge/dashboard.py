@@ -1677,6 +1677,18 @@ def api_bridge_health():
         })
     cfg = getattr(_bridge, "_bridge_config", {}) or {}
     backends_out = []
+    # v2.5.1: Primary MT lives outside RadioManager (legacy self.interface
+    # path). Synthesize a backend entry so the Relay Health panel tells the
+    # truth about MT state instead of silently omitting it.
+    try:
+        mt_alive = (
+            getattr(_bridge, "interface", None) is not None
+            and hasattr(_bridge, "_is_interface_alive")
+            and bool(_bridge._is_interface_alive())
+        )
+    except Exception:
+        mt_alive = False
+    backends_out.append({"protocol": "mt", "connected": bool(mt_alive), "primary": True})
     try:
         for b in _bridge._radio_manager.get_backends():
             try:
@@ -1687,7 +1699,7 @@ def api_bridge_health():
                 connected = bool(b.is_connected())
             except Exception:
                 connected = False
-            backends_out.append({"protocol": proto, "connected": connected})
+            backends_out.append({"protocol": proto, "connected": connected, "primary": False})
     except Exception:
         pass
     last_observe = None

@@ -129,7 +129,10 @@ class MeshtasticBackend(RadioBackend):
                     return False
             _ = self._interface.localNode
             return True
-        except (AttributeError, OSError):
+        except Exception:
+            # v2.5.1: broadened from (AttributeError, OSError) to keep
+            # parity with _is_interface_alive — any probe exception means
+            # the interface is not usable.
             return False
 
     # ── Messaging ────────────────────────────────────────────────────────

@@ -37,15 +37,16 @@ def _make_bridge_with_real_relay(policy=None, rules=None, enabled=True):
         policy=policy if policy is not None else AlwaysRelay(),
     )
     bridge._relay_sends = sends  # for test introspection
-    # Two connected mock backends so /health returns the ready state
-    be_mt = MagicMock()
-    be_mt.protocol = MagicMock(value="mt")
-    be_mt.is_connected = MagicMock(return_value=True)
+    # v2.5.1: primary MT lives on bridge.interface (legacy path), NOT in
+    # RadioManager. Only MC goes through get_backends(). Tests that need
+    # MT "dead" override _is_interface_alive after construction.
+    bridge.interface = MagicMock()
+    bridge._is_interface_alive = MagicMock(return_value=True)
     be_mc = MagicMock()
     be_mc.protocol = MagicMock(value="mc")
     be_mc.is_connected = MagicMock(return_value=True)
     bridge._radio_manager = MagicMock()
-    bridge._radio_manager.get_backends = MagicMock(return_value=[be_mt, be_mc])
+    bridge._radio_manager.get_backends = MagicMock(return_value=[be_mc])
     return bridge
 
 
@@ -184,6 +185,40 @@ class TestHealthEndpoint(unittest.TestCase):
         resp = self.client.get("/api/bridge/health")
         data = json.loads(resp.data)
         self.assertFalse(data["ready"])
+
+    def test_health_primary_mt_alive(self):
+        """v2.5.1: /health must surface primary MT as a backend entry so the
+        Relay Health panel tells the truth about MT state (the primary radio
+        lives outside RadioManager on the legacy self.interface path)."""
+        resp = self.client.get("/api/bridge/health")
+        data = json.loads(resp.data)
+        mt_entries = [b for b in data["backends"] if b["protocol"] == "mt"]
+        self.assertEqual(len(mt_entries), 1)
+        self.assertTrue(mt_entries[0]["connected"])
+        self.assertTrue(mt_entries[0].get("primary"))
+
+    def test_health_primary_mt_dead(self):
+        """v2.5.1: when _is_interface_alive returns False, the synthesized
+        primary MT entry must report connected=False."""
+        self.bridge._is_interface_alive = MagicMock(return_value=False)
+        resp = self.client.get("/api/bridge/health")
+        data = json.loads(resp.data)
+        mt_entries = [b for b in data["backends"] if b["protocol"] == "mt"]
+        self.assertEqual(len(mt_entries), 1)
+        self.assertFalse(mt_entries[0]["connected"])
+
+    def test_health_primary_mt_probe_exception_treated_as_dead(self):
+        """v2.5.1: any exception from the liveness probe must be treated as
+        'not alive' — the endpoint must NOT propagate the exception as a 500."""
+        self.bridge._is_interface_alive = MagicMock(
+            side_effect=RuntimeError("stale interface")
+        )
+        resp = self.client.get("/api/bridge/health")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        mt_entries = [b for b in data["backends"] if b["protocol"] == "mt"]
+        self.assertEqual(len(mt_entries), 1)
+        self.assertFalse(mt_entries[0]["connected"])
 
 
 class TestBridgeLogsEndpoint(unittest.TestCase):
