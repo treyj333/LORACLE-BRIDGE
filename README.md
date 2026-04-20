@@ -361,6 +361,18 @@ Phase 1 limitations still apply:
 - **Addon compatibility** on MeshCore-side incoming messages is best-effort; addons written for Meshtastic packet dicts may log warnings when processing raw MeshCore events.
 - **LLM rewrite mode** (Ollama-backed summarisation / translation of bridged text) is deferred to v2.1.
 
+#### v2.5.1 — Backend liveness truth-telling
+
+Follow-up point-release on top of v2.5 after a live hardware session revealed two paired bugs in the Relay Health panel:
+
+1. **The panel lied about MT.** `/api/bridge/health` built its `backends` array solely from `_radio_manager.get_backends()`, but the **primary Meshtastic radio lives outside RadioManager** on the legacy `self.interface` path — only the secondary (MC) is registered there. Result: even with both radios up and relaying cleanly, Block 1 showed `mc ✓` alone with a yellow dot. v2.5.1 synthesizes a primary-MT entry from `bridge.interface + _is_interface_alive()` so the panel reads `mt ✓, mc ✓` / green when both are up, and `mt ✗, mc ✓` / yellow the moment MT drops. All backend entries now carry a `primary` boolean (additive — no JS change needed).
+
+2. **`_is_interface_alive()` could false-positive on a zombie interface.** The `localNode` probe previously caught only `(AttributeError, OSError)`; a `ConnectionResetError`, `TimeoutError`, or `meshtastic.MeshInterfaceError` from a half-disconnected USB radio would propagate silently and the bridge treated the interface as alive — queuing `sendText()` calls into the void. v2.5.1 broadens the catch to `Exception` (same fix applied to `MeshtasticBackend.is_connected()` for parity) and adds a red `[bridge] MT send refused — interface not alive ...` WARNING line in `_bridge_send` so MT-dead events surface in Block 3's log tail as well as Block 2's drop-reason stats.
+
+Active heartbeat on the MT interface (synthetic traceroute / node-info poll to catch silent-but-zombie states) is deferred to v2.6+ — this release is truth-telling + defensive-catch only.
+
+Tests: 365/365 pass, including 3 new `TestHealthEndpoint` cases (`primary_mt_alive`, `primary_mt_dead`, `primary_mt_probe_exception_treated_as_dead`) and a realigned `_make_bridge_with_real_relay` helper that now matches real topology (primary MT on `bridge.interface`, only MC in `get_backends()`).
+
 See `LORACLE_BRIDGE_V2_FSD.md` for the full roadmap and phase-by-phase details.
 
 CLI flags:
