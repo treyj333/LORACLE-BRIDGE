@@ -4,6 +4,20 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 00:10] — ◯ MT header click now re-opens the connect wizard
+
+- What changed:
+  - **`showMtManage()` resets `_connectModalDismissed` and `_userAckedModal` before calling `showConnectModal()`** when there is no MT self-node yet. Also pre-selects `meshtastic` in the `#connect-protocol` dropdown so the wizard opens focused on the add the user requested.
+- Why:
+  - Live-session report: on the BRIDGE dashboard, if the operator boots without pairing a Meshtastic stick, dismisses the startup connect wizard, then connects a MeshCore radio, the header shows `○ MT` (off) next to `◆ MC` (on). Clicking `◆ MC` opens the add-radio flow; clicking `○ MT` did nothing visible. Root cause: `showMtManage()` already falls back to `showConnectModal()` when no MT self-node exists, but `showConnectModal()` bails early on `if (_connectModalDismissed) return;` — so once the startup wizard had been dismissed, the MT header click was silently suppressed. The "dismissed" flag was never reset on an explicit user request to re-open the wizard. The fix mirrors the existing pattern in `hideAddRadioModal` (lines 6388-6392 in `dashboard.py`) which already resets both flags before re-showing the modal on wizard cancel.
+- Impact on project goals:
+  - Small UI bug fix, restores symmetry between `○ MT` and `+ RADIO`/`◆ MC` header buttons: both now do the obvious thing (open an add flow) when their respective radio is off and the settings/self-window when it's on. No other behavior changed — when MT IS connected, `showMtManage()` still routes to `openSelfWindow(mtSelf)` as before.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `showMtManage()` JS function (7 lines added inside the existing function body, no new globals).
+- Tests: 365/365 pytest green (sanity — this is a frontend JS change with no Python test surface). Browser-level verification deferred to operator sanity-check on live hardware since the bridge Flask app requires radio connections to exercise the header buttons meaningfully.
+
+---
+
 ## [2026-04-19 22:45] — v2.5.1: Backend liveness truth-telling
 
 - What changed:

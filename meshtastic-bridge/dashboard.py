@@ -6656,10 +6656,20 @@ function showMtManage() {
     return n.isSelf && !n.isMC;
   });
   if (mtSelf) { openSelfWindow(mtSelf); return; }
-  // No MT self-node materialised yet — fall back to the connection modal so
-  // the user can pair their first radio. showConnectModal is the same
-  // entry point the "no radio detected" path uses.
-  try { showConnectModal(); } catch (e) { /* if modal not ready, no-op */ }
+  // No MT self-node materialised yet — fall back to the connect wizard so
+  // the user can pair their first Meshtastic radio. If they previously
+  // dismissed the startup wizard, _connectModalDismissed is true and
+  // showConnectModal would silently refuse — reset it (same pattern used
+  // by hideAddRadioModal when the wizard is backed out of). Also pre-select
+  // Meshtastic in the protocol dropdown so the wizard is focused on the
+  // MT add the click explicitly requested.
+  try {
+    _connectModalDismissed = false;
+    _userAckedModal = false;
+    var proto = document.getElementById('connect-protocol');
+    if (proto) proto.value = 'meshtastic';
+    showConnectModal();
+  } catch (e) { /* if modal not ready, no-op */ }
 }
 
 // Open the existing float-window composer for a public-channel node. The
