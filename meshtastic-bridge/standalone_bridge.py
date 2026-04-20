@@ -1524,6 +1524,35 @@ class StandaloneBridge:
         elif transport == "ble":
             cfg["ble_address"] = ble_address or None
 
+        # v2.5: if a meshcore backend is already registered (from a prior
+        # session's persisted config, a prior successful add, or a stale
+        # registration that didn't clean up), tear it down first so the new
+        # connect can take its id slot. Without this, RadioManager.add_backend
+        # refuses to add a second backend with the same id (e.g. mc-ble-0)
+        # and the UI shows an opaque "Backend 'mc-ble-0' already registered"
+        # error. Operator intent here is "connect a MC radio", not "add a
+        # second alongside an existing one" — so replace-if-present is the
+        # right semantics for this entry point.
+        existing_mc_ids = []
+        try:
+            for b in self._radio_manager.get_backends():
+                try:
+                    if b.protocol.value == "mc":
+                        existing_mc_ids.append(b.backend_id)
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"Could not enumerate backends: {e}")
+        for bid in existing_mc_ids:
+            logger.info(
+                f"[radio] replacing existing meshcore backend {bid} before "
+                f"adding new {transport} radio"
+            )
+            try:
+                self._radio_manager.remove_backend(bid)
+            except Exception as e:
+                logger.warning(f"Error removing existing backend {bid}: {e}")
+
         # Connect first. A failed connect must not leave stale settings.
         self._spawn_secondary_radio(cfg)
         self._second_radio_config = cfg
