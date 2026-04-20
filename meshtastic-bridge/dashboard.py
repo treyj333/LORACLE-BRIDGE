@@ -183,7 +183,12 @@ def _inject_addon_tabs(html: str) -> str:
         )
         addon_js += f'\n// --- Addon: {tab["label"]} ---\n{tab["js"]}\n'
 
-    html = html.replace("<!-- ADDON_SECTIONS -->", addon_sections + "<!-- ADDON_SECTIONS -->")
+    # Replace only the FIRST marker (inside #config-view). Without count=1
+    # str.replace hits every occurrence, which historically duplicated every
+    # addon panel at both the config-view slot and a stray body-level marker
+    # — the duplicate instances then leaked onto every tab (mesh, traffic,
+    # map, ai, bridge) because they lived outside the tab containers.
+    html = html.replace("<!-- ADDON_SECTIONS -->", addon_sections + "<!-- ADDON_SECTIONS -->", 1)
     html = html.replace("</script>\n</body>", addon_js + "\n</script>\n</body>")
 
     return html
@@ -2377,9 +2382,14 @@ button::-moz-focus-inner { border: 0; }
 .lo-bar .lo-conn { display: flex; align-items: center; gap: 14px; font-size: 10px; flex-shrink: 0; }
 .lo-bar .lo-conn-row { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .lo-bar .lo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lo-faint); transition: background 0.3s; display: inline-block; flex-shrink: 0; }
+/* MT (circle) uses the default loPulse with transform: scale(). */
 .lo-bar .lo-dot.on { background: var(--lo-accent-2); animation: loPulse 2s ease-in-out infinite; }
+/* MC (diamond) is a rotated square — use loPulseMc so the 45° rotation is
+   preserved across the pulse scale. Without the dedicated keyframe,
+   loPulse's transform: scale(...) overrides rotate(45deg) and the dot
+   renders as an axis-aligned square. */
 .lo-bar .lo-dot.mc { border-radius: 0; transform: rotate(45deg); }
-.lo-bar .lo-dot.mc.on { background: #9b59b6; }
+.lo-bar .lo-dot.mc.on { background: #9b59b6; animation: loPulseMc 2s ease-in-out infinite; }
 .lo-bar .lo-conn-add {
   font-family: inherit; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
   padding: 4px 8px; border: 1px solid var(--lo-divider); background: none;
@@ -2600,6 +2610,17 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   position: relative;
   top: -1px;  /* optical centering against uppercase cap-height */
 }
+/* When the modal is targeting MeshCore, swap the title dot to a purple
+   diamond (rotated square) so the chrome matches the body — MT = circle
+   teal, MC = diamond purple across the whole UI. Tag is set by
+   arProtocolChanged(). The inner #ar-success panel already has its own
+   data-protocol override for the success glyph. */
+#add-radio-modal[data-protocol="mc"] .lo-connect-box h3#ar-title::before {
+  background: #9b59b6;
+  border-radius: 0;
+  transform: rotate(45deg);
+  top: 0;
+}
 /* Success-panel dot — adapts to the protocol that just connected.
    Default: MC (purple diamond). With data-protocol="mt" on #ar-success,
    it flips to the MT filled circle in the accent color. arShowSuccess()
@@ -2754,6 +2775,11 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); cursor: pointer; }
 .lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); cursor: default; }
 .lo-map-marker.fav { border-color: #f1c40f; box-shadow: 0 0 0 2px rgba(241,196,15,0.35); }
+/* MeshCore variant — rotated square (diamond) in MC purple so map markers
+   match the protocol convention used on the canvas, sidebar, and header.
+   Without this, MC nodes were indistinguishable from MT nodes on the map. */
+.lo-map-marker.mc { border-radius: 0; border-color: #9b59b6; transform: rotate(45deg); }
+.lo-map-marker.mc.fav { border-color: #f1c40f; }
 .lo-map-label { font-family: var(--font-mono); font-size: 9px; color: var(--lo-ink); background: var(--lo-bg); padding: 1px 4px; border: 1px solid var(--lo-divider); white-space: nowrap; margin-top: 2px; }
 
 /* ── Node List Sidebar ────────────────────────────────────────────────────── */
@@ -2811,6 +2837,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
 /* ── Animations ───────────────────────────────────────────────────────────── */
 @keyframes loPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.9); } }
+/* Diamond-preserving variant — keeps the 45° rotation across the pulse so
+   MC dots stay visually square-rotated instead of flattening to an
+   axis-aligned square while the animation runs. */
+@keyframes loPulseMc { 0%, 100% { opacity: 1; transform: rotate(45deg) scale(1); } 50% { opacity: 0.5; transform: rotate(45deg) scale(0.9); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; } }
 </style>
 </head>
@@ -3444,7 +3474,12 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <span class="lo-form-label"></span>
       <div id="ar-ble-list" style="flex:1;font-size:10px;color:var(--lo-dim)"></div>
     </div>
-    <div class="lo-form-row" style="align-items:center">
+    <!-- BRIDGE auto-relay checkbox — only meaningful for MC connects
+         (feeds /api/backends/add's seed_bridge param). MT's connect
+         endpoint (/api/connection/switch) ignores the checkbox, so we
+         hide the whole row on the MT modal to avoid showing a control
+         that has no effect. Toggled in arProtocolChanged(). -->
+    <div class="lo-form-row" id="ar-seed-bridge-row" style="align-items:center">
       <span class="lo-form-label">BRIDGE</span>
       <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--lo-dim)">
         <input type="checkbox" id="ar-seed-bridge" checked>
@@ -3624,8 +3659,6 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
 </div><!-- .lo-app -->
 
-<!-- ADDON_SECTIONS marker kept for addon tab injection compat -->
-<!-- ADDON_SECTIONS -->
 
 <script>
 // ─── State ─────────────────────────────────────────────────────────────────
@@ -3828,7 +3861,22 @@ function renderDeliveryStatus(m) {
 }
 function formatUptime(s) { var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60; return h>0?h+'h '+m+'m':m>0?m+'m '+sec+'s':sec+'s'; }
 function formatTime(ts) { return new Date(ts*1000).toLocaleTimeString(); }
-function relativeTime(ts) { var d=Math.floor(Date.now()/1000-ts); return d<10?'now':d<60?d+'s':d<3600?Math.floor(d/60)+'m':d<86400?Math.floor(d/3600)+'h':Math.floor(d/86400)+'d'; }
+// Relative-time formatter. Caps at 90 days — anything older shows the
+// ISO calendar date (YYYY-MM-DD) instead of an increasingly meaningless
+// duration string. Mesh nodes occasionally report stale/bogus lastHeard
+// timestamps from the Meshtastic firmware (wrong clock, never synced) and
+// a raw "2548d" rendering is just noise. Past the 90d cap, showing the
+// date makes it obvious the timestamp is either very old or garbage.
+function relativeTime(ts) {
+  var d = Math.floor(Date.now()/1000 - ts);
+  if (d < 0) return 'now';
+  if (d < 10) return 'now';
+  if (d < 60) return d + 's';
+  if (d < 3600) return Math.floor(d/60) + 'm';
+  if (d < 86400) return Math.floor(d/3600) + 'h';
+  if (d < 86400 * 90) return Math.floor(d/86400) + 'd';
+  try { return new Date(ts * 1000).toISOString().slice(0, 10); } catch (e) { return '90d+'; }
+}
 
 function showToast(message, type) {
   type = type || 'info';
@@ -6297,21 +6345,31 @@ function arTransportChanged() {
   if (bleList) bleList.style.display = 'none';
 }
 function arProtocolChanged() {
-  // Rewrites the modal title / description to match the picked protocol.
-  // Called on protocol-dropdown change and on every showAddRadioModal().
+  // Rewrites the modal title / description / chrome to match the picked
+  // protocol. Called on protocol-dropdown change and on every
+  // showAddRadioModal().
   var proto = (document.getElementById('ar-protocol') || {}).value || 'meshtastic';
+  var isMT = (proto === 'meshtastic' || proto === 'mt');
   var titleEl = document.getElementById('ar-title');
   var descEl = document.getElementById('ar-description');
   if (titleEl) {
-    titleEl.textContent = (proto === 'meshtastic' || proto === 'mt')
-      ? 'ADD A MESHTASTIC RADIO'
-      : 'ADD A MESHCORE RADIO';
+    titleEl.textContent = isMT ? 'ADD A MESHTASTIC RADIO' : 'ADD A MESHCORE RADIO';
   }
   if (descEl) {
-    descEl.innerHTML = (proto === 'meshtastic' || proto === 'mt')
+    descEl.innerHTML = isMT
       ? 'Pick the transport and device, then CONNECT. Meshtastic connects as the primary radio \u2014 if one is already attached, it will be replaced.'
       : 'Pick the transport and device, then CONNECT. Once MT and MC are both up, public-channel messages auto-bridge on channel 0.';
   }
+  // Hide the BRIDGE checkbox on MT — it only feeds MC's seed_bridge param,
+  // so showing it on the MT modal implies MT-connect cares about it (it
+  // doesn't). See the ar-seed-bridge-row HTML comment for details.
+  var seedRow = document.getElementById('ar-seed-bridge-row');
+  if (seedRow) seedRow.style.display = isMT ? 'none' : '';
+  // Tag the modal with the selected protocol so CSS can swap the title
+  // dot (circle/teal for MT, diamond/purple for MC) without needing a
+  // per-tag rule. Mirrors the data-protocol attr on #ar-success.
+  var modalEl = document.getElementById('add-radio-modal');
+  if (modalEl) modalEl.setAttribute('data-protocol', isMT ? 'mt' : 'mc');
 }
 function refreshAddRadioModal() {
   // Show current MC backend status at the top of the modal (if any).
@@ -6577,8 +6635,13 @@ function updateMapMarkers() {
       _mapMarkers[nid].off('click');
       if (!isSelf) _mapMarkers[nid].on('click', function() { _openMapNode(nid); });
     } else {
+      // Tag MC markers so the ".mc" CSS rule can render them as purple
+      // diamonds — matches the canvas / sidebar / header convention where
+      // MT = circle teal, MC = diamond purple. Without this tag every
+      // marker rendered as a teal circle regardless of protocol.
+      var isMC = (nid || '').indexOf('mc:') === 0;
       var icon = L.divIcon({
-        className: 'lo-map-marker' + (isSelf ? ' self' : '') + (isFav ? ' fav' : ''),
+        className: 'lo-map-marker' + (isSelf ? ' self' : '') + (isFav ? ' fav' : '') + (isMC ? ' mc' : ''),
         iconSize: [10, 10], iconAnchor: [5, 5]
       });
       var marker = L.marker(ll, {icon: icon}).addTo(_map);

@@ -4,6 +4,28 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 16:00] — Dashboard bug-hunt sweep: 7 fixes across connection modal, header, map, addon injection, time format
+
+- What changed:
+  - **Orphan addon sections no longer leak onto every tab.** `_inject_addon_tabs()` at [dashboard.py:167](meshtastic-bridge/dashboard.py:167) used `html.replace(marker, ...)` without a count arg, so BOTH `<!-- ADDON_SECTIONS -->` markers (one inside `#config-view`, one at body root) got replaced with the addon HTML. The body-root copy sat outside the tab container and rendered on MESH, TRAFFIC, MAP, AI, and BRIDGE views simultaneously. Fix: limit `replace` to the first occurrence (`count=1`) AND delete the stray body-level marker entirely. DEAD DROP / TRIAGE / BRIEF now only appear on their rightful panel inside CONFIG.
+  - **MC header dot renders as a diamond again.** `.lo-bar .lo-dot.on` applies `animation: loPulse` which defines `transform: scale(...)` in its keyframes — that wipes the `transform: rotate(45deg)` from `.lo-bar .lo-dot.mc` the moment the dot lights up, flattening MC to an axis-aligned square. Added a dedicated `@keyframes loPulseMc` with `transform: rotate(45deg) scale(...)` at both the 0/100% and 50% stops; wired `.lo-bar .lo-dot.mc.on` to use it. MC stays diamond-shaped through the pulse.
+  - **BRIDGE "Auto-relay public channel 0" checkbox is now hidden on the MT modal.** The checkbox only drives MC's `seed_bridge` param on `/api/backends/add`; MT's `/api/connection/switch` ignores it, so showing it on MT was a misleading control. `arProtocolChanged()` now toggles `#ar-seed-bridge-row` visibility alongside the title / description swap. MC modal behavior is unchanged.
+  - **Modal-title dot ● swaps to purple diamond ◆ when MC is the target protocol.** `.lo-connect-box h3::before` painted an accent-orange circle regardless of selected protocol; the success panel already had a `data-protocol="mt"` variant but the modal title never got the same treatment. Added `data-protocol` attribute to `#add-radio-modal` (set by `arProtocolChanged()`) and a matching CSS rule (`#add-radio-modal[data-protocol="mc"] .lo-connect-box h3#ar-title::before`) that rotates the dot 45° and repaints it purple.
+  - **Map markers distinguish MT vs MC.** `.lo-map-marker` in `updateMapMarkers()` was always a teal circle regardless of the node's protocol, breaking the "MT = circle teal, MC = diamond purple" convention used everywhere else (canvas, sidebar, headers). Now tags the marker's className with ` mc` when `nid.startsWith('mc:')`, and added a `.lo-map-marker.mc` CSS rule (`border-radius: 0; border-color: #9b59b6; transform: rotate(45deg)`). The `.lo-map-marker.mc.fav` override preserves the yellow favorite ring over the MC purple.
+  - **`relativeTime()` caps at 90 days** and switches to an ISO calendar date past that. Mesh nodes occasionally report garbage `lastHeard` timestamps from firmware with bad clocks — rendering `2548d` (= 7 years) is pure noise. Now shows `2019-04-29` past the cap so the operator can see at a glance that the value is either very old or busted firmware.
+  - **Fresh-connect verification** via `preview_*`: `.lo-map-marker.mc` computes `rgb(155,89,182)` border + rotated transform; MC title dot computes purple + 0 border-radius; MT title dot computes accent orange; MT modal `#ar-seed-bridge-row` display is `none`; MC modal display is `block`; `relativeTime(now - 2548*86400)` returns `2019-04-29`, `relativeTime(now - 89*86400)` returns `89d`; orphan body-level `<!-- ADDON_SECTIONS marker kept -->` comment is gone from the rendered HTML.
+- Why:
+  - Operator requested a walkthrough of the dashboard in preview mode looking for bugs "specifically around connection and on the main mesh UI." Live walkthrough turned up 7 real issues — 4 HIGH (affect every user), 2 MEDIUM (map polish), 1 LOW (stale time format). All are single-file dashboard.py fixes with no backend impact.
+- Impact on project goals:
+  - Connection-modal consistency milestone: protocol branding now threads through the modal chrome (title dot), not just the body glyph — so MT connects visibly "feel MT" and MC connects visibly "feel MC" from first open to DONE. The BRIDGE-checkbox cleanup removes the last confusing MC-only-control-shown-on-MT footgun from the connect flow.
+  - Main-UI polish milestone: map is now protocol-aware (was the last surface where MT and MC looked identical). Header MC indicator no longer lies about shape. Node list stops displaying meaningless 7-year-old timestamps.
+  - Cleanup milestone: addon tabs (Dead Drop / Triage / Brief) no longer clutter every view with a ghost copy — they live exclusively on their own panel.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — all changes. Python: `_inject_addon_tabs()` count arg + orphan marker removal. CSS: new `@keyframes loPulseMc`; `.lo-bar .lo-dot.mc.on` uses it; `#add-radio-modal[data-protocol="mc"] h3::before` override; `.lo-map-marker.mc` + `.mc.fav`. HTML: `#ar-seed-bridge-row` id on the BRIDGE form row; orphan `<!-- ADDON_SECTIONS -->` block deleted. JS: `arProtocolChanged()` toggles `#ar-seed-bridge-row` + sets modal `data-protocol`; `updateMapMarkers()` adds ` mc` to marker className for `mc:` ids; `relativeTime()` 90-day cap with ISO-date fallback.
+- Tests: 365/365 pytest green. Browser verified end-to-end via `preview_*`.
+
+---
+
 ## [2026-04-20 15:20] — MC BLE manual device picker + kill stale-address auto-fill
 
 - What changed:
