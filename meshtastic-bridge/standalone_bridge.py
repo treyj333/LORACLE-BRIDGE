@@ -451,6 +451,15 @@ class StandaloneBridge:
         if self._second_radio_config:
             threading.Thread(target=self._connect_secondary_radio, daemon=True).start()
 
+        # v2.5 backstop: ensures bridge defaults are seeded whenever two
+        # backends come up, regardless of which path brought the secondary
+        # online (CLI flag, modal, persisted-config restore). See the
+        # method docstring for the v1.0-blocking failure this fixes.
+        self._auto_seed_fired = False
+        threading.Thread(
+            target=self._auto_seed_when_both_radios_up, daemon=True,
+        ).start()
+
         # Start addons
         for addon in self._addons:
             try:
@@ -1466,6 +1475,9 @@ class StandaloneBridge:
             self._seed_default_bridge_rules(force=False)
         except Exception as e:
             logger.debug(f"Default bridge seed skipped: {e}")
+        # v2.5: let the startup auto-seed backstop know it doesn't need to
+        # re-fire — this path already handled seeding.
+        self._auto_seed_fired = True
         # Kick a node-sync so advertised MC contacts land in _known_nodes
         # without waiting for the periodic loop's next tick (up to 30s).
         # Runs in a background thread because the MC backend's contact list
@@ -1534,6 +1546,8 @@ class StandaloneBridge:
                 self._seed_default_bridge_rules(force=True)
             except Exception as e:
                 logger.warning(f"Could not seed default bridge rules: {e}")
+        # v2.5: user explicitly added a radio — backstop need not re-fire.
+        self._auto_seed_fired = True
 
         # Return the newly-added backend's info (last in the list).
         try:
@@ -1624,6 +1638,60 @@ class StandaloneBridge:
         if changed:
             cfg["rules"] = rules
             self._save_bridge_config(cfg)
+
+    def _auto_seed_when_both_radios_up(self, deadline_s: float = 120.0) -> None:
+        """v2.5 backstop: poll until ≥2 connected backends exist, then seed
+        bridge defaults if none are configured.
+
+        Why this exists: ``_seed_default_bridge_rules`` was called from
+        ``_spawn_secondary_radio`` (CLI ``--second-radio`` path) and
+        ``add_secondary_radio`` (dashboard modal), but never from the
+        persisted-config restore path. An operator who set up the bridge
+        via the modal, restarted, and found the bridge silently disabled
+        was the v1.0-blocking failure mode. This unconditional backstop
+        closes the gap regardless of how the secondary backend comes up.
+
+        Idempotent: fires at most once per process via ``_auto_seed_fired``.
+        Safe: only seeds when rules list is empty — never overwrites custom
+        rules the operator has set.
+        """
+        if getattr(self, "_auto_seed_fired", False):
+            return
+        start = time.time()
+        while self._running and time.time() - start < deadline_s:
+            try:
+                backends = self._radio_manager.get_backends()
+            except Exception as e:
+                logger.debug(f"[bridge] auto-seed poll error: {e}")
+                backends = []
+            connected = []
+            for b in backends:
+                try:
+                    if b.is_connected():
+                        connected.append(b)
+                except Exception:
+                    continue
+            if len(connected) >= 2:
+                rules = (self._bridge_config or {}).get("rules") or []
+                if not rules:
+                    logger.info(
+                        "[bridge] auto-seeded default rules "
+                        "(mt ch0 always, mc ch0 always, enabled=true)"
+                    )
+                    try:
+                        self._seed_default_bridge_rules(force=True)
+                    except Exception as e:
+                        logger.warning(f"[bridge] auto-seed failed: {e}")
+                else:
+                    logger.debug(
+                        "[bridge] auto-seed: rules already exist, skipping"
+                    )
+                self._auto_seed_fired = True
+                return
+            time.sleep(2.0)
+        logger.debug(
+            "[bridge] auto-seed: deadline reached without 2 connected backends"
+        )
 
     def _unseed_default_bridge_rules(self) -> None:
         """Inverse of the seed call used by the BRIDGE tab's one-click toggle.

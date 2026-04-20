@@ -333,6 +333,28 @@ Features shipped:
 
 DMs never cross the bridge — bridging private conversations is a trust decision, not a priority decision.
 
+#### v2.5 — Relay Health panel + synthetic self-test
+
+**v2.5 is the integration-reliability + operator-observability release that seals the MT↔MC public-channel relay for v1.0 ship.** Prior phases shipped the relay core; v2.5 closes the last gaps that kept the bridge at "90% there."
+
+Three changes:
+
+1. **Startup auto-seed backstop.** Previously, default bridge rules only seeded when the secondary radio was added via the CLI `--second-radio` flag or the dashboard "+ RADIO" modal. A persisted-config restore on restart never triggered seeding, so operators who set up the bridge once and rebooted could find it silently disabled. v2.5 adds a one-shot poller that, at startup, waits until two backends are connected and — if no rules exist — seeds the defaults with `enabled=true` regardless of which path brought the secondary up. It fires at most once per process and never overwrites custom rules.
+
+2. **Diagnostic log at the top of `Relay.observe()`.** An INFO line now fires the moment a message reaches the relay, distinctly from the existing drop/relay logs. This separates "did the message get here?" from "did it pass the guards?" — the diagnostic question operators hit first at 11pm.
+
+3. **RELAY HEALTH panel in the BRIDGE tab.** Four blocks, always visible:
+   - **Live status card** — four traffic-light indicators: master switch (with inline toggle), rules configured, backends connected, and **relay wiring** (goes green when `observe()` has been called for real traffic in the last 60s; the single most diagnostic field — it separates wiring problems upstream from policy problems downstream). Hover `?` gets a plain-English explanation.
+   - **Stats table** — mirrored MT→MC / MC→MT columns for relayed, dropped, and rate-limited, plus a subline with dedup cache size, rate-limit window, and bridge uptime.
+   - **Live log tail** — last 20 `[bridge]` log lines, colour-coded (green = relay success, yellow = drops/dedup/rate-limit, red = send failure, cyan = `[SELFTEST]`). Auto-scroll, copy-last-20 button, 2.5s refresh.
+   - **Run Relay Self-Test** — a button that injects synthetic public-channel messages both ways via `Relay.observe(..., is_selftest=True)`. The full guard chain fires (policy, dedup, rate-limit) but `send_fn` is short-circuited — no radio traffic ever leaves the laptop. Every drop reason in `relay.py` now maps to a readable string (`policy:no_rule_matched source=meshcore channel=0`, `rate_limited:60s`, `send_error:ConnectionError:...`) so failures are actionable, not mysterious. Tagged `is_selftest=True` on the on_relay hook so self-test traffic is filtered from the main messages tab but still appears in Block 3's log tail with a `[SELFTEST]` prefix.
+
+Under the hood:
+
+- `Policy.should_relay()` now returns `(bool, reason: str)` instead of bare `bool`. Every concrete policy (`DisabledPolicy`, `AlwaysRelay`, `ChannelAllowlist`, `AIGatedPolicy`) returns a stable reason vocabulary that surfaces through the self-test endpoint and the log tail.
+- `Relay.observe()` gains a keyword-only `is_selftest` arg; existing callers are untouched. `Relay.stats()` adds `last_drop_reason_by_direction`, `rate_limited_by_direction`, `last_observe_at_s_ago`, and `uptime_s` to the existing `by_direction` block.
+- Three new endpoints: `POST /api/bridge/selftest` (direction selector + structured per-direction results), `GET /api/bridge/health` (compact state for the status card), `GET /api/bridge/logs?limit=N` (filtered log tail).
+
 Phase 1 limitations still apply:
 
 - **MeshCore sends truncate** at the Meshtastic byte budget (233 bytes) — no `!more` paging yet.

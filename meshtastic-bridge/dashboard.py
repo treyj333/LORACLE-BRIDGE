@@ -1621,6 +1621,90 @@ def api_bridge_events():
     return jsonify({"events": events})
 
 
+# ─── v2.5 Relay Health panel endpoints ──────────────────────────────────────
+
+@app.route("/api/bridge/selftest", methods=["POST"])
+def api_bridge_selftest():
+    """Inject synthetic public-channel messages into the relay to verify
+    the logical path works end-to-end, without touching any real radio.
+
+    Request body (optional): ``{"direction": "mt_to_mc" | "mc_to_mt" | "both"}``
+    defaults to ``both``. Returns structured per-direction results with a
+    ``drop_reason`` on failure that maps 1:1 to the Relay's guard chain."""
+    if _bridge is None or not hasattr(_bridge, "_relay"):
+        return jsonify({"ok": False, "error": "bridge not ready"}), 503
+    body = request.get_json(silent=True) or {}
+    raw = (body.get("direction") or "both").strip()
+    sources = {
+        "mt_to_mc": ["meshtastic"],
+        "mc_to_mt": ["meshcore"],
+        "both": ["meshtastic", "meshcore"],
+    }.get(raw, ["meshtastic", "meshcore"])
+    try:
+        results = [_bridge._relay.run_selftest(d) for d in sources]
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": all(r["ok"] for r in results), "results": results})
+
+
+@app.route("/api/bridge/logs", methods=["GET"])
+def api_bridge_logs():
+    """Return the tail of the shared log ring buffer, filtered to bridge
+    lines (``[bridge]`` substring). The BRIDGE tab's live log viewer polls
+    this every 2.5s."""
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 20))))
+    except (TypeError, ValueError):
+        limit = 20
+    records = _log_handler.get_records(limit=500)
+    entries = [r for r in records if "[bridge]" in r.get("message", "")]
+    return jsonify({"entries": entries[-limit:]})
+
+
+@app.route("/api/bridge/health", methods=["GET"])
+def api_bridge_health():
+    """Compact state snapshot for the Relay Health panel's Block 1 card.
+
+    Four indicators the dashboard renders from: master switch, rule count,
+    connected-backend count, and time-since-last-real-observe."""
+    if _bridge is None:
+        return jsonify({
+            "master_enabled": False,
+            "rules": [],
+            "backends": [],
+            "last_observe_at_s_ago": None,
+            "ready": False,
+        })
+    cfg = getattr(_bridge, "_bridge_config", {}) or {}
+    backends_out = []
+    try:
+        for b in _bridge._radio_manager.get_backends():
+            try:
+                proto = getattr(b.protocol, "value", str(b.protocol))
+            except Exception:
+                proto = "?"
+            try:
+                connected = bool(b.is_connected())
+            except Exception:
+                connected = False
+            backends_out.append({"protocol": proto, "connected": connected})
+    except Exception:
+        pass
+    last_observe = None
+    try:
+        stats = _bridge._relay.stats() if hasattr(_bridge, "_relay") else {}
+        last_observe = stats.get("last_observe_at_s_ago")
+    except Exception:
+        pass
+    return jsonify({
+        "master_enabled": bool(cfg.get("enabled")),
+        "rules": cfg.get("rules") or [],
+        "backends": backends_out,
+        "last_observe_at_s_ago": last_observe,
+        "ready": True,
+    })
+
+
 @app.route("/api/routing/classify", methods=["POST"])
 def api_routing_classify():
     """Test the classifier on a query (no LLM call)."""
@@ -2569,6 +2653,45 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-bridge-flow-row .text { color: var(--lo-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lo-bridge-flow-empty { color: var(--lo-faint); text-align: center; padding: 28px 10px; font-size: 10px; }
 
+/* ── Relay Health Panel (v2.5) ────────────────────────────────────────────── */
+.lo-rh-row { display: grid; grid-template-columns: 14px 1fr auto auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--lo-divider); font-size: 11px; }
+.lo-rh-row:last-child { border-bottom: none; }
+.lo-rh-dot { width: 10px; height: 10px; border-radius: 50%; background: #7f8c8d; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2); }
+.lo-rh-dot.green { background: #27ae60; box-shadow: 0 0 4px rgba(39,174,96,0.5); }
+.lo-rh-dot.yellow { background: #f39c12; box-shadow: 0 0 4px rgba(243,156,18,0.5); }
+.lo-rh-dot.red { background: #e74c3c; box-shadow: 0 0 4px rgba(231,76,60,0.5); }
+.lo-rh-label { color: var(--lo-ink); display: flex; align-items: center; gap: 6px; }
+.lo-rh-tip { display: inline-flex; width: 14px; height: 14px; align-items: center; justify-content: center; border: 1px solid var(--lo-divider); border-radius: 50%; color: var(--lo-faint); font-size: 9px; cursor: help; user-select: none; }
+.lo-rh-value { color: var(--lo-dim); font-size: 10px; letter-spacing: 0.04em; }
+.lo-rh-toggle { background: none; border: 1px solid var(--lo-divider); color: var(--lo-faint); font-family: inherit; font-size: 9px; padding: 3px 10px; cursor: pointer; letter-spacing: 0.12em; text-transform: uppercase; }
+.lo-rh-toggle:hover { color: var(--lo-ink); border-color: var(--lo-ink); }
+
+.lo-rh-stats { display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px 16px; font-size: 11px; align-items: center; }
+.lo-rh-stats-head { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--lo-dim); font-weight: 600; }
+.lo-rh-stats-head.mt { color: var(--lo-accent-2); }
+.lo-rh-stats-head.mc { color: #9b59b6; }
+.lo-rh-stats-label { color: var(--lo-dim); font-size: 10px; letter-spacing: 0.04em; }
+.lo-rh-stats-val { color: var(--lo-ink); font-weight: 600; font-family: var(--font-mono); }
+.lo-rh-stats-sub { grid-column: 1 / -1; color: var(--lo-faint); font-size: 10px; margin-top: 6px; line-height: 1.5; }
+
+.lo-rh-log { max-height: 260px; overflow-y: auto; background: var(--lo-bg); border: 1px solid var(--lo-divider); padding: 6px 8px; font-family: var(--font-mono); font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.lo-rh-log-line { padding: 1px 0; color: var(--lo-dim); }
+.lo-rh-log-line.relay { color: #2ecc71; }
+.lo-rh-log-line.warn { color: #f39c12; }
+.lo-rh-log-line.error { color: #e74c3c; }
+.lo-rh-log-line.selftest { color: #00bcd4; }
+.lo-rh-log-empty { color: var(--lo-faint); text-align: center; padding: 20px 10px; }
+.lo-rh-log-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; font-size: 10px; color: var(--lo-faint); }
+
+.lo-rh-selftest-btn { background: var(--lo-ink); color: var(--lo-bg); border: none; padding: 6px 16px; font-family: inherit; font-size: 10px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+.lo-rh-selftest-btn:disabled { opacity: 0.5; cursor: default; }
+.lo-rh-selftest-sub { font-size: 11px; color: var(--lo-dim); margin-top: 10px; line-height: 1.5; }
+.lo-rh-selftest-sub.ok { color: #27ae60; }
+.lo-rh-selftest-sub.fail { color: #e74c3c; }
+.lo-rh-selftest-line { font-family: var(--font-mono); font-size: 10px; color: var(--lo-dim); padding: 2px 0; }
+.lo-rh-selftest-line.ok { color: #27ae60; }
+.lo-rh-selftest-line.fail { color: #e74c3c; }
+
 .lo-map-marker { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--lo-accent-2); background: var(--lo-bg); cursor: pointer; }
 .lo-map-marker.self { border-color: var(--lo-accent); background: var(--lo-accent); cursor: default; }
 .lo-map-marker.fav { border-color: #f1c40f; box-shadow: 0 0 0 2px rgba(241,196,15,0.35); }
@@ -2589,6 +2712,14 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 .lo-ns-row .lo-ns-hops { color: var(--lo-faint); font-size: 9px; }
 .lo-ns-row .lo-ns-heard { color: var(--lo-faint); font-size: 9px; }
 .lo-ns-row .lo-ns-badge { background: var(--lo-accent); color: var(--lo-bg); font-size: 8px; font-weight: 500; padding: 1px 4px; min-width: 14px; text-align: center; }
+/* Unread notification dot — pulses on the left of a row while any DM/channel
+   has unread traffic. Cleared when the thread is opened. A second copy sits
+   on the #nodes-toggle button so the user sees pending traffic even with the
+   sidebar collapsed. */
+.lo-ns-row .lo-ns-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lo-accent); flex-shrink: 0; animation: loPulse 1.4s ease-in-out infinite; box-shadow: 0 0 4px var(--lo-accent); }
+.lo-tools #nodes-toggle { position: relative; }
+.lo-ns-toggle-dot { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--lo-accent); box-shadow: 0 0 4px var(--lo-accent); animation: loPulse 1.4s ease-in-out infinite; pointer-events: none; display: none; }
+.lo-ns-toggle-dot.on { display: block; }
 .lo-ns-proto { display: inline-block; font-size: 8px; font-weight: 600; padding: 1px 4px; margin-right: 4px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: baseline; }
 .lo-ns-proto-mc { background: #9b59b6; color: #fff; }
 .lo-ns-proto-mt { background: var(--lo-accent-2); color: var(--lo-bg-deep); }
@@ -2650,7 +2781,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <button data-view="config" onclick="setView('config')">CONFIG</button>
   </div>
   <div class="lo-tools">
-    <button id="nodes-toggle" title="Node list" onclick="toggleNodeList()">&#9776;</button>
+    <button id="nodes-toggle" title="Node list" onclick="toggleNodeList()">&#9776;<span class="lo-ns-toggle-dot" id="nodes-toggle-dot" aria-hidden="true"></span></button>
     <button id="help-toggle" title="Help">?</button>
     <button id="theme-toggle" title="Toggle theme">&#9681;</button>
   </div>
@@ -2867,6 +2998,80 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       <div class="lo-bridge-section-title">LIVE FLOW</div>
       <div class="lo-bridge-hint" style="margin-bottom:8px">Last 200 relay events. Newest on top.</div>
       <div id="bridge-flow-log" class="lo-bridge-flow"></div>
+    </div>
+
+    <!-- ── Relay Health panel (v2.5) ───────────────────────────────────────── -->
+    <div class="lo-bridge-section" id="rh-panel" style="border-color:var(--lo-accent)">
+      <div class="lo-bridge-section-title" style="color:var(--lo-accent)">RELAY HEALTH</div>
+
+      <!-- Block 1: Live status card -->
+      <div id="rh-block1" style="margin-bottom:14px">
+        <div class="lo-rh-row">
+          <span class="lo-rh-dot" id="rh-master-dot"></span>
+          <span class="lo-rh-label">Master switch</span>
+          <span class="lo-rh-value" id="rh-master-value">—</span>
+          <button class="lo-rh-toggle" id="rh-master-toggle" onclick="bridgeRhToggleMaster()">toggle</button>
+        </div>
+        <div class="lo-rh-row">
+          <span class="lo-rh-dot" id="rh-rules-dot"></span>
+          <span class="lo-rh-label">Rules configured</span>
+          <span class="lo-rh-value" id="rh-rules-value">—</span>
+          <span></span>
+        </div>
+        <div class="lo-rh-row">
+          <span class="lo-rh-dot" id="rh-backends-dot"></span>
+          <span class="lo-rh-label">Backends connected</span>
+          <span class="lo-rh-value" id="rh-backends-value">—</span>
+          <span></span>
+        </div>
+        <div class="lo-rh-row">
+          <span class="lo-rh-dot" id="rh-wiring-dot"></span>
+          <span class="lo-rh-label">Relay wiring
+            <span class="lo-rh-tip" title="Goes green when the bridge has observed a real public-channel message pass through the relay in the last 60s. If radios are connected and messages are sending but this stays red, the receive path isn't calling relay.observe() — check the logs.">?</span>
+          </span>
+          <span class="lo-rh-value" id="rh-wiring-value">—</span>
+          <span></span>
+        </div>
+      </div>
+
+      <!-- Block 2: Relay stats table -->
+      <div class="lo-rh-stats" id="rh-block2">
+        <span></span>
+        <span class="lo-rh-stats-head mt">MT → MC</span>
+        <span class="lo-rh-stats-head mc">MC → MT</span>
+        <span class="lo-rh-stats-label">Relayed</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mtmc-relayed">0</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mcmt-relayed">0</span>
+        <span class="lo-rh-stats-label">Dropped</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mtmc-dropped">0</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mcmt-dropped">0</span>
+        <span class="lo-rh-stats-label">Rate-limited</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mtmc-ratelimited">0</span>
+        <span class="lo-rh-stats-val" id="rh-stat-mcmt-ratelimited">0</span>
+        <div class="lo-rh-stats-sub" id="rh-stats-sub">Dedup cache: 0 entries · Uptime: 0m</div>
+      </div>
+
+      <!-- Block 3: Live log tail -->
+      <div style="margin-top:14px">
+        <div class="lo-bridge-hint" style="margin-bottom:6px">Live [bridge] log — newest on bottom · auto-scroll · 2.5s refresh</div>
+        <div id="rh-log" class="lo-rh-log">
+          <div class="lo-rh-log-empty">Waiting for bridge activity…</div>
+        </div>
+        <div class="lo-rh-log-actions">
+          <button class="lo-rh-toggle" onclick="bridgeRhCopyLog()">copy last 20</button>
+          <span id="rh-log-copied" style="display:none">copied</span>
+        </div>
+      </div>
+
+      <!-- Block 4: Self-test button -->
+      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--lo-divider)">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <button class="lo-rh-selftest-btn" id="rh-selftest-btn" onclick="bridgeRhRunSelftest()">RUN RELAY SELF-TEST</button>
+          <span class="lo-bridge-hint" style="margin:0">Sends a synthetic public-channel message on each connected backend and verifies it arrives on the other side. Never touches real radios.</span>
+        </div>
+        <div id="rh-selftest-sub" class="lo-rh-selftest-sub"></div>
+        <div id="rh-selftest-results"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -4788,6 +4993,14 @@ async function loadFloatData(nodeId) {
     msgsEl.scrollTop = msgsEl.scrollHeight;
   }
   try { callApi('POST', '/api/threads/' + encodeURIComponent(nodeId) + '/open'); } catch(e) {}
+  // Clear the local dot/badge the moment the user opens the thread — the
+  // backend reset_unread above already persisted it, but the sidebar is
+  // rendered from App.unreadCounts which only refreshes every ~10s. Mirror
+  // the reset here so the dot disappears on click, not on the next poll.
+  if (App.unreadCounts && App.unreadCounts[nodeId]) {
+    delete App.unreadCounts[nodeId];
+    try { if (typeof renderNodeList === 'function') renderNodeList(); } catch(e) {}
+  }
 }
 
 function closeFloatWin(nodeId) {
@@ -5080,11 +5293,17 @@ function bridgeActivate() {
   if (!_bridgeState.cfg) bridgeReloadConfig();
   bridgePollStats();
   bridgePollEvents();
+  bridgeRhPollHealth();
+  bridgeRhPollLogs();
+  bridgeRhPollStats();
   if (!_bridgeState.pollTimer) {
     _bridgeState.pollTimer = setInterval(function() {
       if (App.view !== 'bridge') { clearInterval(_bridgeState.pollTimer); _bridgeState.pollTimer = null; return; }
       bridgePollStats();
       bridgePollEvents();
+      bridgeRhPollHealth();
+      bridgeRhPollLogs();
+      bridgeRhPollStats();
     }, 2500);
   }
 }
@@ -5395,6 +5614,233 @@ function bridgeRenderFlow(events) {
   // Cap at 200 rows to match server-side ring buffer
   var rows = box.querySelectorAll('.lo-bridge-flow-row');
   for (var i = 200; i < rows.length; i++) rows[i].remove();
+}
+
+// ─── Relay Health Panel (v2.5) ─────────────────────────────────────────────
+
+var _rhState = { lastLogTs: 0, autoScroll: true, recentSelftestOk: false };
+
+function _rhSetDot(el, state) {
+  if (!el) return;
+  el.classList.remove('green', 'yellow', 'red');
+  if (state) el.classList.add(state);
+}
+
+function _rhFmtUptime(s) {
+  if (!s || s < 0) return '0m';
+  s = Math.floor(s);
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+async function bridgeRhPollHealth() {
+  try {
+    var r = await fetch('/api/bridge/health');
+    var d = await r.json();
+    if (!d || !d.ready) return;
+    // Master switch
+    var masterDot = document.getElementById('rh-master-dot');
+    var masterVal = document.getElementById('rh-master-value');
+    _rhSetDot(masterDot, d.master_enabled ? 'green' : 'red');
+    if (masterVal) masterVal.textContent = d.master_enabled ? 'enabled' : 'disabled';
+    // Rules
+    var rulesDot = document.getElementById('rh-rules-dot');
+    var rulesVal = document.getElementById('rh-rules-value');
+    var rules = d.rules || [];
+    _rhSetDot(rulesDot, rules.length >= 1 ? 'green' : 'red');
+    if (rulesVal) {
+      if (rules.length === 0) {
+        rulesVal.textContent = '0 rules — no messages will relay';
+      } else {
+        var parts = rules.map(function(r) {
+          var p = (r.source === 'meshtastic') ? 'mt' : (r.source === 'meshcore') ? 'mc' : r.source;
+          var ch = (r.channel === null || r.channel === undefined) ? 'any' : ('ch' + r.channel);
+          return p + ' ' + ch + ' ' + (r.mode || '?');
+        });
+        rulesVal.textContent = rules.length + (rules.length === 1 ? ' rule' : ' rules') + ' (' + parts.join(', ') + ')';
+      }
+    }
+    // Backends
+    var bDot = document.getElementById('rh-backends-dot');
+    var bVal = document.getElementById('rh-backends-value');
+    var backends = d.backends || [];
+    var connected = backends.filter(function(b) { return b.connected; });
+    var state = connected.length >= 2 ? 'green' : (connected.length === 1 ? 'yellow' : 'red');
+    _rhSetDot(bDot, state);
+    if (bVal) {
+      if (backends.length === 0) {
+        bVal.textContent = 'none registered';
+      } else {
+        bVal.textContent = backends.map(function(b) {
+          return b.protocol + (b.connected ? ' ✓' : ' ✗');
+        }).join(', ');
+      }
+    }
+    // Wiring
+    var wDot = document.getElementById('rh-wiring-dot');
+    var wVal = document.getElementById('rh-wiring-value');
+    var ago = d.last_observe_at_s_ago;
+    var wState, wText;
+    if (ago === null || ago === undefined) {
+      // Fallback: if a selftest just succeeded this session, hint yellow
+      wState = _rhState.recentSelftestOk ? 'yellow' : 'red';
+      wText = _rhState.recentSelftestOk ? 'self-test ok (no real traffic yet)' : 'no observe() since bridge start';
+    } else if (ago < 60) {
+      wState = 'green';
+      wText = 'active (' + Math.floor(ago) + 's ago)';
+    } else if (ago < 600) {
+      wState = 'yellow';
+      wText = 'last seen ' + Math.floor(ago) + 's ago';
+    } else {
+      wState = 'red';
+      wText = 'stale (' + Math.floor(ago / 60) + 'm ago)';
+    }
+    _rhSetDot(wDot, wState);
+    if (wVal) wVal.textContent = wText;
+  } catch(e) {}
+}
+
+async function bridgeRhPollStats() {
+  try {
+    var r = await fetch('/api/bridge/stats');
+    var d = await r.json();
+    var by = (d && d.by_direction) || {};
+    var rl = (d && d.rate_limited_by_direction) || {};
+    var mtmc = by['meshtastic->meshcore'] || {};
+    var mcmt = by['meshcore->meshtastic'] || {};
+    var elem = function(id) { return document.getElementById(id); };
+    if (elem('rh-stat-mtmc-relayed')) elem('rh-stat-mtmc-relayed').textContent = mtmc.relayed || 0;
+    if (elem('rh-stat-mcmt-relayed')) elem('rh-stat-mcmt-relayed').textContent = mcmt.relayed || 0;
+    if (elem('rh-stat-mtmc-dropped')) elem('rh-stat-mtmc-dropped').textContent = mtmc.dropped || 0;
+    if (elem('rh-stat-mcmt-dropped')) elem('rh-stat-mcmt-dropped').textContent = mcmt.dropped || 0;
+    if (elem('rh-stat-mtmc-ratelimited')) elem('rh-stat-mtmc-ratelimited').textContent = rl['meshtastic->meshcore'] || 0;
+    if (elem('rh-stat-mcmt-ratelimited')) elem('rh-stat-mcmt-ratelimited').textContent = rl['meshcore->meshtastic'] || 0;
+    var sub = elem('rh-stats-sub');
+    if (sub) {
+      var parts = ['Dedup cache: ' + (d.dedup_size || 0) + ' entries'];
+      if (d.rate_limit_max) {
+        parts.push('Rate-limit: ' + d.rate_limit_max + '/' + (d.rate_limit_window_s || '?') + 's');
+      }
+      parts.push('Uptime: ' + _rhFmtUptime(d.uptime_s));
+      sub.textContent = parts.join(' · ');
+    }
+  } catch(e) {}
+}
+
+function _rhClassifyLog(msg) {
+  if (/\[SELFTEST\]/i.test(msg)) return 'selftest';
+  if (/send failed|relay.*error/i.test(msg)) return 'error';
+  if (/skip already-bridged|dedup suppressed|rate-limited/i.test(msg)) return 'warn';
+  if (/meshtastic->meshcore|meshcore->meshtastic|force-relay/i.test(msg)) return 'relay';
+  return '';
+}
+
+async function bridgeRhPollLogs() {
+  try {
+    var r = await fetch('/api/bridge/logs?limit=20');
+    var d = await r.json();
+    var entries = (d && d.entries) || [];
+    var box = document.getElementById('rh-log');
+    if (!box) return;
+    // Preserve scroll intent: if user has scrolled up, don't auto-scroll.
+    var nearBottom = (box.scrollTop + box.clientHeight >= box.scrollHeight - 20);
+    if (entries.length === 0) {
+      if (!box.querySelector('.lo-rh-log-empty')) {
+        box.innerHTML = '<div class="lo-rh-log-empty">No [bridge] log entries yet.</div>';
+      }
+      return;
+    }
+    var html = entries.map(function(e) {
+      var msg = e.message || '';
+      var cls = _rhClassifyLog(msg);
+      return '<div class="lo-rh-log-line' + (cls ? ' ' + cls : '') + '">' + escapeHtml(msg) + '</div>';
+    }).join('');
+    box.innerHTML = html;
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  } catch(e) {}
+}
+
+function bridgeRhCopyLog() {
+  var box = document.getElementById('rh-log');
+  if (!box) return;
+  var text = box.innerText || box.textContent || '';
+  try {
+    navigator.clipboard.writeText(text);
+  } catch(e) {}
+  var flag = document.getElementById('rh-log-copied');
+  if (flag) {
+    flag.style.display = 'inline';
+    setTimeout(function() { flag.style.display = 'none'; }, 1500);
+  }
+}
+
+async function bridgeRhToggleMaster() {
+  // Reuse the existing one-click endpoint — seeds or unseeds defaults
+  // based on the current state. Works from either master or rules being off.
+  try {
+    var cur = (_bridgeState.cfg && _bridgeState.cfg.enabled) || false;
+    var r = await fetch('/api/bridge/public-channel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !cur}),
+    });
+    await r.json();
+    await bridgeReloadConfig();
+    await bridgeRhPollHealth();
+  } catch(e) {}
+}
+
+async function bridgeRhRunSelftest() {
+  var btn = document.getElementById('rh-selftest-btn');
+  var sub = document.getElementById('rh-selftest-sub');
+  var resBox = document.getElementById('rh-selftest-results');
+  if (!btn || !sub || !resBox) return;
+  btn.disabled = true;
+  sub.className = 'lo-rh-selftest-sub';
+  sub.textContent = 'Running self-test (MT→MC, MC→MT)…';
+  resBox.innerHTML = '';
+  try {
+    var r = await fetch('/api/bridge/selftest', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({direction: 'both'}),
+    });
+    var d = await r.json();
+    var results = (d && d.results) || [];
+    var html = results.map(function(res) {
+      var cls = res.ok ? 'ok' : 'fail';
+      var mark = res.ok ? '✓' : '✗';
+      var detail = res.ok
+        ? ('delivered to [' + (res.delivered || []).join(', ') + '] in ' + res.elapsed_ms + 'ms · nonce ' + (res.nonce || '?'))
+        : (res.drop_reason || 'unknown failure');
+      return '<div class="lo-rh-selftest-line ' + cls + '">' + mark + ' ' + escapeHtml(res.direction) + ': ' + escapeHtml(detail) + '</div>';
+    }).join('');
+    resBox.innerHTML = html;
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, '0');
+    var mm = String(now.getMinutes()).padStart(2, '0');
+    var ss = String(now.getSeconds()).padStart(2, '0');
+    if (d && d.ok) {
+      sub.className = 'lo-rh-selftest-sub ok';
+      sub.textContent = 'Both directions working. Last test: ' + hh + ':' + mm + ':' + ss;
+      _rhState.recentSelftestOk = true;
+      try { localStorage.setItem('rh_last_selftest_ok', String(Date.now())); } catch(e) {}
+    } else {
+      sub.className = 'lo-rh-selftest-sub fail';
+      var firstFail = results.find(function(x) { return !x.ok; });
+      sub.textContent = 'Self-test failed: ' + (firstFail ? firstFail.drop_reason : 'see above');
+    }
+    // Kick a health + log refresh so the panel reflects the new state
+    bridgeRhPollHealth();
+    bridgeRhPollLogs();
+  } catch(e) {
+    sub.className = 'lo-rh-selftest-sub fail';
+    sub.textContent = 'Network error: ' + e;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Submit on Enter (Shift+Enter for newline handled by browser if we ever use textarea)
@@ -6281,6 +6727,7 @@ function renderNodeList() {
   list.innerHTML = items.map(function(n) {
     var hops = n.hops !== null ? (n.hops === 0 ? 'direct' : n.hops + 'h') : '--';
     var heard = n.lastHeard ? relativeTime(n.lastHeard) : '--';
+    var dot = n.unread > 0 ? '<span class="lo-ns-dot" title="' + n.unread + ' unread"></span>' : '';
     var badge = n.unread > 0 ? '<span class="lo-ns-badge">' + n.unread + '</span>' : '';
     var star = n.isFavorite ? '<span style="color:#f1c40f;margin-right:3px">\u2605</span>' : '';
     // Protocol badge — both protocols get an equal badge so neither feels "default".
@@ -6289,11 +6736,21 @@ function renderNodeList() {
       ? '<span class="lo-ns-proto lo-ns-proto-mc" title="MeshCore">mc</span>'
       : '<span class="lo-ns-proto lo-ns-proto-mt" title="Meshtastic">mt</span>';
     return '<div class="lo-ns-row" onclick="openFloatWindow(App.nodes.find(function(x){return x.id===\'' + escapeHtml(n.id) + '\'}))">' +
+      dot +
       '<span class="lo-ns-name">' + star + protoTag + escapeHtml(n.label) + '</span>' +
       '<span class="lo-ns-hops">' + hops + '</span>' +
       '<span class="lo-ns-heard">' + heard + '</span>' +
       badge + '</div>';
   }).join('');
+  // Mirror any-unread state onto the ☰ toggle so the user can see pending
+  // traffic with the sidebar collapsed. Counts live in App.unreadCounts and
+  // are cleared by openFloatWindow → /api/threads/<id>/open → reset_unread.
+  var toggleDot = document.getElementById('nodes-toggle-dot');
+  if (toggleDot) {
+    var anyUnread = false;
+    for (var k in App.unreadCounts) { if (App.unreadCounts[k] > 0) { anyUnread = true; break; } }
+    toggleDot.classList.toggle('on', anyUnread);
+  }
 }
 
 // ─── Message Search ────────────────────────────────────────────────────────
@@ -6537,6 +6994,16 @@ setInterval(poll, 2000);
         // window is open for that contact, refresh it right now.
         if (d.contact_id && _openWindows[d.contact_id]) {
           loadFloatData(d.contact_id);
+        }
+        // Optimistic local bump of the unread count so the dot appears
+        // right now instead of waiting for the ~10s /api/threads poll.
+        // Skip if the thread is open (it's effectively read as it arrives),
+        // and only for inbound traffic — echoes of our own sends shouldn't
+        // light up the dot. The backend remains source of truth; the next
+        // poll will correct any drift.
+        if (d.direction === 'in' && d.contact_id && !_openWindows[d.contact_id]) {
+          App.unreadCounts = App.unreadCounts || {};
+          App.unreadCounts[d.contact_id] = (App.unreadCounts[d.contact_id] || 0) + 1;
         }
         // Unread badge may have changed — nudge the sidebar too.
         try { if (typeof renderNodeList === 'function') renderNodeList(); } catch (e) {}

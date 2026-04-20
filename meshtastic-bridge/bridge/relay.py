@@ -17,6 +17,8 @@ Intentional boundaries:
 
 import logging
 import re
+import secrets
+import time
 from typing import Callable, Dict, List, Optional
 
 from bridge.dedup import RelayDedupCache
@@ -83,6 +85,14 @@ class Relay:
         # rest of this module emits (e.g. "meshtastic->meshcore").
         self._relayed_by_direction: Dict[str, int] = {}
         self._dropped_by_direction: Dict[str, int] = {}
+        self._rate_limited_by_direction: Dict[str, int] = {}
+        # v2.5 observability: the Relay Health panel needs to answer
+        # "did observe() run at all?" distinctly from "did it drop?", and
+        # "why was the last drop?" per direction. Pre-loop drops (which
+        # have no dest yet) use the synthetic key "<source>->*".
+        self._last_drop_reason_by_direction: Dict[str, str] = {}
+        self._last_observe_at: float = 0.0  # 0.0 = never; set on real traffic
+        self._started_at: float = time.monotonic()
 
     def _bump_direction(
         self, counter: Dict[str, int], source: str, dest: str,
@@ -105,18 +115,42 @@ class Relay:
         text: str,
         channel: int,
         is_dm: bool,
+        *,
+        is_selftest: bool = False,
     ) -> List[str]:
         """Entry point: a message just arrived on ``source_protocol``.
 
         Returns the list of destination protocols the message was actually
         relayed to. May be empty when policy/dedup/loop-guard blocks it.
+
+        v2.5 additions:
+          - Top-of-function INFO log fires before any guard so operators
+            can see "observe() was called" distinctly from drops.
+          - ``is_selftest`` (keyword-only): exercises the full guard chain
+            but skips the real ``send_fn`` call (radios stay quiet) and
+            does NOT bump ``_last_observe_at`` (the wiring-alive indicator
+            should only reflect real traffic).
         """
+        tag = "[SELFTEST] " if is_selftest else ""
+        logger.info(
+            f"[bridge] {tag}observe source={source_protocol} sender={sender} "
+            f"ch={channel} is_dm={is_dm} text={text[:60]!r}"
+        )
+        if not is_selftest:
+            self._last_observe_at = time.monotonic()
+
+        wildcard_key = f"{source_protocol}->*"
+
         if not text or not text.strip():
+            self._last_drop_reason_by_direction[wildcard_key] = "empty_text"
             return []
 
         # Loop guard #1: already-bridged text never re-relays.
         if looks_bridged(text):
             self._drop_count += 1
+            self._last_drop_reason_by_direction[wildcard_key] = (
+                "loop_guard:already_bridged"
+            )
             logger.debug(f"[bridge] skip already-bridged from {sender}: {text[:60]!r}")
             return []
 
@@ -131,6 +165,9 @@ class Relay:
             if not text.strip():
                 # Bang-word on its own — nothing to forward.
                 self._drop_count += 1
+                self._last_drop_reason_by_direction[wildcard_key] = (
+                    "force_prefix_empty_body"
+                )
                 return []
             logger.info(
                 f"[bridge] force-relay from {sender} "
@@ -141,6 +178,7 @@ class Relay:
         for dest in _ALL_PROTOCOLS:
             if dest == source_protocol:
                 continue
+            dir_key = f"{source_protocol}->{dest}"
             # DMs still never relay, even with !urgent — bridging private
             # conversation is a trust decision, not a priority decision.
             if is_dm:
@@ -148,21 +186,26 @@ class Relay:
                 self._bump_direction(
                     self._dropped_by_direction, source_protocol, dest,
                 )
+                self._last_drop_reason_by_direction[dir_key] = "dm_not_relayed"
                 continue
-            if not force_relay and not self._policy.should_relay(
-                source_protocol, dest, sender, text, channel, is_dm
-            ):
-                self._drop_count += 1
-                self._bump_direction(
-                    self._dropped_by_direction, source_protocol, dest,
+            if not force_relay:
+                allowed, reason = self._policy.should_relay(
+                    source_protocol, dest, sender, text, channel, is_dm,
                 )
-                continue
+                if not allowed:
+                    self._drop_count += 1
+                    self._bump_direction(
+                        self._dropped_by_direction, source_protocol, dest,
+                    )
+                    self._last_drop_reason_by_direction[dir_key] = reason
+                    continue
             # Loop guard #2: within-TTL fingerprint match.
             if self._dedup.seen(source_protocol, dest, sender, text):
                 self._drop_count += 1
                 self._bump_direction(
                     self._dropped_by_direction, source_protocol, dest,
                 )
+                self._last_drop_reason_by_direction[dir_key] = "dedup"
                 logger.debug(
                     f"[bridge] dedup suppressed {source_protocol}->{dest} "
                     f"from {sender}: {text[:40]!r}"
@@ -183,6 +226,17 @@ class Relay:
                 self._bump_direction(
                     self._dropped_by_direction, source_protocol, dest,
                 )
+                self._bump_direction(
+                    self._rate_limited_by_direction, source_protocol, dest,
+                )
+                window_s = (
+                    self._rate_limiter.limits()[1]
+                    if self._rate_limiter is not None
+                    else 0
+                )
+                self._last_drop_reason_by_direction[dir_key] = (
+                    f"rate_limited:{window_s}s"
+                )
                 logger.info(
                     f"[bridge] rate-limited {source_protocol}->{dest} ch{channel} "
                     f"from {sender}"
@@ -196,13 +250,17 @@ class Relay:
             )
             prefixed = format_bridged(source_protocol, sender_display, text)
 
-            try:
-                self._send(dest, prefixed, channel)
-            except Exception as e:
-                logger.warning(
-                    f"[bridge] relay {source_protocol}->{dest} send failed: {e}"
-                )
-                continue
+            if not is_selftest:
+                try:
+                    self._send(dest, prefixed, channel)
+                except Exception as e:
+                    logger.warning(
+                        f"[bridge] relay {source_protocol}->{dest} send failed: {e}"
+                    )
+                    self._last_drop_reason_by_direction[dir_key] = (
+                        f"send_error:{type(e).__name__}:{e}"
+                    )
+                    continue
 
             self._dedup.record(source_protocol, dest, sender, text)
             self._relay_count += 1
@@ -211,7 +269,7 @@ class Relay:
             )
             delivered.append(dest)
             logger.info(
-                f"[bridge] {source_protocol}->{dest} ch{channel} "
+                f"[bridge] {tag}{source_protocol}->{dest} ch{channel} "
                 f"{sender_display}: {text[:60]}"
             )
             if self._on_relay is not None:
@@ -223,11 +281,60 @@ class Relay:
                         "sender_display": sender_display,
                         "channel": channel,
                         "text": prefixed,
+                        "is_selftest": is_selftest,
                     })
                 except Exception as e:
                     logger.debug(f"[bridge] on_relay hook error: {e}")
 
         return delivered
+
+    def run_selftest(self, direction: str) -> dict:
+        """Inject a synthetic public-channel message as if it arrived on
+        ``direction`` (one of ``meshtastic`` / ``meshcore``). Exercises the
+        full guard chain without hitting any radio — ``observe()`` is called
+        with ``is_selftest=True`` so ``send_fn`` is short-circuited.
+
+        Returns a dict compatible with the ``POST /api/bridge/selftest``
+        endpoint contract: ``direction``, ``ok``, ``nonce``, ``delivered``,
+        ``elapsed_ms``, ``drop_reason`` (None on success).
+        """
+        if direction not in _ALL_PROTOCOLS:
+            return {
+                "direction": f"{direction}->?",
+                "ok": False,
+                "nonce": None,
+                "delivered": [],
+                "elapsed_ms": 0,
+                "drop_reason": f"unknown_source_protocol:{direction}",
+            }
+        nonce = secrets.token_hex(4)
+        dest = next(p for p in _ALL_PROTOCOLS if p != direction)
+        t0 = time.monotonic()
+        delivered = self.observe(
+            direction,
+            "__selftest__",
+            f"LORACLE-TEST-{nonce}",
+            channel=0,
+            is_dm=False,
+            is_selftest=True,
+        )
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        ok = dest in delivered
+        drop_reason = None
+        if not ok:
+            drop_reason = (
+                self._last_drop_reason_by_direction.get(f"{direction}->{dest}")
+                or self._last_drop_reason_by_direction.get(f"{direction}->*")
+                or "unknown"
+            )
+        return {
+            "direction": f"{direction}->{dest}",
+            "ok": ok,
+            "nonce": f"LORACLE-TEST-{nonce}",
+            "delivered": delivered,
+            "elapsed_ms": elapsed_ms,
+            "drop_reason": drop_reason,
+        }
 
     def stats(self) -> dict:
         """Counters for the BRIDGE UI tab (Phase 3+).
@@ -244,13 +351,22 @@ class Relay:
             by_direction[d] = {
                 "relayed": self._relayed_by_direction.get(d, 0),
                 "dropped": self._dropped_by_direction.get(d, 0),
+                "rate_limited": self._rate_limited_by_direction.get(d, 0),
             }
+        now = time.monotonic()
+        last_observe_s_ago = (
+            (now - self._last_observe_at) if self._last_observe_at else None
+        )
         s = {
             "relayed": self._relay_count,
             "dropped": self._drop_count,
             "rate_limited": self._rate_limited_count,
             "dedup_size": self._dedup.size(),
             "by_direction": by_direction,
+            "rate_limited_by_direction": dict(self._rate_limited_by_direction),
+            "last_drop_reason_by_direction": dict(self._last_drop_reason_by_direction),
+            "last_observe_at_s_ago": last_observe_s_ago,
+            "uptime_s": now - self._started_at,
         }
         if self._rate_limiter is not None:
             max_events, window = self._rate_limiter.limits()

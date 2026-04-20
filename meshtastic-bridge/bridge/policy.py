@@ -20,7 +20,12 @@ from typing import Iterable, Optional, Set, Tuple
 
 
 class Policy(ABC):
-    """Abstract relay decision maker."""
+    """Abstract relay decision maker.
+
+    v2.5: ``should_relay`` returns a ``(allowed, reason)`` tuple so the
+    Relay Health panel can surface exactly why a message was dropped.
+    ``reason`` is an empty string on allow, populated on deny.
+    """
 
     @abstractmethod
     def should_relay(
@@ -31,15 +36,15 @@ class Policy(ABC):
         text: str,
         channel: int,
         is_dm: bool,
-    ) -> bool:
+    ) -> Tuple[bool, str]:
         ...
 
 
 class DisabledPolicy(Policy):
     """Bridge is off. Nothing crosses."""
 
-    def should_relay(self, *args, **kwargs) -> bool:
-        return False
+    def should_relay(self, *args, **kwargs) -> Tuple[bool, str]:
+        return (False, "policy:disabled")
 
 
 class AlwaysRelay(Policy):
@@ -53,8 +58,10 @@ class AlwaysRelay(Policy):
         text: str,
         channel: int,
         is_dm: bool,
-    ) -> bool:
-        return not is_dm
+    ) -> Tuple[bool, str]:
+        if is_dm:
+            return (False, "policy:dm_blocked")
+        return (True, "")
 
 
 class ChannelAllowlist(Policy):
@@ -82,12 +89,17 @@ class ChannelAllowlist(Policy):
         text: str,
         channel: int,
         is_dm: bool,
-    ) -> bool:
+    ) -> Tuple[bool, str]:
         if is_dm:
-            return False
+            return (False, "policy:dm_blocked")
         if source_protocol in self._protocol_wild:
-            return True
-        return (source_protocol, channel) in self._explicit
+            return (True, "")
+        if (source_protocol, channel) in self._explicit:
+            return (True, "")
+        return (
+            False,
+            f"policy:no_rule_matched source={source_protocol} channel={channel}",
+        )
 
 
 class AIGatedPolicy(Policy):
@@ -110,20 +122,23 @@ class AIGatedPolicy(Policy):
         text: str,
         channel: int,
         is_dm: bool,
-    ) -> bool:
-        if not self._base.should_relay(
+    ) -> Tuple[bool, str]:
+        allowed, reason = self._base.should_relay(
             source_protocol, dest_protocol, sender, text, channel, is_dm
-        ):
-            return False
+        )
+        if not allowed:
+            return (False, reason)
         if self._classifier is None:
-            return True  # Phase 2 stub
+            return (True, "")  # Phase 2 stub
         # Phase 4: classifier returns True iff the text is urgent enough
         # to cross the bridge.
         try:
-            return bool(self._classifier.is_urgent(text))
+            if self._classifier.is_urgent(text):
+                return (True, "")
+            return (False, "policy:ai_not_urgent")
         except Exception:
             # Fail-open — if the classifier errors, default to relaying
             # rather than silently dropping traffic. This is a deliberate
             # choice; the alternative (fail-closed) risks losing urgent
             # messages when the LLM service is having a bad day.
-            return True
+            return (True, "")

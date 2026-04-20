@@ -4,9 +4,35 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 
 logger = logging.getLogger("db.schema")
+
+_LOCKS: "dict[int, threading.RLock]" = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def get_lock(db: sqlite3.Connection) -> threading.RLock:
+    """Return the per-connection write lock.
+
+    The stores share one sqlite3.Connection across the Flask request threads
+    and the radio RX threads. Without a lock, interleaved execute()+commit()
+    calls trash Python's implicit-transaction state and surface as
+    "cannot commit - no transaction is active" / "bad parameter or other
+    API misuse" on perfectly valid SQL.
+
+    sqlite3.Connection rejects arbitrary attributes, so locks live in a
+    module-level map keyed by id(db). Each bridge instance holds exactly
+    one connection for its lifetime, so id-reuse after GC is a non-issue.
+    """
+    key = id(db)
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCKS[key] = lock
+        return lock
 
 SCHEMA_VERSION = 1
 
@@ -111,6 +137,7 @@ def init_db(path: str) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     db = sqlite3.connect(path, check_same_thread=False, timeout=10)
     db.row_factory = sqlite3.Row
+    get_lock(db)  # register the shared write-lock for this connection
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=5000")
     db.execute("PRAGMA foreign_keys=ON")

@@ -6,12 +6,15 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
+from db.schema import get_lock
+
 logger = logging.getLogger("db.messages")
 
 
 class MessageStore:
     def __init__(self, db: sqlite3.Connection):
         self._db = db
+        self._lock = get_lock(db)
 
     def insert(
         self,
@@ -32,18 +35,19 @@ class MessageStore:
         """Insert a message and return its ID."""
         mid = msg_id or str(uuid.uuid4())
         ts = timestamp or time.time()
-        self._db.execute(
-            """INSERT INTO messages
-               (id, contact_id, direction, author, text, timestamp, protocol,
-                hops_traveled, rx_rssi, rx_snr, is_channel_msg,
-                originating_channel_id, delivery_status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (mid, contact_id, direction, author, text[:4000], ts, protocol,
-             hops_traveled, rx_rssi, rx_snr,
-             1 if is_channel_msg else 0,
-             originating_channel_id, delivery_status),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO messages
+                   (id, contact_id, direction, author, text, timestamp, protocol,
+                    hops_traveled, rx_rssi, rx_snr, is_channel_msg,
+                    originating_channel_id, delivery_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (mid, contact_id, direction, author, text[:4000], ts, protocol,
+                 hops_traveled, rx_rssi, rx_snr,
+                 1 if is_channel_msg else 0,
+                 originating_channel_id, delivery_status),
+            )
+            self._db.commit()
         return mid
 
     def get_thread(self, contact_id: str, limit: int = 50,
@@ -72,11 +76,12 @@ class MessageStore:
 
     def update_status(self, msg_id: str, status: str) -> None:
         """Update delivery status of a message."""
-        self._db.execute(
-            "UPDATE messages SET delivery_status = ? WHERE id = ?",
-            (status, msg_id),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "UPDATE messages SET delivery_status = ? WHERE id = ?",
+                (status, msg_id),
+            )
+            self._db.commit()
 
     def count_by_contact(self, contact_id: str) -> int:
         row = self._db.execute(
@@ -94,55 +99,58 @@ class MessageStore:
         total_pruned = 0
         cutoff_ts = time.time() - (max_age_days * 86400)
 
-        contacts = self._db.execute(
-            "SELECT DISTINCT contact_id FROM messages"
-        ).fetchall()
+        with self._lock:
+            contacts = self._db.execute(
+                "SELECT DISTINCT contact_id FROM messages"
+            ).fetchall()
 
-        for row in contacts:
-            cid = row["contact_id"]
+            for row in contacts:
+                cid = row["contact_id"]
 
-            # 1. Cap at max_per_contact: delete oldest beyond limit
-            count = self.count_by_contact(cid)
-            if count > max_per_contact:
-                excess = count - max_per_contact
-                self._db.execute(
-                    """DELETE FROM messages WHERE id IN (
-                         SELECT id FROM messages
-                         WHERE contact_id = ?
-                         ORDER BY timestamp ASC
-                         LIMIT ?
-                       )""",
-                    (cid, excess),
+                # 1. Cap at max_per_contact: delete oldest beyond limit
+                count = self.count_by_contact(cid)
+                if count > max_per_contact:
+                    excess = count - max_per_contact
+                    self._db.execute(
+                        """DELETE FROM messages WHERE id IN (
+                             SELECT id FROM messages
+                             WHERE contact_id = ?
+                             ORDER BY timestamp ASC
+                             LIMIT ?
+                           )""",
+                        (cid, excess),
+                    )
+                    total_pruned += excess
+
+                # 2. Delete messages older than cutoff
+                cursor = self._db.execute(
+                    "DELETE FROM messages WHERE contact_id = ? AND timestamp < ?",
+                    (cid, cutoff_ts),
                 )
-                total_pruned += excess
+                total_pruned += cursor.rowcount
 
-            # 2. Delete messages older than cutoff
-            cursor = self._db.execute(
-                "DELETE FROM messages WHERE contact_id = ? AND timestamp < ?",
-                (cid, cutoff_ts),
-            )
-            total_pruned += cursor.rowcount
-
-        if total_pruned > 0:
-            self._db.commit()
-            logger.info(
-                f"Pruned {total_pruned} messages "
-                f"(>{max_per_contact}/contact or >{max_age_days}d) "
-                f"across {len(contacts)} contacts"
-            )
+            if total_pruned > 0:
+                self._db.commit()
+                logger.info(
+                    f"Pruned {total_pruned} messages "
+                    f"(>{max_per_contact}/contact or >{max_age_days}d) "
+                    f"across {len(contacts)} contacts"
+                )
         return total_pruned
 
     def delete_all(self) -> int:
         """Delete all messages. Returns count deleted."""
-        cursor = self._db.execute("DELETE FROM messages")
-        self._db.commit()
-        count = cursor.rowcount
+        with self._lock:
+            cursor = self._db.execute("DELETE FROM messages")
+            self._db.commit()
+            count = cursor.rowcount
         logger.info(f"Deleted all {count} messages")
         return count
 
     def update_delivery_status(self, msg_id: str, status: str) -> None:
-        self._db.execute(
-            "UPDATE messages SET delivery_status = ? WHERE id = ?",
-            (status, msg_id),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                "UPDATE messages SET delivery_status = ? WHERE id = ?",
+                (status, msg_id),
+            )
+            self._db.commit()

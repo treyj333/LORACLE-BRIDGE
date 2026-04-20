@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -255,6 +256,42 @@ class TestSettingsStore(unittest.TestCase):
         self.store.set("k1", "v1")
         self.store.delete("k1")
         self.assertIsNone(self.store.get("k1"))
+
+
+class TestThreadSafety(unittest.TestCase):
+    """Regression: Flask and the RX loop share one sqlite3.Connection.
+    Without the per-connection lock, concurrent increment_unread /
+    reset_unread calls raised 'cannot commit - no transaction is active'
+    and 'bad parameter or other API misuse'.
+    """
+
+    def test_concurrent_increment_and_reset(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = init_db(os.path.join(d, "test.db"))
+            store = ContactStore(db)
+            store.upsert("mt:!x", "meshtastic", "!x", "xxx")
+
+            errors = []
+
+            def hammer(fn, n):
+                try:
+                    for _ in range(n):
+                        fn("mt:!x")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [
+                threading.Thread(target=hammer, args=(store.increment_unread, 200)),
+                threading.Thread(target=hammer, args=(store.increment_unread, 200)),
+                threading.Thread(target=hammer, args=(store.reset_unread, 200)),
+                threading.Thread(target=hammer, args=(store.reset_unread, 200)),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            db.close()
+            self.assertEqual(errors, [], f"thread race surfaced: {errors}")
 
 
 if __name__ == "__main__":

@@ -17,8 +17,16 @@ from bridge.policy import (
 
 def _call(policy, source="meshtastic", dest="meshcore", sender="!abc",
           text="hi", channel=0, is_dm=False):
-    """Helper to call should_relay with named kwargs so test lines stay short."""
-    return policy.should_relay(source, dest, sender, text, channel, is_dm)
+    """Helper to call should_relay with named kwargs so test lines stay short.
+
+    v2.5: ``should_relay`` returns ``(bool, reason)``. These legacy tests
+    only care about the boolean, so unpack and return just the verdict.
+    The new ``test_bridge_policy_reasons.py`` covers the reason strings.
+    """
+    allowed, _reason = policy.should_relay(
+        source, dest, sender, text, channel, is_dm,
+    )
+    return allowed
 
 
 class TestDisabledPolicy(unittest.TestCase):
