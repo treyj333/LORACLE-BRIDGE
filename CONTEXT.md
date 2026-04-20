@@ -4,6 +4,23 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 16:35] — HUD panel background + map label zoom-threshold (the two deferred collision bugs)
+
+- What changed:
+  - **`.lo-hud` now renders as a semi-transparent panel** (`background: rgba(10, 10, 11, 0.82)` in dark theme, `rgba(250, 250, 248, 0.9)` in light theme, + `border: 1px solid var(--lo-divider)` + 10/14px padding). Before: the HUD was unstyled floating text with `pointer-events: none`, and any canvas node label that fell in its ~150×170px footprint bled through, producing unreadable piles of `!abc2716 !abc2718 !abc271c ...` stacked over `17 NODES / 0 MESSAGES / PHI4:14B MODEL`. After: canvas labels behind the HUD are visually occluded by the panel background, so the HUD reads cleanly at any node density. `pointer-events: none` preserved, so clicks and drags still pass through to the mesh canvas — the panel is purely visual.
+  - **Map labels now hide below zoom 11.** New `_MAP_LABEL_MIN_ZOOM = 11` constant, new `_applyMapLabelVisibility()` helper, `_map.on('zoomend', _applyMapLabelVisibility)` wired in `initMap()`, and `updateMapMarkers()` also invokes the helper after adding new labels so late-arriving ones pick up the current zoom's visibility state immediately (not on the next zoom change). Below threshold, every label element's `display` is set to `'none'`; at or above, `''` (default). The Leaflet hover-tooltip still shows the node name at any zoom, so information is still reachable — just not painted as a static text box that piles into unreadable stacks when 15 nodes share the same lat/lon (common: a repeater site with many peers reporting the same GPS fix).
+  - **Both fixes confirmed via `preview_*`**: HUD computed `background-color: rgba(10, 10, 11, 0.82)` with the new border; with 15 synthetic nodes clustered at Greenville, zoom 7 reported 15/15 labels hidden, zoom 14 reported 15/15 visible; screenshot comparison shows clean marker cluster at low zoom and readable N_0–N_7 labels spread across the map at high zoom.
+- Why:
+  - Earlier bug-hunt sweep flagged these two as "needs more invasive work" and deferred them; operator asked for a second walkthrough pass to fix everything including the deferred pair. With synthetic node-state injection into the dashboard-only preview, I reproduced both pile-ups reliably and confirmed the before/after. The HUD panel approach avoids a full canvas-label collision-avoidance algorithm (which would need per-frame layout work). The zoom-threshold map approach avoids pulling in `leaflet.markercluster` (extra dep + visual change). Both fixes are small and composable with the existing rendering flow.
+- Impact on project goals:
+  - Closes the visual-polish punch list for the dashboard. The mesh-canvas top-left is now a proper HUD panel rather than loose floating text that collides with the graph. The map view is legible at every zoom level — readable details when the operator zooms in, clean markers when zoomed out for situational awareness.
+  - Scope held: HUD font / layout / content unchanged; map tile provider / marker shape / tooltip content unchanged. No backend impact.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — CSS: `.lo-hud` gained background/border/padding; added `[data-theme="light"] .lo-hud` variant. JS: new `_MAP_LABEL_MIN_ZOOM` constant + `_applyMapLabelVisibility()` helper; `initMap()` wires `zoomend` handler; `updateMapMarkers()` calls helper at the end so fresh labels honor current zoom.
+- Tests: 365/365 pytest green.
+
+---
+
 ## [2026-04-20 16:00] — Dashboard bug-hunt sweep: 7 fixes across connection modal, header, map, addon injection, time format
 
 - What changed:

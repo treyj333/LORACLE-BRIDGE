@@ -2444,7 +2444,17 @@ button::-moz-focus-inner { border: 0; }
   position: absolute; top: 16px; left: 20px; z-index: 50;
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--lo-dim); line-height: 1.8; pointer-events: none;
+  /* Semi-transparent panel background so canvas node labels rendered in
+     the HUD's footprint are visually occluded — without it, "MY MT" and
+     surrounding peer labels bled through the HUD's "17 NODES / 0 MSGS /
+     PHI4:14B" stack and all the text piled into an unreadable mess.
+     pointer-events stays none so clicks still pass through to the canvas. */
+  background: rgba(10, 10, 11, 0.82);
+  border: 1px solid var(--lo-divider);
+  padding: 10px 14px;
+  border-radius: 2px;
 }
+[data-theme="light"] .lo-hud { background: rgba(250, 250, 248, 0.9); }
 .lo-hud-val { color: var(--lo-ink); font-weight: 500; font-size: 13px; }
 
 /* ── Hop Rings Legend (bottom-left) ───────────────────────────────────────── */
@@ -6574,6 +6584,13 @@ function checkConnectionForModal(connected) {
 // ─── Map View ──────────────────────────────────────────────────────────────
 
 var _map = null, _mapMarkers = {}, _mapLabels = {}, _covLayer = null;
+// Label-visibility zoom threshold. Below this, text labels hide to prevent
+// the pile-up when many nodes cluster at the same lat/lon (e.g. a single
+// repeater site with 15 peers reporting the same GPS fix). The underlying
+// markers stay visible and the Leaflet tooltip still shows the name on
+// hover — just the inline labels get suppressed at low zoom.
+var _MAP_LABEL_MIN_ZOOM = 11;
+
 function initMap() {
   if (_map) { updateMapMarkers(); return; }
   _map = L.map('map-view').setView([39.8, -98.5], 4);
@@ -6581,7 +6598,26 @@ function initMap() {
     maxZoom: 18,
     attribution: '\u00a9 OpenStreetMap'
   }).addTo(_map);
+  // Apply the zoom-threshold label hiding on every zoom change, and once
+  // at initial render (updateMapMarkers calls this at the end of its
+  // run so late-arriving labels also get the right state).
+  _map.on('zoomend', _applyMapLabelVisibility);
   updateMapMarkers();
+}
+
+// Show / hide text labels based on current zoom. Keeps the map readable
+// when many nodes cluster at the same coordinates — labels would otherwise
+// stack on top of each other unreadably (10+ "c271b / c271c / c271d ..."
+// boxes piled up). Hover tooltips still expose the name at any zoom.
+function _applyMapLabelVisibility() {
+  if (!_map) return;
+  var hide = _map.getZoom() < _MAP_LABEL_MIN_ZOOM;
+  Object.keys(_mapLabels).forEach(function(nid) {
+    var label = _mapLabels[nid];
+    if (!label) return;
+    var el = (typeof label.getElement === 'function') ? label.getElement() : null;
+    if (el) el.style.display = hide ? 'none' : '';
+  });
 }
 
 function updateMapMarkers() {
@@ -6660,6 +6696,11 @@ function updateMapMarkers() {
     _map.fitBounds(bounds, {padding: [40, 40], maxZoom: 14});
     App._mapFitted = true;
   }
+  // Apply label visibility based on current zoom so newly-added labels
+  // pick up the right state immediately (the zoomend handler only fires
+  // when the user changes zoom, so without this call freshly-added labels
+  // would show at all zooms until the next zoom change).
+  _applyMapLabelVisibility();
 }
 
 // Open the same thread panel used on the mesh canvas when a map marker is clicked.
