@@ -4,6 +4,30 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 11:55] — + RADIO is now a universal picker (MT or MC)
+
+- What changed:
+  - **Add-radio modal's PROTOCOL dropdown (`#ar-protocol`) unlocked** and now offers both `Meshtastic` and `MeshCore`. Was previously `disabled` and hardcoded to `meshcore`.
+  - **`submitAddRadio()` branches on selected protocol.** MeshCore path is unchanged — POSTs to `/api/backends/add` (blocking, 10-30s, `add_secondary_radio` in the backend). Meshtastic path POSTs to `/api/connection/switch` (non-blocking — `switch_connection` in the backend, which replaces `self.interface` and lets `_radio_connection_loop` pick up the new config async). The MT branch mirrors the exact payload shape used by the first-boot startup wizard's `connectFromModal` so the proven path is reused.
+  - **New `arProtocolChanged()` JS function.** Rewrites `#ar-title` and `#ar-description` to match the picked protocol when the modal was opened standalone (via the `+ RADIO` header button). Skips when `_wizardActive` is true so the wizard's own copy isn't overwritten.
+  - **`+ RADIO` button label is now permanently `+ RADIO`** regardless of what's connected. Was previously flipping to `◆ MC` once MC connected (two sites in the poll / refresh path). The `.on` CSS class is still toggled when any radio is attached so the button can retain "active" styling, but the text is static.
+  - **`showAddRadioModal()` picks a smart default protocol** when opened standalone: whichever radio is NOT yet connected. MT down → defaults to `meshtastic`; MC down → defaults to `meshcore`; both up or both down → defaults to `meshtastic`. Also calls `arProtocolChanged()` + `arTransportChanged()` on open so the form state matches the chosen protocol from the first render.
+  - **Header button tooltip** updated from "Add / manage secondary MeshCore radio" to "Add a radio — pick Meshtastic or MeshCore, then transport + device".
+  - **Companion revert: commit `14ca35a` reverted as `5c7e352`.** The prior `showMtManage` change that made `◯ MT` re-open the startup wizard was redundant once `+ RADIO` became universal — `showMtManage` is back to its pre-`14ca35a` behavior (open self-window when MT is paired, silent no-op when not). The operator now uses a single entry point (`+ RADIO`) for all adds.
+- Why:
+  - Operator report on hardware: if the bridge booted without a Meshtastic stick paired and the user dismissed the startup wizard, then later connected MeshCore, the `+ RADIO` button flipped to `◆ MC` and became MC-only. There was no obvious way to add MT from the header short of finding the `◯ MT` button (which was settings-only) or rebooting. My first fix pass (`14ca35a`) surfaced `◯ MT` as a secondary add entry point; the user called that the wrong direction and asked for a single button that handles both protocols in one UI. The new model — one button, one modal, protocol dropdown — matches how the operator actually thinks about the hardware: "I have a radio, I want to add it," not "I need to find the button for THIS specific protocol."
+- Impact on project goals:
+  - UI consolidation for the v1.0-ship radio-connect story. Removes a source of "where's the button I need" confusion on the dashboard. No backend surface change — both `switch_connection` (MT primary) and `add_secondary_radio` (MC) already have replace-if-present semantics, so picking a protocol that's already connected just reconnects. The v2.5 auto-seed backstop handles bridge-rule seeding once both protocols are up regardless of which order they were added in.
+- Scope held:
+  - No changes to `add_secondary_radio` in standalone_bridge.py — it stays MeshCore-only. Adding a second MT as a true secondary (multi-primary-of-same-protocol) is still not supported and is deferred. Not required for the operator's use case.
+  - The first-boot startup wizard's step sequencing is unchanged. When `_wizardActive` is true, the add-radio modal continues to be driven by the wizard's own copy + success-panel logic; universal-picker behavior only kicks in for ordinary `+ RADIO` clicks after the wizard has completed (or been skipped).
+  - No separate "manage MC" button was added — MC settings/self-info still lives behind the canvas self-node click (same as MT). If MC manage needs a dedicated header entry point later, that's a separate polish pass.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — five discrete edits: B1 dropdown HTML, B2 `submitAddRadio` protocol branch, B3 new `arProtocolChanged`, B4 label-flip removal at two sites, B5 smart default protocol in `showAddRadioModal` + header tooltip.
+- Tests: 365/365 pytest green (frontend JS has no Python test surface; pytest is a regression sanity check). Browser-level verification deferred to operator on live hardware — the expected flow is: boot without radios → click `+ RADIO` → modal opens with Meshtastic pre-selected (since MT is missing) → pick transport/device → CONNECT → MT comes up → header shows `◆ MT`. Then click `+ RADIO` again → modal opens with MeshCore pre-selected → connect MC → both up.
+
+---
+
 ## [2026-04-19 22:45] — v2.5.1: Backend liveness truth-telling
 
 - What changed:
