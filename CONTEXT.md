@@ -4,6 +4,30 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 18:45] — Filter MC BLE scan to likely-MeshCore devices only (NUS UUID + name prefix)
+
+- What changed:
+  - **`/api/ble/scan-all` now tags every result by two authoritative signals** and supports filtering:
+    - Signal 1: the advertisement's `service_uuids` contains the **Nordic UART Service UUID** `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` — this is what MC's own `meshcore/ble_cx.py:25` uses for its RX/TX characteristics, so a device advertising NUS is almost certainly speaking the MC protocol.
+    - Signal 2: device name starts with `MeshCore-`, `meshcore_`, or `mc-` (case-insensitive) — catches operator-customized names like "MeshCore-TN02".
+    - Devices matching either signal get `likely_meshcore: true` in the response.
+    - New query param `?mc_only=1` hard-filters to just the tagged subset. The response also now surfaces each device's full `service_uuids` list so the UI can explain *why* something was flagged.
+  - **MC BLE scan is MC-only by default.** The client-side `addRadioBleScan()` now sends `?mc_only=1` when the MC modal runs a scan, so the operator no longer picks their radio out of a crowd of TVs, earbuds, iPhones, and random unknowns (the user's real-hardware pain point — a 24-device list filtered to 1 `MeshCore-TN02` + optional NUS-advertising extras).
+  - **"Show all BLE devices" toggle** rendered below the scan results. Unchecked = filtered MC-only. Checked = unfiltered, with `◆ likely MeshCore` purple hints on tagged rows. Toggle flip triggers an immediate rescan. State held in the module-level `_bleShowAllMc` (resets on page reload — the filter is the right default every time).
+  - **Empty-state copy reflects the filter mode:** MC filtered-mode empty state says "no MeshCore BLE devices found (filtered to NUS-service matches + MeshCore-prefixed names) — make sure the radio is advertising, or toggle **Show all BLE** below to scan unfiltered." MT keeps its own Meshtastic-service-filtered copy. Unfiltered MC mode falls through to a generic "no BLE devices found nearby."
+  - **README updated** with a Connecting-your-radios breakdown of what each scan button does: SCAN PORTS (serial, LoRa-shape hint) and SCAN BLE (MT = service-UUID-filtered, MC = NUS + name-prefix filtered with Show-all escape hatch).
+- Why:
+  - Operator report on hardware: the MC BLE scan returned 15+ devices including a 65" QLED TV, Marvin's iPhone, Echo Buds, Govee lights, and a pile of unnamed BLE advertisers. Picking the actual MeshCore radio out of that was annoying at best and error-prone at worst (one mis-click and you've got the bridge trying to pair with a TV for 30 seconds). Research across `meshcore/ble_cx.py` confirmed MC uses the Nordic UART Service UUID as its transport signature — that plus the "MeshCore-" name convention is enough to filter the list to almost-always-just-the-radio.
+- Impact on project goals:
+  - MC BLE connect UX now matches the MT scan UX for signal-to-noise: both hide non-radio devices by default, both have a manual-pick list of just the relevant devices. No more 24-device scroll-and-squint.
+  - Scope held: no change to `MeshCore.create_ble(address)` or the actual connect path — the filter is purely in the scan-display layer. The "Show all BLE" toggle preserves the ability to reach any device if the heuristic misses (e.g. a future MC firmware that changes its advertised name and drops NUS).
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — `api_ble_scan_all` gains `MC_NUS_UUID` constant + `MC_NAME_PREFIXES` tuple, tags devices on NUS-UUID OR name-prefix match, accepts `?mc_only=1`, surfaces `service_uuids` in the response. `addRadioBleScan()` defaults MC scans to `mc_only=1`, renders the "Show all BLE devices" toggle, triggers rescan on toggle change, tweaks the empty-state copy per mode.
+  - `README.md` — Connecting-your-radios paragraph split into SCAN PORTS / SCAN BLE explainer with a note on the MC filter default + Show-all escape hatch.
+- Tests: 373/373 still green; filter is purely at the API + UI layer with no new backend surface. Browser-verified via `preview_*`: filtered scan returned 1 device (MeshCore-TN02 with NUS UUID), unfiltered returned 24, toggle flip triggered a rescan that switched between the two views.
+
+---
+
 ## [2026-04-20 18:10] — Fix `mc:unknown` DM error + polish anonymous-channel-sender UX
 
 - What changed:

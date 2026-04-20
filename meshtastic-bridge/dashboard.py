@@ -649,16 +649,24 @@ def api_ble_scan():
 
 @app.route("/api/ble/scan-all", methods=["GET"])
 def api_ble_scan_all():
-    """Generic BLE scan — returns every nearby BLE advertiser, not just
-    Meshtastic-service-UUID matches. Used by the MeshCore connect flow
-    because the meshcore library doesn't expose a pre-connect scan; the
-    only way to let the operator pick a specific device is to scan at the
-    bleak layer and hand the chosen MAC to MeshCore.create_ble(address).
+    """Generic BLE scan used by the MeshCore connect flow.
 
-    Devices advertising a name containing 'mesh' are flagged with
-    ``likely_meshcore: true`` so the UI can highlight them without
-    hard-filtering (the operator might have a device advertising under
-    a custom name).
+    The meshcore library doesn't expose a pre-connect scan of its own,
+    so we scan at the bleak layer and tag devices that are "likely
+    MeshCore" via two signals:
+
+    1. The advertisement's service_uuids list contains the **Nordic
+       UART Service** (6E400001-B5A3-F393-E0A9-E50E24DCCA9E) — this is
+       the authoritative MC transport signature (see
+       meshcore/ble_cx.py:25 for the UUID MC's own connection code uses).
+    2. The device name starts with a known MC prefix ("MeshCore-",
+       "mc-", "meshcore_", case-insensitive) — covers operator-custom
+       names like "MeshCore-TN02".
+
+    Response shape: ``{devices: [{address, name, rssi, likely_meshcore,
+    service_uuids}]}``. By default the list includes every nearby
+    advertiser so the operator has a fallback if the heuristic misses;
+    pass ``?mc_only=1`` to hard-filter to the tagged-MC subset.
     """
     try:
         import asyncio
@@ -667,19 +675,36 @@ def api_ble_scan_all():
         return jsonify({"error": "bleak not installed — pip install bleak"}), 400
 
     timeout = float(request.args.get("timeout", 10))
+    mc_only = str(request.args.get("mc_only", "")).strip() in ("1", "true", "yes")
+
+    # MeshCore BLE service UUID (Nordic UART Service). Matches what
+    # MC's own ble_cx.py uses to subscribe — if the device advertises
+    # this, it speaks the MC protocol (caveat: other NUS-based devices
+    # exist, so we combine with a name-prefix check for precision).
+    MC_NUS_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+    MC_NAME_PREFIXES = ("meshcore-", "meshcore_", "mc-")
 
     async def _scan():
         found = await BleakScanner.discover(timeout=timeout, return_adv=True)
         out = []
         for addr, (dev, adv) in found.items():
-            name = (dev.name or adv.local_name or "").strip()
-            blob = name.lower()
+            name = (dev.name or getattr(adv, "local_name", "") or "").strip()
+            name_lc = name.lower()
+            uuids = [str(u).lower() for u in (getattr(adv, "service_uuids", None) or [])]
+            has_nus = MC_NUS_UUID in uuids
+            name_hit = any(name_lc.startswith(p) for p in MC_NAME_PREFIXES)
+            likely_mc = bool(has_nus or name_hit)
             out.append({
                 "address": addr,
                 "name": name or "(unknown)",
                 "rssi": getattr(adv, "rssi", None),
-                "likely_meshcore": ("mesh" in blob or "companion" in blob or "rnode" in blob),
+                "likely_meshcore": likely_mc,
+                # Surface the UUID list so the UI can show *why* a device
+                # was tagged (operator debugging: "is this really MC?").
+                "service_uuids": uuids,
             })
+        if mc_only:
+            out = [d for d in out if d["likely_meshcore"]]
         out.sort(key=lambda d: (not d["likely_meshcore"], -(d["rssi"] or -999)))
         return out
 
@@ -6287,14 +6312,29 @@ async function addRadioSerialScan() {
 // so for MC the only way to offer a manual-pick list is to scan at the
 // bleak layer and pass the chosen MAC to MeshCore.create_ble(address).
 // The returned rows are clickable — click populates the BLE ADDR input.
+// For MC BLE scans we filter to likely-MeshCore devices by default
+// (NUS service UUID match OR "MeshCore-" name prefix) so the operator
+// doesn't pick out an MC radio from a list of 15 TVs, earbuds, and
+// random unknowns. A "Show all BLE" toggle falls back to the full list
+// if the heuristic misses a legit MC device. MT scans use the
+// service-UUID-filtered /api/ble/scan which already returns MT-only.
+var _bleShowAllMc = false;
+
 async function addRadioBleScan() {
   var listRow = document.getElementById('ar-ble-list-row');
   var listEl = document.getElementById('ar-ble-list');
   var proto = (document.getElementById('ar-protocol') || {}).value || 'meshtastic';
   listRow.style.display = '';
   var isMT = (proto === 'meshtastic' || proto === 'mt');
-  var endpoint = isMT ? '/api/ble/scan?timeout=10' : '/api/ble/scan-all?timeout=10';
-  var typeLabel = isMT ? 'Meshtastic' : 'nearby';
+  // MC: request mc_only by default so the server returns only tagged
+  // devices (tagged = NUS service UUID match OR "MeshCore-" name
+  // prefix — see /api/ble/scan-all). Operator-toggleable via the
+  // "Show all BLE" checkbox rendered below the results.
+  var mcOnly = !isMT && !_bleShowAllMc;
+  var endpoint = isMT
+    ? '/api/ble/scan?timeout=10'
+    : ('/api/ble/scan-all?timeout=10' + (mcOnly ? '&mc_only=1' : ''));
+  var typeLabel = isMT ? 'Meshtastic' : (mcOnly ? 'MeshCore' : 'nearby');
   var fallbackName = isMT ? 'Meshtastic Device' : 'BLE Device';
   listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning for ' + typeLabel + ' BLE devices (up to 10s)\u2026</span>';
   try {
@@ -6312,26 +6352,51 @@ async function addRadioBleScan() {
       listEl.innerHTML = '<span style="color:#c0392b">' + escapeHtml(em) + '</span>';
       return;
     }
+    // Build the device-row list, or a "no devices" message if empty.
+    var body;
     if (!valid.length) {
-      var msg = isMT
-        ? 'No Meshtastic BLE devices found. Check the radio is powered and within range, then click SCAN BLE again. (Some radios need to be in pairing mode.)'
-        : 'No BLE devices found nearby. Make sure your MeshCore radio is powered, in range, and broadcasting. Click SCAN BLE to try again.';
-      listEl.innerHTML = '<div style="padding:6px 0;color:var(--lo-faint)">' + msg + '</div>';
-      return;
+      if (isMT) {
+        body = '<div style="padding:6px 0;color:var(--lo-faint)">No Meshtastic BLE devices found. Check the radio is powered and within range, then click SCAN BLE again. (Some radios need to be in pairing mode.)</div>';
+      } else if (mcOnly) {
+        body = '<div style="padding:6px 0;color:var(--lo-faint)">No MeshCore BLE devices found (filtered to NUS-service matches + MeshCore-prefixed names). ' +
+          'Make sure the radio is powered and advertising, or toggle <strong>Show all BLE</strong> below to scan unfiltered.</div>';
+      } else {
+        body = '<div style="padding:6px 0;color:var(--lo-faint)">No BLE devices found nearby. Make sure your MeshCore radio is powered, in range, and broadcasting.</div>';
+      }
+    } else {
+      body = valid.map(function(dv, i) {
+        var rssi = (typeof dv.rssi === 'number')
+          ? ' <span style="color:var(--lo-faint);font-size:9px">' + dv.rssi + ' dBm</span>' : '';
+        // Highlight MC-shaped names so the operator can eyeball the
+        // right pick in the unfiltered list (Show all BLE mode).
+        var hint = (!isMT && dv.likely_meshcore)
+          ? ' <span style="color:#9b59b6;font-size:9px">\u2756 likely MeshCore</span>' : '';
+        return '<div class="lo-ble-device" data-idx="' + i + '" style="padding:5px 8px;margin:2px 0;background:var(--lo-bg-deep);cursor:pointer;font-family:var(--font-mono)">' +
+          '<strong style="color:var(--lo-ink)">' + escapeHtml(dv.name || fallbackName) + '</strong>' +
+          ' <span style="color:var(--lo-dim)">' + escapeHtml(dv.address) + '</span>' +
+          rssi + hint +
+        '</div>';
+      }).join('');
     }
-    listEl.innerHTML = valid.map(function(dv, i) {
-      var rssi = (typeof dv.rssi === 'number')
-        ? ' <span style="color:var(--lo-faint);font-size:9px">' + dv.rssi + ' dBm</span>' : '';
-      // Highlight MC-shaped names (server flags them as likely_meshcore)
-      // so the operator can eyeball the right pick in a noisy BLE env.
-      var hint = (!isMT && dv.likely_meshcore)
-        ? ' <span style="color:#9b59b6;font-size:9px">\u2756 likely MeshCore</span>' : '';
-      return '<div class="lo-ble-device" data-idx="' + i + '" style="padding:5px 8px;margin:2px 0;background:var(--lo-bg-deep);cursor:pointer;font-family:var(--font-mono)">' +
-        '<strong style="color:var(--lo-ink)">' + escapeHtml(dv.name || fallbackName) + '</strong>' +
-        ' <span style="color:var(--lo-dim)">' + escapeHtml(dv.address) + '</span>' +
-        rssi + hint +
-      '</div>';
-    }).join('');
+    // Append the MC-only toggle row (only visible when protocol=MC) so
+    // the operator can expand the filter when the heuristic misses.
+    var toggleHtml = '';
+    if (!isMT) {
+      toggleHtml =
+        '<label style="display:flex;align-items:center;gap:6px;padding:8px 0 0;color:var(--lo-dim);font-size:10px;cursor:pointer">' +
+        '<input type="checkbox" id="ar-ble-show-all" ' + (_bleShowAllMc ? 'checked' : '') + '>' +
+        ' Show all BLE devices (not just likely-MeshCore)' +
+        '</label>';
+    }
+    listEl.innerHTML = body + toggleHtml;
+    // Toggle: flip _bleShowAllMc and re-scan on change.
+    var toggleEl = document.getElementById('ar-ble-show-all');
+    if (toggleEl) {
+      toggleEl.addEventListener('change', function(ev) {
+        _bleShowAllMc = !!ev.target.checked;
+        addRadioBleScan();
+      });
+    }
     Array.from(listEl.querySelectorAll('.lo-ble-device')).forEach(function(row) {
       row.addEventListener('click', function() {
         var idx = parseInt(row.dataset.idx, 10);
