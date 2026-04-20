@@ -62,6 +62,16 @@ class MeshCoreBackend(RadioBackend):
         self._self_info_cache: Dict[str, object] = {"self_node_id": None}
         self._self_info_last_fetch: float = 0.0
         self._self_info_ttl: float = 30.0
+        # Channel-table discovery — populated at connect-time by
+        # _discover_channels(). The bridge uses self._public_channel_index
+        # to route outgoing public-channel broadcasts to whichever slot the
+        # MC device has named "Public" (case-insensitive), because the
+        # meshcore send_chan_msg(idx, text) API takes a raw slot index,
+        # not a semantic channel identifier. Without this, bridge-sourced
+        # MT→MC relays all went to slot 0 regardless of whether slot 0
+        # was the operator's public channel or a personal/unconfigured one.
+        self._channel_table: list = []  # [{idx, name, hash}]
+        self._public_channel_index: Optional[int] = None  # None = not yet discovered
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -120,11 +130,27 @@ class MeshCoreBackend(RadioBackend):
     def send_broadcast(self, text: str, channel: int = 0) -> None:
         if not self.is_connected() or self._loop is None:
             raise ConnectionError("MeshCore radio not connected")
-        logger.info(
-            f"MC send_broadcast start: ch={channel} len={len(text)}"
-        )
+        # Public-channel remap: when the caller asks for channel 0 (the
+        # bridge's default for "public"), substitute the slot index the
+        # device actually has named "Public". Without this, bridge-sourced
+        # MT→MC relays went to whatever happened to be in slot 0 on the
+        # device — often a personal or unconfigured channel — and never
+        # reached the public mesh. Explicit non-zero channel callers
+        # (e.g. a dashboard send to a specific named channel) bypass the
+        # remap and get the literal index they passed.
+        resolved = channel
+        if channel == 0 and self._public_channel_index is not None:
+            resolved = self._public_channel_index
+        if resolved != channel:
+            logger.info(
+                f"MC send_broadcast start: ch=0 → slot {resolved} (Public) len={len(text)}"
+            )
+        else:
+            logger.info(
+                f"MC send_broadcast start: ch={resolved} len={len(text)}"
+            )
         future = asyncio.run_coroutine_threadsafe(
-            self._meshcore.commands.send_chan_msg(channel, text),
+            self._meshcore.commands.send_chan_msg(resolved, text),
             self._loop,
         )
         result = future.result(timeout=30)
@@ -138,7 +164,7 @@ class MeshCoreBackend(RadioBackend):
                 f"MC send_broadcast ERROR from lib: {getattr(result, 'payload', None)!r}"
             )
             raise RuntimeError(f"MeshCore broadcast failed: {result.payload}")
-        logger.info(f"MC send_broadcast ok: result_type={res_type}")
+        logger.info(f"MC send_broadcast ok: result_type={res_type} slot={resolved}")
 
     # ── Protocol-optional features ───────────────────────────────────────
     # MeshCore has no traceroute or LoRa-config-write surface yet; only a
@@ -286,7 +312,112 @@ class MeshCoreBackend(RadioBackend):
             return f"{self._tcp_host}:{self._tcp_port}"
         return self._serial_port or "auto"
 
+    # ── Channel-table introspection ──────────────────────────────────────
+
+    def get_public_channel_index(self) -> Optional[int]:
+        """Return the slot index of the MC device's Public channel.
+
+        Discovered at connect-time by _discover_channels(). None means
+        discovery hasn't run yet (backend not fully connected); 0 is the
+        fallback used when no channel named "Public" was found on the
+        device. The bridge's send_broadcast() uses this value to remap
+        incoming channel=0 requests to the operator's actual public slot.
+        """
+        return self._public_channel_index
+
+    def get_channel_table(self) -> list:
+        """Copy of the discovered channel table (list of {idx, name, hash})."""
+        return list(self._channel_table)
+
     # ── Internal: asyncio loop ───────────────────────────────────────────
+
+    async def _discover_channels(self) -> None:
+        """Enumerate the MC device's channel table and pick the Public slot.
+
+        MeshCore's firmware exposes up to 16 channel slots, each with a
+        name + PSK derived from the name hash (or an explicit secret). The
+        ``meshcore.commands.get_channel(idx)`` call returns a CHANNEL_INFO
+        event with ``{channel_idx, channel_name, channel_secret,
+        channel_hash}`` — see meshcore/reader.py:475-494. We iterate slots
+        0..15, collect the named ones, and pick the slot whose name
+        matches "public" (case-insensitive, also "public channel" /
+        "public ch"). That slot index becomes self._public_channel_index
+        and gets substituted for channel=0 in outgoing bridge broadcasts.
+
+        Fallback: if no Public-named slot exists, we keep the 0 default
+        but log every discovered slot so the operator can see exactly
+        what's on the device and rename one.
+        """
+        if not self._meshcore:
+            self._public_channel_index = 0
+            return
+
+        slots = []
+        # Scan the full 16-slot range (MC channel tables are bounded at
+        # 16 slots per firmware). Don't break on ERROR / empty — MC
+        # allows sparse tables (e.g. slot 0 configured, slot 1 empty,
+        # slot 2 configured), so a single ERROR doesn't mean "end of
+        # table." 16 * ~3s timeout upper bound is ~48s worst case, but
+        # typical devices respond in <50ms each so this runs in well
+        # under a second.
+        for idx in range(0, 16):
+            try:
+                result = await asyncio.wait_for(
+                    self._meshcore.commands.get_channel(idx), timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.debug(f"[mc] get_channel({idx}) timed out — skipping")
+                continue
+            except Exception as e:
+                logger.debug(f"[mc] get_channel({idx}) raised {e!r} — skipping")
+                continue
+            if not hasattr(result, "type"):
+                continue
+            if result.type == EventType.ERROR:
+                continue
+            payload = getattr(result, "payload", None) or {}
+            name = str(payload.get("channel_name") or "").strip()
+            # Skip empty slots (unnamed / unused).
+            if not name:
+                continue
+            slots.append({
+                "idx": idx,
+                "name": name,
+                "hash": payload.get("channel_hash"),
+            })
+
+        self._channel_table = slots
+
+        # Match anything that reads as "public" — common variants include
+        # "Public", "public", "Public Channel", "Public Ch", and "#public"
+        # (leading-# triggers MC's auto-hash-key behavior).
+        def _is_public(name: str) -> bool:
+            n = name.lower().strip().lstrip("#").strip()
+            return n == "public" or n.startswith("public ") or n == "public channel"
+
+        match = next((s for s in slots if _is_public(s["name"])), None)
+        if match is not None:
+            self._public_channel_index = match["idx"]
+            logger.info(
+                f"[mc] public channel resolved: idx={match['idx']} name={match['name']!r} "
+                f"(table: {[(s['idx'], s['name']) for s in slots]})"
+            )
+        else:
+            self._public_channel_index = 0
+            if slots:
+                logger.warning(
+                    f"[mc] no channel named 'Public' found on the device — defaulting "
+                    f"outbound public-channel sends to slot 0. Configured slots: "
+                    f"{[(s['idx'], s['name']) for s in slots]}. Rename one of these to "
+                    "'Public' on the MC device (or set_channel via the companion app) "
+                    "so cross-protocol relay can reach the public channel."
+                )
+            else:
+                logger.warning(
+                    "[mc] channel table is empty — defaulting to slot 0. The MC "
+                    "device has no configured channels; configure at least one "
+                    "named 'Public' for cross-protocol relay to work."
+                )
 
     def _run_loop(self):
         """Background thread running the asyncio event loop."""
@@ -334,6 +465,16 @@ class MeshCoreBackend(RadioBackend):
 
             # Fetch initial contacts
             await self._refresh_contacts()
+
+            # Enumerate the device's channel table once at connect-time.
+            # Without this we'd blindly pass channel=0 to send_chan_msg,
+            # which only works if slot 0 happens to be the operator's
+            # public channel. See _discover_channels() docstring.
+            try:
+                await self._discover_channels()
+            except Exception as e:
+                logger.warning(f"[mc] channel discovery failed: {e} — falling back to channel index 0")
+                self._public_channel_index = 0
 
             # Run until stopped
             while self._running:

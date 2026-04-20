@@ -1723,6 +1723,8 @@ def api_bridge_health():
             "backends": [],
             "last_observe_at_s_ago": None,
             "ready": False,
+            "mc_public_channel_idx": None,
+            "mc_channels": [],
         })
     cfg = getattr(_bridge, "_bridge_config", {}) or {}
     backends_out = []
@@ -1738,6 +1740,8 @@ def api_bridge_health():
     except Exception:
         mt_alive = False
     backends_out.append({"protocol": "mt", "connected": bool(mt_alive), "primary": True})
+    mc_public_channel_idx = None
+    mc_channels = []
     try:
         for b in _bridge._radio_manager.get_backends():
             try:
@@ -1749,6 +1753,30 @@ def api_bridge_health():
             except Exception:
                 connected = False
             backends_out.append({"protocol": proto, "connected": connected, "primary": False})
+            # If this is the MC backend, surface its resolved public-channel
+            # index + the full discovered channel table so the Relay Health
+            # panel can render "mc ✓ (Public=ch<idx>)" or warn when no slot
+            # is named "Public". See MeshCoreBackend._discover_channels.
+            # Guard with isinstance checks: MagicMock-shaped mocks in tests
+            # auto-respond to any attribute access, so a plain `callable()`
+            # check would pass and yield non-serializable MagicMock values.
+            if proto == "mc":
+                getter = getattr(b, "get_public_channel_index", None)
+                if callable(getter):
+                    try:
+                        v = getter()
+                        if isinstance(v, int):
+                            mc_public_channel_idx = v
+                    except Exception:
+                        mc_public_channel_idx = None
+                table_getter = getattr(b, "get_channel_table", None)
+                if callable(table_getter):
+                    try:
+                        tbl = table_getter()
+                        if isinstance(tbl, list):
+                            mc_channels = tbl
+                    except Exception:
+                        mc_channels = []
     except Exception:
         pass
     last_observe = None
@@ -1757,12 +1785,24 @@ def api_bridge_health():
         last_observe = stats.get("last_observe_at_s_ago")
     except Exception:
         pass
+    # Strip non-serializable fields from the channel table (channel_hash is
+    # present on some lib versions as bytes; keep only idx + name for the UI).
+    mc_channels_out = [
+        {"idx": c.get("idx"), "name": c.get("name")}
+        for c in mc_channels if isinstance(c, dict)
+    ]
     return jsonify({
         "master_enabled": bool(cfg.get("enabled")),
         "rules": cfg.get("rules") or [],
         "backends": backends_out,
         "last_observe_at_s_ago": last_observe,
         "ready": True,
+        # v2.6: surface which MC channel slot the bridge is routing "public"
+        # broadcasts to. None means MC backend not registered; 0 with no
+        # entry in mc_channels named "Public" means discovery defaulted
+        # (operator needs to configure a Public channel on the device).
+        "mc_public_channel_idx": mc_public_channel_idx,
+        "mc_channels": mc_channels_out,
     })
 
 
@@ -5727,9 +5767,33 @@ async function bridgeRhPollHealth() {
       if (backends.length === 0) {
         bVal.textContent = 'none registered';
       } else {
-        bVal.textContent = backends.map(function(b) {
+        var tail = backends.map(function(b) {
           return b.protocol + (b.connected ? ' ✓' : ' ✗');
         }).join(', ');
+        // Append the MC public-channel slot so the operator can see at
+        // a glance which slot the bridge will route outgoing MT→MC
+        // broadcasts to. None = MC not registered yet; 0 with no
+        // "Public"-named slot in mc_channels = warn (misconfigured).
+        var mcOn = backends.some(function(b) { return b.protocol === 'mc' && b.connected; });
+        if (mcOn) {
+          var pubIdx = d.mc_public_channel_idx;
+          var chanTable = d.mc_channels || [];
+          var pubSlot = chanTable.find(function(c) {
+            return /^public(\s|$)/i.test(String(c.name || '').trim().replace(/^#/, ''));
+          });
+          if (pubSlot) {
+            tail += ' · Public=ch' + pubSlot.idx;
+          } else if (pubIdx === 0 && chanTable.length > 0) {
+            // No Public-named slot found — fallback to 0 but warn.
+            var names = chanTable.map(function(c) { return 'ch' + c.idx + ':' + c.name; }).join(', ');
+            tail += ' · ⚠ no Public slot — using ch0 fallback (' + names + ')';
+          } else if (pubIdx === 0 && chanTable.length === 0) {
+            tail += ' · ⚠ no channels configured';
+          } else if (typeof pubIdx === 'number') {
+            tail += ' · Public=ch' + pubIdx;
+          }
+        }
+        bVal.textContent = tail;
       }
     }
     // Wiring

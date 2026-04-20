@@ -281,5 +281,158 @@ class TestProtocolEnum(unittest.TestCase):
         self.assertEqual(Transport.BLE.value, "ble")
 
 
+class TestMeshCoreChannelDiscovery(unittest.TestCase):
+    """_discover_channels should enumerate the MC device's channel slots
+    and pick whichever one is named "Public". Default to slot 0 when no
+    Public-named slot is found."""
+
+    def _make_backend(self):
+        # Import inside the test to keep the module-level import graph
+        # clean for environments without the meshcore lib. MESHCORE_AVAILABLE
+        # at import time covers that case.
+        from radio.meshcore_backend import MeshCoreBackend
+        b = MeshCoreBackend(connection_type="serial", serial_port="/dev/null")
+        b._meshcore = MagicMock()
+        return b
+
+    @staticmethod
+    def _make_get_channel_stub(slot_names):
+        """Return an async callable that yields CHANNEL_INFO events for
+        named slots and ERROR for any index past the end. slot_names is
+        a list of (idx, name) pairs — any idx not listed returns ERROR."""
+        # Import locally so tests skip cleanly in environments without the lib.
+        try:
+            from meshcore.events import EventType
+        except ImportError:
+            return None
+        known = {idx: name for idx, name in slot_names}
+
+        async def _get_channel(idx):
+            evt = MagicMock()
+            if idx in known:
+                evt.type = EventType.CHANNEL_INFO
+                evt.payload = {"channel_name": known[idx], "channel_idx": idx, "channel_hash": "ff"}
+            else:
+                evt.type = EventType.ERROR
+                evt.payload = None
+            return evt
+        return _get_channel
+
+    def test_discover_picks_public_named_slot(self):
+        stub = self._make_get_channel_stub([(0, "General"), (1, "Public"), (2, "Secondary")])
+        if stub is None:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._meshcore.commands.get_channel = stub
+        import asyncio
+        asyncio.run(b._discover_channels())
+        self.assertEqual(b.get_public_channel_index(), 1)
+        names = [(c["idx"], c["name"]) for c in b.get_channel_table()]
+        self.assertEqual(names, [(0, "General"), (1, "Public"), (2, "Secondary")])
+
+    def test_discover_case_insensitive_match(self):
+        stub = self._make_get_channel_stub([(0, "private"), (3, "public channel")])
+        if stub is None:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._meshcore.commands.get_channel = stub
+        import asyncio
+        asyncio.run(b._discover_channels())
+        # Match "public channel" at slot 3 (lowercase, two words).
+        self.assertEqual(b.get_public_channel_index(), 3)
+
+    def test_discover_no_public_defaults_to_zero(self):
+        stub = self._make_get_channel_stub([(0, "General"), (1, "Admin")])
+        if stub is None:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._meshcore.commands.get_channel = stub
+        import asyncio
+        asyncio.run(b._discover_channels())
+        # No slot named Public — fallback to 0 and keep the table populated
+        # so the operator's warning log can list what IS on the device.
+        self.assertEqual(b.get_public_channel_index(), 0)
+        self.assertEqual(len(b.get_channel_table()), 2)
+
+    def test_discover_empty_table_defaults_to_zero(self):
+        stub = self._make_get_channel_stub([])  # no slots — first get_channel returns ERROR
+        if stub is None:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._meshcore.commands.get_channel = stub
+        import asyncio
+        asyncio.run(b._discover_channels())
+        self.assertEqual(b.get_public_channel_index(), 0)
+        self.assertEqual(b.get_channel_table(), [])
+
+    def _run_send_broadcast(self, backend, text, channel):
+        """Run send_broadcast with asyncio.run_coroutine_threadsafe patched
+        to run the coroutine synchronously in a throwaway loop. The
+        production path needs a live loop in a background thread; for
+        unit tests we just want to assert the coroutine was called with
+        the expected channel index, so skip the threading."""
+        import asyncio
+
+        def _fake_threadsafe(coro, loop):
+            class _ImmediateFuture:
+                def result(self, timeout=None):
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        return new_loop.run_until_complete(coro)
+                    finally:
+                        new_loop.close()
+            return _ImmediateFuture()
+
+        with patch("radio.meshcore_backend.asyncio.run_coroutine_threadsafe", _fake_threadsafe):
+            backend.send_broadcast(text, channel=channel)
+
+    def test_send_broadcast_remaps_zero_to_public_slot(self):
+        """send_broadcast(channel=0) should substitute the discovered
+        public slot so bridge-sourced relays reach the operator's
+        actual Public channel, not whatever's in slot 0."""
+        try:
+            from meshcore.events import EventType
+        except ImportError:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._public_channel_index = 3
+        b._loop = MagicMock()  # not actually used thanks to the patch
+        with patch.object(type(b), "is_connected", return_value=True):
+            recorded = {"channel": None}
+
+            async def _fake_send_chan_msg(chan, text):
+                recorded["channel"] = chan
+                evt = MagicMock()
+                evt.type = EventType.OK
+                return evt
+
+            b._meshcore.commands.send_chan_msg = _fake_send_chan_msg
+            self._run_send_broadcast(b, "hello world", 0)
+            self.assertEqual(recorded["channel"], 3)  # remapped
+
+    def test_send_broadcast_passes_explicit_nonzero_channel_through(self):
+        """Explicit non-zero channel callers bypass the remap — preserves
+        the ability to send on a specific named channel by index."""
+        try:
+            from meshcore.events import EventType
+        except ImportError:
+            self.skipTest("meshcore lib not installed")
+        b = self._make_backend()
+        b._public_channel_index = 3  # remap target
+        b._loop = MagicMock()
+        with patch.object(type(b), "is_connected", return_value=True):
+            recorded = {"channel": None}
+
+            async def _fake(chan, text):
+                recorded["channel"] = chan
+                evt = MagicMock()
+                evt.type = EventType.OK
+                return evt
+
+            b._meshcore.commands.send_chan_msg = _fake
+            self._run_send_broadcast(b, "hello", 5)
+            self.assertEqual(recorded["channel"], 5)  # untouched
+
+
 if __name__ == "__main__":
     unittest.main()

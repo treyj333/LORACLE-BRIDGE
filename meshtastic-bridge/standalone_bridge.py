@@ -897,24 +897,103 @@ class StandaloneBridge:
         successful delivery.
         """
         if dest_protocol == "meshtastic":
-            if not self.interface or not self._is_interface_alive():
+            if not self._interface_ready():
                 logger.warning(
-                    "[bridge] MT send refused — interface not alive "
-                    "(check serial/USB connection)"
+                    "[bridge] MT send refused — interface not ready "
+                    "(not alive, or config handshake not complete yet)"
                 )
-                raise ConnectionError("primary meshtastic interface not alive")
-            self.interface.sendText(
+                raise ConnectionError("primary meshtastic interface not ready")
+            # Fire-and-check: use wantAck=True so the radio reports back
+            # whether the packet was accepted for transmit. The
+            # onResponse=self._on_bridge_ack_nak callback (name matters:
+            # meshtastic-python routes ACKs only to handlers named
+            # "onAckNak") will log ACK/NAK per packet id. Without
+            # wantAck, the previous fire-and-forget made it impossible to
+            # tell the difference between "packet hit the air" and
+            # "packet silently queued into a half-initialized radio."
+            pkt = self.interface.sendText(
                 text,
                 destinationId=BROADCAST_ADDR,
                 channelIndex=channel,
-                wantAck=False,
+                wantAck=True,
+                onResponse=self._on_bridge_ack_nak,
+            )
+            pkt_id = getattr(pkt, "id", None)
+            logger.info(
+                f"[bridge] relay MC→MT: sendText pkt_id={pkt_id} ch={channel} len={len(text)} wantAck=1"
             )
         elif dest_protocol == "meshcore":
+            resolved = self._resolved_mc_channel(channel)
+            logger.info(
+                f"[bridge] relay MT→MC: send ch={channel} "
+                f"(mc resolves ch0→{resolved if channel == 0 else channel}) len={len(text)}"
+            )
             # "mc:" with empty native_id tells RadioManager to pick the
             # MeshCore backend and broadcast on the given channel.
+            # Note: we pass the ORIGINAL channel (not resolved) because
+            # MeshCoreBackend.send_broadcast does the ch0→public remap
+            # itself based on its own discovered channel table. Keeps
+            # the remap logic in one place.
             self._radio_manager.send("mc:", text, channel=channel, is_dm=False)
         else:
             raise ValueError(f"unknown bridge destination protocol: {dest_protocol!r}")
+
+    def _interface_ready(self) -> bool:
+        """True only when the MT interface is alive AND has completed
+        its config handshake. meshtastic-python's sendText silently
+        enqueues packets against an interface whose myInfo isn't
+        populated yet (see mesh_interface.py:970-971 — the internal
+        _waitConnected barrier is skipped when myInfo is None). Adding
+        the myInfo check here prevents the bridge from queueing messages
+        against a radio that hasn't finished booting — the prior
+        symptom was "bridge logged relayed: +1 but the radio never
+        transmitted anything because it was still mid-config."
+        """
+        if not self.interface:
+            return False
+        if not self._is_interface_alive():
+            return False
+        return getattr(self.interface, "myInfo", None) is not None
+
+    def _resolved_mc_channel(self, channel: int) -> int:
+        """Read the MC backend's resolved public channel index for logging.
+        Returns the original channel if no MC backend is registered or
+        discovery hasn't run yet."""
+        if channel != 0:
+            return channel
+        try:
+            for b in self._radio_manager.get_backends():
+                if getattr(b, "protocol", None) is not None and str(b.protocol.value) == "mc":
+                    getter = getattr(b, "get_public_channel_index", None)
+                    if callable(getter):
+                        idx = getter()
+                        if isinstance(idx, int):
+                            return idx
+                    break
+        except Exception:
+            pass
+        return channel
+
+    # ACK/NAK handler for bridge-originated Meshtastic sends. Named
+    # "onAckNak" because meshtastic-python's response-handler dispatch
+    # uses the callback's __name__ to decide whether to route plain ACKs
+    # (not just NAKs) to the handler — see mesh_interface.py:1650-1654.
+    def _on_bridge_ack_nak(self, packet):
+        try:
+            dec = (packet or {}).get("decoded") or {}
+            routing = dec.get("routing") or {}
+            err = routing.get("errorReason", "NONE")
+            # requestId links the ACK back to our original sendText packet.
+            pkt_id = (packet or {}).get("requestId") or (packet or {}).get("id")
+            from_node = (packet or {}).get("fromId") or (packet or {}).get("from")
+            if err == "NONE":
+                logger.info(f"[bridge] MT ACK pkt_id={pkt_id} from={from_node} — packet went on air")
+            else:
+                logger.warning(
+                    f"[bridge] MT NAK pkt_id={pkt_id} reason={err!r} — packet was NOT transmitted"
+                )
+        except Exception as e:
+            logger.debug(f"[bridge] ack/nak handler error: {e}")
 
     def _bridge_sender_display(self, source_protocol: str, sender: str) -> str:
         """Pick the most human-readable name for a bridged sender.

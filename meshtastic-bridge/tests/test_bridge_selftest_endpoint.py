@@ -220,6 +220,39 @@ class TestHealthEndpoint(unittest.TestCase):
         self.assertEqual(len(mt_entries), 1)
         self.assertFalse(mt_entries[0]["connected"])
 
+    def test_health_surfaces_mc_public_channel_idx(self):
+        """v2.6: /health exposes the MC backend's resolved public-channel
+        slot so the Relay Health panel can render "mc ✓ (Public=chN)" and
+        warn when no slot is named "Public"."""
+        # Add a mock MC backend with the expected getter surface.
+        mc_backend = MagicMock()
+        mc_backend.protocol.value = "mc"
+        mc_backend.is_connected.return_value = True
+        mc_backend.get_public_channel_index.return_value = 2
+        mc_backend.get_channel_table.return_value = [
+            {"idx": 0, "name": "Personal"},
+            {"idx": 1, "name": "Admin"},
+            {"idx": 2, "name": "Public"},
+        ]
+        self.bridge._radio_manager.get_backends = MagicMock(return_value=[mc_backend])
+
+        resp = self.client.get("/api/bridge/health")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertEqual(data.get("mc_public_channel_idx"), 2)
+        self.assertEqual(data.get("mc_channels"), [
+            {"idx": 0, "name": "Personal"},
+            {"idx": 1, "name": "Admin"},
+            {"idx": 2, "name": "Public"},
+        ])
+
+    def test_health_mc_public_channel_idx_null_when_no_mc_backend(self):
+        """No MC backend registered → mc_public_channel_idx is null (None)."""
+        resp = self.client.get("/api/bridge/health")
+        data = json.loads(resp.data)
+        self.assertIsNone(data.get("mc_public_channel_idx"))
+        self.assertEqual(data.get("mc_channels", []), [])
+
 
 class TestBridgeLogsEndpoint(unittest.TestCase):
     def setUp(self):
