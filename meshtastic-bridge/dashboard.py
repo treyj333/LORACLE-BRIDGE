@@ -2777,7 +2777,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <span class="lo-conn-row"><span class="lo-dot" id="hdr-mt-dot"></span><span id="hdr-mt-label">MT --</span></span>
     <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
     <button class="lo-conn-add lo-conn-add-mt" id="hdr-manage-mt" onclick="showMtManage()" title="View Meshtastic radio settings / self info">&#9671; MT</button>
-    <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add / manage secondary MeshCore radio">+ RADIO</button>
+    <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add a radio — pick Meshtastic or MeshCore, then transport + device">+ RADIO</button>
   </span>
   <div class="lo-scope" title="Show nodes from: ALL protocols, or filter to just MESHTASTIC / just MESHCORE">
     <button class="active" data-scope="all" onclick="setScope('all')">ALL</button>
@@ -3427,7 +3427,10 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div id="ar-form">
     <div class="lo-form-row">
       <span class="lo-form-label">PROTOCOL</span>
-      <select id="ar-protocol" style="max-width:140px" disabled><option value="meshcore">MeshCore</option></select>
+      <select id="ar-protocol" style="max-width:140px" onchange="arProtocolChanged()">
+        <option value="meshtastic">Meshtastic</option>
+        <option value="meshcore">MeshCore</option>
+      </select>
     </div>
     <div class="lo-form-row">
       <span class="lo-form-label">TRANSPORT</span>
@@ -5894,13 +5897,13 @@ async function poll() {
     }
     paintDot(document.getElementById('hdr-mt-dot'), document.getElementById('hdr-mt-label'), mt, 'mt');
     paintDot(document.getElementById('hdr-mc-dot'), document.getElementById('hdr-mc-label'), mc, 'mc');
-    // Keep the top-bar "+ RADIO" button label in sync with whether a MC radio
-    // is attached — makes the button read as "manage MC" once connected.
+    // + RADIO is now a universal picker (MT or MC) — label stays "+ RADIO"
+    // regardless of what's connected. The `.on` class is kept so CSS can
+    // still telegraph "at least one radio attached" styling if it wants to.
     var addBtn = document.getElementById('hdr-add-radio');
     if (addBtn) {
-      var mcOn = !!(mc && mc.connected);
-      addBtn.textContent = mcOn ? '\u25C6 MC' : '+ RADIO';
-      addBtn.classList.toggle('on', mcOn);
+      var anyOn = !!((mt && mt.connected) || (mc && mc.connected));
+      addBtn.classList.toggle('on', anyOn);
     }
     // Mirror pill for the primary Meshtastic radio. Same shape + position as
     // the MC pill, so both protocols get a "tap to open settings" affordance.
@@ -6378,6 +6381,26 @@ async function connectFromModal() {
 function showAddRadioModal() {
   _resetSecondaryPanels();  // clean slate in case the previous session left success-panel visible
   _applyWizardChromeSecondary(_wizardActive);
+  // Universal + RADIO picker — when opened via the header button (not the
+  // first-boot wizard), default the protocol dropdown to whichever radio
+  // is NOT yet connected, then sync the copy + transport fields.
+  if (!_wizardActive) {
+    var backends = (App.state && App.state.backends) || [];
+    var hasMT = false, hasMC = false;
+    for (var i = 0; i < backends.length; i++) {
+      var p = String(backends[i].protocol || '').toLowerCase();
+      if (backends[i] && backends[i].connected) {
+        if (p === 'mt' || p === 'meshtastic') hasMT = true;
+        if (p === 'mc' || p === 'meshcore') hasMC = true;
+      }
+    }
+    var proto = document.getElementById('ar-protocol');
+    if (proto) {
+      proto.value = !hasMT ? 'meshtastic' : (!hasMC ? 'meshcore' : 'meshtastic');
+    }
+    arProtocolChanged();
+    arTransportChanged();
+  }
   refreshAddRadioModal();
   document.getElementById('add-radio-modal').classList.add('open');
 }
@@ -6397,6 +6420,26 @@ function arTransportChanged() {
   document.getElementById('ar-tcp-row').style.display    = (t === 'tcp')    ? '' : 'none';
   document.getElementById('ar-ble-row').style.display    = (t === 'ble')    ? '' : 'none';
 }
+function arProtocolChanged() {
+  // Rewrites the modal title / description to match the picked protocol
+  // when the user opened the modal standalone (via the + RADIO button).
+  // The first-boot wizard manages its own copy via _applyWizardChromeSecondary,
+  // so we leave that alone when _wizardActive is true.
+  if (_wizardActive) return;
+  var proto = (document.getElementById('ar-protocol') || {}).value || 'meshtastic';
+  var titleEl = document.getElementById('ar-title');
+  var descEl = document.getElementById('ar-description');
+  if (titleEl) {
+    titleEl.textContent = (proto === 'meshtastic' || proto === 'mt')
+      ? 'ADD A MESHTASTIC RADIO'
+      : 'ADD A MESHCORE RADIO';
+  }
+  if (descEl) {
+    descEl.innerHTML = (proto === 'meshtastic' || proto === 'mt')
+      ? 'Pick the transport and device, then CONNECT. Meshtastic connects as the primary radio \u2014 if one is already attached, it will be replaced.'
+      : 'Pick the transport and device, then CONNECT. Once MT and MC are both up, public-channel messages auto-bridge on channel 0.';
+  }
+}
 function refreshAddRadioModal() {
   // Show current MC backend status at the top of the modal (if any).
   var backends = (App.state && App.state.backends) || [];
@@ -6415,15 +6458,66 @@ function refreshAddRadioModal() {
   } else {
     active.style.display = 'none';
   }
-  // Update the top-bar button label so it telegraphs "manage MC" vs "add MC"
+  // Keep the + RADIO button styled as "attached" if any radio is up,
+  // but the label stays "+ RADIO" (universal picker semantics). Mirrors
+  // the branch in the state-update handler above.
   var btn = document.getElementById('hdr-add-radio');
   if (btn) {
-    btn.textContent = (mc && mc.connected) ? '\u25C6 MC' : '+ RADIO';
-    btn.classList.toggle('on', !!(mc && mc.connected));
+    var backendsAll = (App.state && App.state.backends) || [];
+    var anyOn = backendsAll.some(function(b) { return b && b.connected; });
+    btn.classList.toggle('on', anyOn);
   }
 }
 async function submitAddRadio() {
+  var protocol = (document.getElementById('ar-protocol') || {}).value || 'meshcore';
   var transport = document.getElementById('ar-transport').value;
+  var btn = document.getElementById('ar-submit-btn');
+
+  // Meshtastic branch — primary-MT connect via /api/connection/switch
+  // (non-blocking). The radio-loop picks up the new config async; we show
+  // a "connecting…" hint and close the modal; the header MT indicator
+  // flips when the radio comes up.
+  if (protocol === 'meshtastic' || protocol === 'mt') {
+    var mtPayload = { type: transport };
+    if (transport === 'serial') {
+      var sp = document.getElementById('ar-serial-port').value.trim();
+      mtPayload.address = sp || null;
+    } else if (transport === 'tcp') {
+      var host = document.getElementById('ar-tcp-host').value.trim();
+      var port = parseInt(document.getElementById('ar-tcp-port').value, 10) || 4403;
+      if (!host) { arSetStatus('Enter the TCP host', 'error'); return; }
+      mtPayload.host = host;
+      mtPayload.port = port;
+    } else if (transport === 'ble') {
+      mtPayload.address = document.getElementById('ar-ble-address').value.trim() || null;
+    }
+    btn.disabled = true;
+    arSetStatus('Connecting\u2026 Meshtastic radio comes up in the background (watch the MT indicator).');
+    try {
+      await fetch('/api/connection/switch', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(mtPayload)
+      });
+      arSetStatus('\u2713 Meshtastic connect initiated', 'ok');
+      showToast('Meshtastic radio connecting');
+      if (_wizardActive) {
+        // Wizard mode: leave the modal open briefly so the user sees the
+        // status hint, then close. The poll loop will drive the wizard
+        // through to completion when MT comes up.
+        setTimeout(hideAddRadioModal, 1400);
+      } else {
+        setTimeout(hideAddRadioModal, 1200);
+      }
+    } catch (e) {
+      arSetStatus(String(e), 'error');
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
+
+  // MeshCore branch — primary or secondary MC via /api/backends/add
+  // (blocking, 10-30s). Preserves the prior behavior exactly.
   var body = {transport: transport, seed_bridge: document.getElementById('ar-seed-bridge').checked};
   if (transport === 'serial') {
     body.serial_port = document.getElementById('ar-serial-port').value.trim();
@@ -6435,7 +6529,6 @@ async function submitAddRadio() {
   } else if (transport === 'ble') {
     body.ble_address = document.getElementById('ar-ble-address').value.trim() || null;
   }
-  var btn = document.getElementById('ar-submit-btn');
   btn.disabled = true;
   arSetStatus('Connecting\u2026 (this can take up to 30s)');
   try {
