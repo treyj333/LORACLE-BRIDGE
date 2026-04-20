@@ -5818,7 +5818,7 @@ async function poll() {
       var baseClass = code === 'mc' ? 'lo-dot mc' : 'lo-dot';
       if (!b) { dotEl.className = baseClass; labelEl.textContent = code.toUpperCase() + ' --'; return; }
       dotEl.className = baseClass + (b.connected ? ' on' : '');
-      labelEl.textContent = code.toUpperCase() + (b.connected ? ' ON' : ' OFF');
+      labelEl.textContent = code.toUpperCase() + (b.connected ? ' ON' : ' --');
     }
     paintDot(document.getElementById('hdr-mt-dot'), document.getElementById('hdr-mt-label'), mt, 'mt');
     paintDot(document.getElementById('hdr-mc-dot'), document.getElementById('hdr-mc-label'), mc, 'mc');
