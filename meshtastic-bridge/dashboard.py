@@ -642,6 +642,50 @@ def api_ble_scan():
     return jsonify({"devices": devices})
 
 
+@app.route("/api/ble/scan-all", methods=["GET"])
+def api_ble_scan_all():
+    """Generic BLE scan — returns every nearby BLE advertiser, not just
+    Meshtastic-service-UUID matches. Used by the MeshCore connect flow
+    because the meshcore library doesn't expose a pre-connect scan; the
+    only way to let the operator pick a specific device is to scan at the
+    bleak layer and hand the chosen MAC to MeshCore.create_ble(address).
+
+    Devices advertising a name containing 'mesh' are flagged with
+    ``likely_meshcore: true`` so the UI can highlight them without
+    hard-filtering (the operator might have a device advertising under
+    a custom name).
+    """
+    try:
+        import asyncio
+        from bleak import BleakScanner
+    except ImportError:
+        return jsonify({"error": "bleak not installed — pip install bleak"}), 400
+
+    timeout = float(request.args.get("timeout", 10))
+
+    async def _scan():
+        found = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        out = []
+        for addr, (dev, adv) in found.items():
+            name = (dev.name or adv.local_name or "").strip()
+            blob = name.lower()
+            out.append({
+                "address": addr,
+                "name": name or "(unknown)",
+                "rssi": getattr(adv, "rssi", None),
+                "likely_meshcore": ("mesh" in blob or "companion" in blob or "rnode" in blob),
+            })
+        out.sort(key=lambda d: (not d["likely_meshcore"], -(d["rssi"] or -999)))
+        return out
+
+    try:
+        devices = asyncio.run(_scan())
+    except Exception as e:
+        logger.warning(f"Generic BLE scan failed: {e}")
+        return jsonify({"error": f"Scan failed: {e}"}), 500
+    return jsonify({"devices": devices})
+
+
 @app.route("/api/serial/scan", methods=["GET"])
 def api_serial_scan():
     """List available system COM / serial ports so users don't have to
@@ -3374,7 +3418,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div class="lo-form-row" id="ar-serial-row">
       <span class="lo-form-label">DEVICE</span>
       <div style="flex:1;display:flex;gap:6px">
-        <input type="text" id="ar-serial-port" placeholder="/dev/ttyUSB1 or COM4" style="flex:1">
+        <input type="text" id="ar-serial-port" placeholder="/dev/ttyUSB1 or COM4" autocomplete="off" style="flex:1">
         <button class="btn btn-sm" onclick="addRadioSerialScan()" style="white-space:nowrap">SCAN PORTS</button>
       </div>
     </div>
@@ -3385,14 +3429,14 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     <div class="lo-form-row" id="ar-tcp-row" style="display:none">
       <span class="lo-form-label">HOST</span>
       <div style="flex:1;display:flex;gap:6px">
-        <input type="text" id="ar-tcp-host" placeholder="192.168.1.50" style="flex:1">
-        <input type="number" id="ar-tcp-port" placeholder="4000" value="4000" style="width:80px">
+        <input type="text" id="ar-tcp-host" placeholder="192.168.1.50" autocomplete="off" style="flex:1">
+        <input type="number" id="ar-tcp-port" placeholder="4000" value="4000" autocomplete="off" style="width:80px">
       </div>
     </div>
     <div class="lo-form-row" id="ar-ble-row" style="display:none">
       <span class="lo-form-label">BLE ADDR</span>
       <div style="flex:1;display:flex;gap:6px">
-        <input type="text" id="ar-ble-address" placeholder="AA:BB:CC:DD:EE:FF (blank = scan)" style="flex:1">
+        <input type="text" id="ar-ble-address" placeholder="click SCAN BLE, or paste AA:BB:CC:DD:EE:FF" autocomplete="off" style="flex:1">
         <button class="btn btn-sm" onclick="addRadioBleScan()" style="white-space:nowrap">SCAN BLE</button>
       </div>
     </div>
@@ -6051,24 +6095,25 @@ async function addRadioSerialScan() {
   }
 }
 
-// BLE scan — server-side endpoint uses meshtastic.BLEInterface.scan() which
-// filters by the Meshtastic service UUID, so it only returns MT-compatible
-// devices. MeshCore doesn't have an equivalent endpoint because its library
-// scans internally when given a None address; for MC we just tell the user
-// to leave the field blank and CONNECT.
+// BLE scan — two endpoints, picked per protocol:
+//   MT → /api/ble/scan       (meshtastic.BLEInterface.scan, service-UUID filtered)
+//   MC → /api/ble/scan-all   (bleak BleakScanner, every advertiser)
+// Why different: the meshcore library doesn't expose a pre-connect scan,
+// so for MC the only way to offer a manual-pick list is to scan at the
+// bleak layer and pass the chosen MAC to MeshCore.create_ble(address).
+// The returned rows are clickable — click populates the BLE ADDR input.
 async function addRadioBleScan() {
   var listRow = document.getElementById('ar-ble-list-row');
   var listEl = document.getElementById('ar-ble-list');
   var proto = (document.getElementById('ar-protocol') || {}).value || 'meshtastic';
   listRow.style.display = '';
   var isMT = (proto === 'meshtastic' || proto === 'mt');
-  if (!isMT) {
-    listEl.innerHTML = '<div style="padding:6px 0;color:var(--lo-dim)">MeshCore scans automatically on CONNECT. Leave the BLE ADDR blank and click CONNECT \u2014 the MeshCore library will pair with the first compatible device it finds.</div>';
-    return;
-  }
-  listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning for Meshtastic BLE devices (up to 10s)\u2026</span>';
+  var endpoint = isMT ? '/api/ble/scan?timeout=10' : '/api/ble/scan-all?timeout=10';
+  var typeLabel = isMT ? 'Meshtastic' : 'nearby';
+  var fallbackName = isMT ? 'Meshtastic Device' : 'BLE Device';
+  listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning for ' + typeLabel + ' BLE devices (up to 10s)\u2026</span>';
   try {
-    var r = await fetch('/api/ble/scan?timeout=10');
+    var r = await fetch(endpoint);
     var d = await r.json();
     if (d && d.error) {
       listEl.innerHTML = '<span style="color:#c0392b">' + escapeHtml(d.error) + '</span>';
@@ -6083,16 +6128,23 @@ async function addRadioBleScan() {
       return;
     }
     if (!valid.length) {
-      listEl.innerHTML = '<div style="padding:6px 0;color:var(--lo-faint)">No Meshtastic BLE devices found. Check the radio is powered and within range, then click SCAN BLE again. (Some radios need to be in pairing mode.)</div>';
+      var msg = isMT
+        ? 'No Meshtastic BLE devices found. Check the radio is powered and within range, then click SCAN BLE again. (Some radios need to be in pairing mode.)'
+        : 'No BLE devices found nearby. Make sure your MeshCore radio is powered, in range, and broadcasting. Click SCAN BLE to try again.';
+      listEl.innerHTML = '<div style="padding:6px 0;color:var(--lo-faint)">' + msg + '</div>';
       return;
     }
     listEl.innerHTML = valid.map(function(dv, i) {
       var rssi = (typeof dv.rssi === 'number')
         ? ' <span style="color:var(--lo-faint);font-size:9px">' + dv.rssi + ' dBm</span>' : '';
+      // Highlight MC-shaped names (server flags them as likely_meshcore)
+      // so the operator can eyeball the right pick in a noisy BLE env.
+      var hint = (!isMT && dv.likely_meshcore)
+        ? ' <span style="color:#9b59b6;font-size:9px">\u2756 likely MeshCore</span>' : '';
       return '<div class="lo-ble-device" data-idx="' + i + '" style="padding:5px 8px;margin:2px 0;background:var(--lo-bg-deep);cursor:pointer;font-family:var(--font-mono)">' +
-        '<strong style="color:var(--lo-ink)">' + escapeHtml(dv.name || 'Meshtastic Device') + '</strong>' +
+        '<strong style="color:var(--lo-ink)">' + escapeHtml(dv.name || fallbackName) + '</strong>' +
         ' <span style="color:var(--lo-dim)">' + escapeHtml(dv.address) + '</span>' +
-        rssi +
+        rssi + hint +
       '</div>';
     }).join('');
     Array.from(listEl.querySelectorAll('.lo-ble-device')).forEach(function(row) {
@@ -6100,7 +6152,7 @@ async function addRadioBleScan() {
         var idx = parseInt(row.dataset.idx, 10);
         var picked = valid[idx];
         document.getElementById('ar-ble-address').value = picked.address;
-        listEl.innerHTML = '<div style="color:var(--lo-accent-2)">Selected: ' + escapeHtml(picked.name || 'Meshtastic Device') + ' (' + escapeHtml(picked.address) + ')</div>';
+        listEl.innerHTML = '<div style="color:var(--lo-accent-2)">Selected: ' + escapeHtml(picked.name || fallbackName) + ' (' + escapeHtml(picked.address) + ')</div>';
       });
     });
   } catch (e) {
@@ -6119,6 +6171,23 @@ function showAddRadioModal() {
   if (statusEl) { statusEl.textContent = ''; statusEl.style.color = 'var(--lo-dim)'; }
   var subBtn = document.getElementById('ar-submit-btn');
   if (subBtn) subBtn.disabled = false;
+  // Blank the transport inputs on every open. Without this, an address the
+  // user typed/picked on a previous open (especially the BLE MAC from the MT
+  // connect flow) carries over into the MC open and points the MC library
+  // at the wrong device — the operator then has to clear the field before
+  // the first connect succeeds. autocomplete="off" on the inputs kills the
+  // cross-pageload browser autofill variant of the same bug.
+  var ids = ['ar-serial-port', 'ar-tcp-host', 'ar-ble-address'];
+  for (var ii = 0; ii < ids.length; ii++) {
+    var el = document.getElementById(ids[ii]);
+    if (el) el.value = '';
+  }
+  // Also hide any stale SCAN result lists so the user doesn't see leftover
+  // devices from a previous protocol/transport selection.
+  var serialList = document.getElementById('ar-serial-list-row');
+  if (serialList) serialList.style.display = 'none';
+  var bleList = document.getElementById('ar-ble-list-row');
+  if (bleList) bleList.style.display = 'none';
   // Pick a smart default protocol: whichever radio is NOT yet connected.
   // If both are up or both are down, default to Meshtastic.
   var backends = (App.state && App.state.backends) || [];

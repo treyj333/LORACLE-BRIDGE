@@ -4,6 +4,25 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 15:20] — MC BLE manual device picker + kill stale-address auto-fill
+
+- What changed:
+  - **Blank the transport inputs on every `showAddRadioModal()` open.** `ar-serial-port`, `ar-tcp-host`, and `ar-ble-address` now reset to empty strings when the modal shows, and both the serial-list and ble-list scan-result rows get hidden. Without this, a BLE MAC the operator typed/picked during the MT connect flow carried over into the MC modal open (same DOM input, no form element) and pointed the MC library at the wrong device — operator had to manually clear the field before a first-try MC connect would succeed. Fixes the "click CONNECT twice for MeshCore" bug.
+  - **`autocomplete="off"` on the three inputs** (`ar-serial-port`, `ar-tcp-host`, `ar-tcp-port`, `ar-ble-address`). Kills the cross-pageload variant of the same bug — browsers (Chrome/Safari/Firefox) remember values typed into same-id text inputs and silently auto-insert them on subsequent visits, which was filling BLE ADDR with a previous MT session's address across reloads.
+  - **New `GET /api/ble/scan-all` endpoint** using `bleak.BleakScanner.discover(timeout=N, return_adv=True)`. Returns every nearby BLE advertiser with `{address, name, rssi, likely_meshcore}` — the flag is a lightweight name-substring check (`mesh` / `companion` / `rnode`) so the UI can visually hint at likely-MC rows without hard-filtering. Sorted `likely_meshcore`-first then by RSSI descending. Why a new endpoint: the existing `/api/ble/scan` uses `meshtastic.BLEInterface.scan()` which filters by the Meshtastic service UUID — MC radios never appear in that list. The meshcore library's only pre-connect hook is `MeshCore.create_ble(address)` which scans internally when given `None` (the existing "blank + auto-scan" behavior), so offering a real manual pick for MC required scanning at the bleak layer ourselves and handing the chosen MAC through.
+  - **`addRadioBleScan()` rewritten** to pick the right endpoint per protocol: MT → `/api/ble/scan` (service-UUID filtered), MC → `/api/ble/scan-all` (every nearby device). Both flows use the same click-to-pick list rendering — row click populates `ar-ble-address`, selection line confirms. MC-side rows additionally show a `◆ likely MeshCore` purple hint when the server flagged them. The old "MeshCore scans automatically on CONNECT — leave blank" placeholder message is gone; MC now behaves identically to MT.
+  - **BLE input placeholder updated** from `AA:BB:CC:DD:EE:FF (blank = scan)` to `click SCAN BLE, or paste AA:BB:CC:DD:EE:FF` — steers operators toward the pick-from-list flow as the primary path.
+- Why:
+  - Operator report on hardware: "I have to hit connect 2 times for meshcore to connect" + "make it where I can select a bluetooth device on MC manually and doesn't automatically select from the scan." Diagnosis via the dashboard code confirmed there's no JS that auto-fills BLE ADDR — the auto-paste was browser autofill (+ intra-session input carry-over) filling the field with a stale MT BLE MAC. First CONNECT attempt targeted the wrong device and failed silently inside the MC library's blocking `create_ble(addr)`; operator then deleted the field and the second CONNECT let the MC library auto-scan + find the right radio. Adding a real manual picker is the feature ask; blanking on open + `autocomplete="off"` addresses the "click twice" root cause.
+- Impact on project goals:
+  - MC BLE connect is now first-try reliable for the common setup (operator scans → picks → connects). No more mystery "click twice" time tax. The BLE flow reads as a single consistent UX across both protocols (same modal, same SCAN button, same pickable list) which matches the "they should display the same" operator feedback that drove the chained-wizard + unified-success-panel work earlier in the day.
+  - Scope held: no changes to `add_secondary_radio`, `MeshCoreBackend.connect()`, or any backend-level connect path — the underlying "connect with explicit MAC vs blank auto-scan" behavior is unchanged. The fix is strictly in the input-hygiene + scan-endpoint surface.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — 3 HTML inputs (`autocomplete="off"` + BLE placeholder update); `showAddRadioModal()` input-reset block; new `/api/ble/scan-all` endpoint; `addRadioBleScan()` rewritten to dual-endpoint + MC-likely hint.
+- Tests: 365/365 pytest green. Browser verification via `preview_*`: pre-seeded a stale BLE MAC in the input, called `showMcManage()` and confirmed value reset to empty; `autocomplete="off"` attribute on all three transport inputs; `GET /api/ble/scan-all` returned 11 nearby devices with RSSI + `likely_meshcore` flagging; clicking a scan row filled `ar-ble-address` with the picked MAC.
+
+---
+
 ## [2026-04-20 14:45] — Guided MT → MC first-boot wizard + drop `+ RADIO` header button
 
 - What changed:
