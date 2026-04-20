@@ -4,6 +4,29 @@ This file tracks the history of changes, decisions, and current state of LORACLE
 
 ---
 
+## [2026-04-20 13:30] — Single radio-connect modal + MC manage button (header symmetry)
+
+- What changed:
+  - **Added `hdr-manage-mc` header button** next to `hdr-manage-mt`. Renders a state-aware glyph (`◇ MC` outline when off, `◆ MC` filled when on), mirrors the MT button's behavior exactly. Clicking opens the MC self-window if MC is paired; otherwise falls back to the universal `+ RADIO` modal pre-selected to MeshCore. New `.lo-conn-add-mc.on` CSS rule applies the purple MC accent (mirrors the existing `.lo-conn-add-mt.on` teal override).
+  - **Deleted the legacy `#connect-modal` entirely.** The dashboard now has ONE radio-connect pop-up — `#add-radio-modal` driven by the `+ RADIO` button. Every previous entry point (first-boot auto-open, disconnect-retry auto-open, `◯ MT` / `◇ MC` manage-button fallback, canvas self-node click fallback) now routes through this single modal. The first-boot wizard is no longer a two-step MT-then-MC chained flow — it's just "pop the `+ RADIO` modal once, user picks what they have."
+  - **Deleted 15 JS helpers**: `showConnectModal`, `hideConnectModal`, `dismissConnectModal`, `connectFromModal`, `connectModalTypeChanged`, `connectModalScan`, `connectModalPickDevice`, `connectModalSerialScan`, `_applyWizardChromePrimary`, `_resetPrimaryPanels`, `_showPrimarySuccessPanel`, `wizardAdvanceFromPrimarySuccess`, `wizardPrimaryDone`, `wizardSkipPrimary`, `wizardSkipSecondary`. Also the `#ar-wizard-step` step label, `#ar-skip-btn` "SKIP — SINGLE RADIO" button, `wizardFinishFromSecondarySuccess` (the `#ar-success` DONE button now just calls `hideAddRadioModal`), and the `_connectModalDismissed` / `_userAckedModal` state variables that only served the old modal.
+  - **Rewired `checkConnectionForModal`** to a simpler state machine: on first successful connect flip the setup-complete flag via `wizardComplete()`; on first boot with no prior setup auto-open the add-radio modal exactly once (`_firstBootModalShown` guards repeats); after a 10s disconnect gap reopen the add-radio modal if it isn't already open. `hideAddRadioModal` on wizard-cancel just calls `wizardComplete()` — no more "CANCEL during wizard re-opens step 1" path.
+  - **Simplified `submitAddRadio`**: both MT and MC branches now auto-close via `setTimeout` after the POST succeeds. No more `_wizardActive` branching. `arProtocolChanged` runs unconditionally (the old wizard-copy-override guard is gone). Modal title defaults to "ADD A RADIO" instead of "ADD A SECOND RADIO" (the old title assumed a primary was already paired, which is wrong under the universal-picker mental model).
+- Why:
+  - Operator feedback on hardware: "make it where this is the only pop up on the whole program to connect radios too for simplicity." The universal `+ RADIO` picker shipped earlier on 2026-04-20 unified the add-radio submit logic but still coexisted with the legacy `#connect-modal` (startup wizard). Two modals for radio-connect meant two sets of DOM IDs, two sets of state vars, two scan paths, two success panels — fragile and confusing. Deleting the legacy modal and routing everything through the single remaining one removes an entire source of "where's the right button" friction.
+- Impact on project goals:
+  - UI simplification milestone for the v1.0-ship radio-connect story: ONE modal, ONE code path, ONE mental model. The `+ RADIO` button is now the unambiguous add entry point regardless of radio state, protocol, or primary/secondary role. The `◯ MT` / `◇ MC` buttons become pure "manage / self-info" entries (with a useful fallback to the add modal if the radio isn't paired yet).
+  - Net diff: **+109 / -451 lines** in `dashboard.py`. Substantial reduction in the JS surface area that future changes need to reason about.
+- Scope held:
+  - No backend changes — `/api/connection/switch` (MT primary) and `/api/backends/add` (MC primary or secondary) are the same endpoints they were; only the front-end entry points are consolidated.
+  - No change to the wizard's fundamental purpose (auto-open for new users who don't know where the `+ RADIO` button is). Just collapsed from two chained modals to one.
+  - Deferred: `_showSecondarySuccessPanel` and `#ar-success` are now unreferenced dead code — left in place for now so this commit stays focused on the deletion scope, not on chasing every orphan. Separate follow-up can reap them.
+- Files modified:
+  - `meshtastic-bridge/dashboard.py` — single-file change covering HTML (delete `#connect-modal`, add `hdr-manage-mc` button, drop `#ar-wizard-step` + `#ar-skip-btn`, rewire `#ar-success` DONE button), CSS (add `.lo-conn-add-mc.on`, simplify success-panel dot rule), and JS (delete 15 helpers, add `showMcManage`, rewire `checkConnectionForModal`, `showAddRadioModal`, `hideAddRadioModal`, `arProtocolChanged`, `submitAddRadio`).
+- Tests: 365/365 pytest green (frontend-only JS change; pytest is a regression sanity check). Browser-level verification deferred to operator on live hardware — expected flow: fresh boot → add-radio modal auto-opens once → operator picks protocol + transport + device → connects. Subsequent adds via the `+ RADIO` header button, same modal. `◯ MT` / `◇ MC` buttons open settings if paired, otherwise open the same modal pre-selected.
+
+---
+
 ## [2026-04-20 11:55] — + RADIO is now a universal picker (MT or MC)
 
 - What changed:
