@@ -2348,6 +2348,9 @@ button::-moz-focus-inner { border: 0; }
    (bordered block) matches the MC counterpart; tint flips to the teal accent
    when the MT radio is connected so the two pills read as symmetric peers. */
 .lo-bar .lo-conn-add-mt.on { color: var(--lo-accent-2); border-color: var(--lo-accent-2); }
+/* MeshCore variant — mirror of the MT manage pill. Purple tint on connect
+   to match the MC=diamond convention used everywhere else. */
+.lo-bar .lo-conn-add-mc.on { color: #9b59b6; border-color: #9b59b6; }
 .lo-bar .lo-scope { display: flex; margin-left: 12px; }
 .lo-bar .lo-scope button {
   padding: 4px 10px; font-family: inherit; font-size: 9px; letter-spacing: 0.12em;
@@ -2553,11 +2556,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   position: relative;
   top: -1px;  /* optical centering against uppercase cap-height */
 }
-/* Success-panel dots: match their heading's protocol color — teal for MT,
-   purple (and diamond-shaped) for MC — instead of the default orange prompt.
-   `.is-mc` on the container flips the primary modal's success dot to MC. */
-#connect-modal-success h3::before { background: var(--lo-accent-2); }
-#connect-modal-success.is-mc h3::before { background: #9b59b6; border-radius: 0; transform: rotate(45deg) translateY(-1px); }
+/* Success-panel dot — MC-focused (the add-radio success panel only fires
+   on MC connects; MT just auto-closes the modal after a non-blocking POST). */
 #ar-success h3::before { background: #9b59b6; border-radius: 0; transform: rotate(45deg) translateY(-1px); }
 .lo-connect-box p { font-size: 11px; color: var(--lo-dim); margin-bottom: 20px; line-height: 1.7; }
 .lo-connect-box .lo-form-row { padding: 6px 0; }
@@ -2776,7 +2776,8 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
   <span class="lo-conn" title="Radio backend status — meshtastic (circle) and meshcore (diamond)">
     <span class="lo-conn-row"><span class="lo-dot" id="hdr-mt-dot"></span><span id="hdr-mt-label">MT --</span></span>
     <span class="lo-conn-row"><span class="lo-dot mc" id="hdr-mc-dot"></span><span id="hdr-mc-label">MC --</span></span>
-    <button class="lo-conn-add lo-conn-add-mt" id="hdr-manage-mt" onclick="showMtManage()" title="View Meshtastic radio settings / self info">&#9671; MT</button>
+    <button class="lo-conn-add lo-conn-add-mt" id="hdr-manage-mt" onclick="showMtManage()" title="View Meshtastic radio settings / self info">&#9675; MT</button>
+    <button class="lo-conn-add lo-conn-add-mc" id="hdr-manage-mc" onclick="showMcManage()" title="View MeshCore radio settings / self info">&#9671; MC</button>
     <button class="lo-conn-add" id="hdr-add-radio" onclick="showAddRadioModal()" title="Add a radio — pick Meshtastic or MeshCore, then transport + device">+ RADIO</button>
   </span>
   <div class="lo-scope" title="Show nodes from: ALL protocols, or filter to just MESHTASTIC / just MESHCORE">
@@ -3334,85 +3335,12 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
 
 </div>
 
-<!-- ── Connect Modal ──────────────────────────────────────────────────────── -->
-<div class="lo-connect-modal" id="connect-modal">
-  <div class="lo-connect-box">
-    <h3 id="connect-modal-title">CONNECT A RADIO</h3>
-    <p id="connect-modal-desc">No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.</p>
-
-    <!-- FORM PANEL — shown while the user picks protocol/transport/address -->
-    <div id="connect-modal-form">
-      <div class="lo-form-row">
-        <span class="lo-form-label">PROTOCOL</span>
-        <select id="connect-protocol" style="max-width:140px">
-          <option value="auto">Auto-detect</option>
-          <option value="meshtastic">Meshtastic</option>
-          <option value="meshcore">MeshCore</option>
-        </select>
-      </div>
-      <div class="lo-form-row">
-        <span class="lo-form-label">TRANSPORT</span>
-        <select id="connect-type" style="max-width:140px" onchange="connectModalTypeChanged()">
-          <option value="ble" selected>Bluetooth (BLE)</option>
-          <option value="serial">Serial (USB)</option>
-          <option value="tcp">TCP</option>
-        </select>
-      </div>
-      <div class="lo-form-row" id="connect-address-row" style="display:none">
-        <span class="lo-form-label">ADDRESS</span>
-        <div style="flex:1;display:flex;gap:6px">
-          <input type="text" id="connect-address" placeholder="auto-detect (or /dev/...)" style="flex:1">
-          <button class="btn btn-sm" id="connect-serial-scan-btn" onclick="connectModalSerialScan()" style="display:none;white-space:nowrap">SCAN PORTS</button>
-        </div>
-      </div>
-      <div class="lo-form-row" id="connect-serial-list-row" style="display:none">
-        <span class="lo-form-label"></span>
-        <div id="connect-serial-list" style="flex:1;font-size:10px;color:var(--lo-dim)"></div>
-      </div>
-      <div class="lo-form-row" id="connect-scan-row">
-        <span class="lo-form-label">DEVICES</span>
-        <div style="flex:1">
-          <button class="btn btn-sm" id="connect-scan-btn" onclick="connectModalScan()">SCAN FOR DEVICES</button>
-          <div id="connect-scan-status" style="font-size:10px;color:var(--lo-dim);margin-top:6px"></div>
-          <div id="connect-scan-list" style="margin-top:6px"></div>
-        </div>
-      </div>
-      <div id="connect-modal-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 1 OF 2 — PRIMARY RADIO</div>
-      <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
-        <button class="btn" id="connect-modal-dismiss-btn" onclick="dismissConnectModal()">DISMISS</button>
-        <div style="display:flex;gap:6px">
-          <button class="btn" id="connect-modal-skip-btn" onclick="wizardSkipPrimary()" style="display:none">SKIP — MESHCORE ONLY</button>
-          <button class="btn btn-primary" id="connect-modal-btn" onclick="connectFromModal()">CONNECT</button>
-        </div>
-      </div>
-      <div id="connect-modal-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
-    </div>
-
-    <!-- SUCCESS PANEL — swapped in after a successful primary connect during the wizard.
-         Heading + "add the other" CTA are populated dynamically by _showPrimarySuccessPanel
-         so MeshCore-first users see the MC branding instead of a hardcoded MESHTASTIC label. -->
-    <div id="connect-modal-success" style="display:none;text-align:center;padding:10px 0">
-      <div id="connect-modal-success-check" style="font-size:42px;color:var(--lo-accent-2);line-height:1">&#x2713;</div>
-      <h3 id="connect-modal-success-title" style="margin:12px 0 8px 0;font-size:14px;color:var(--lo-accent-2);letter-spacing:0.1em">RADIO CONNECTED</h3>
-      <p id="connect-modal-success-desc" style="margin:0 0 16px 0;color:var(--lo-dim);font-size:11px;line-height:1.7">
-        Your first radio is up. Want to reach the other network too? Add a second radio —
-        <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC
-        peers can message each other through the auto-bridge.
-      </p>
-      <div id="connect-modal-success-detail" style="font-size:10px;color:var(--lo-faint);margin-bottom:14px"></div>
-      <div style="display:flex;justify-content:space-between;gap:8px">
-        <button class="btn" onclick="wizardPrimaryDone()">DONE — JUST MESHTASTIC</button>
-        <button class="btn btn-primary" onclick="wizardAdvanceFromPrimarySuccess()">NEXT — ADD MESHCORE &rarr;</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ── Add Secondary Radio Modal ─────────────────────────────────────────── -->
+<!-- The legacy #connect-modal has been removed — all radio-add entry points
+     (first-boot, header + RADIO click, MT/MC manage fallback, disconnect
+     prompt) route through the single #add-radio-modal below. -->
 <div class="lo-connect-modal" id="add-radio-modal">
   <div class="lo-connect-box">
-    <div id="ar-wizard-step" style="display:none;font-size:10px;letter-spacing:0.12em;color:var(--lo-accent);margin-bottom:6px">STEP 2 OF 2 — SECOND RADIO (OPTIONAL)</div>
-    <h3 id="ar-title">ADD A SECOND RADIO</h3>
+    <h3 id="ar-title">ADD A RADIO</h3>
     <p id="ar-description">Attach a MeshCore radio alongside your first one. Once both are connected, public-channel (channel&nbsp;0) messages auto-bridge in both directions — each relay is tagged <code style="background:var(--lo-bg-deep);padding:0 4px">from meshcore (…)</code> or <code style="background:var(--lo-bg-deep);padding:0 4px">from meshtastic (…)</code> so recipients see which network it came from.</p>
     <div id="ar-active-row" style="display:none;margin-bottom:14px;padding:10px;background:var(--lo-bg-deep);font-size:11px">
       <div style="color:#9b59b6;font-weight:500;margin-bottom:4px;display:flex;align-items:center;gap:8px">
@@ -3471,10 +3399,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
     </div>
     <div class="lo-form-row" style="justify-content:space-between;margin-top:8px">
       <button class="btn" id="ar-cancel-btn" onclick="hideAddRadioModal()">CANCEL</button>
-      <div style="display:flex;gap:6px">
-        <button class="btn" id="ar-skip-btn" onclick="wizardSkipSecondary()" style="display:none">SKIP — SINGLE RADIO</button>
-        <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
-      </div>
+      <button class="btn btn-primary" id="ar-submit-btn" onclick="submitAddRadio()">CONNECT</button>
     </div>
     <div id="ar-status" style="font-size:10px;color:var(--lo-dim);margin-top:8px"></div>
     </div><!-- /#ar-form -->
@@ -3490,7 +3415,7 @@ input[type="checkbox"] { accent-color: var(--lo-accent-2); }
       </p>
       <div id="ar-success-detail" style="font-size:10px;color:var(--lo-faint);margin-bottom:14px"></div>
       <div style="display:flex;justify-content:center;gap:8px">
-        <button class="btn btn-primary" onclick="wizardFinishFromSecondarySuccess()">DONE &rarr;</button>
+        <button class="btn btn-primary" onclick="hideAddRadioModal()">DONE &rarr;</button>
       </div>
     </div>
   </div>
@@ -5916,6 +5841,14 @@ async function poll() {
       mtBtn.textContent = mtOn ? '\u25CF MT' : '\u25CB MT';
       mtBtn.classList.toggle('on', mtOn);
     }
+    // MeshCore equivalent. Diamond glyph (◆ filled when on / ◇ outline when off)
+    // mirrors the MT=circle convention used everywhere in the dashboard.
+    var mcBtn = document.getElementById('hdr-manage-mc');
+    if (mcBtn) {
+      var mcOn2 = !!(mc && mc.connected);
+      mcBtn.textContent = mcOn2 ? '\u25C6 MC' : '\u25C7 MC';
+      mcBtn.classList.toggle('on', mcOn2);
+    }
     // Single "any backend up" flag preserves legacy modal + toast behavior.
     var connected = (mt && mt.connected) || (mc && mc.connected);
     if (!connected) { try { connected = !!d.connected; } catch(e) {} }
@@ -6018,77 +5951,27 @@ async function poll() {
   } catch(e) {}
 }
 
-// ─── Connect Modal ─────────────────────────────────────────────────────────
+// ─── Radio-Connect Modal (single universal entry point) ──────────────────
 
-var _connectModalDismissed = false, _disconnectedSince = 0, _wasConnected = false, _userAckedModal = false;
-// ── First-run wizard ─────────────────────────────────────────────────────
-// Chains the primary (meshtastic) and secondary (meshcore) connect modals
-// on the very first dashboard load, so a new user gets asked about BOTH
-// radios — either is optional. A successful run marks "setup complete" in
-// localStorage so subsequent reconnect dialogs behave exactly as before.
+// Disconnect tracking — shared between the first-boot open and the
+// disconnect-retry auto-open. _wasConnected flips true on the first ever
+// successful connect in a session; _disconnectedSince marks the wall-clock
+// of the most recent disconnect.
+var _disconnectedSince = 0, _wasConnected = false;
+// First-run flag — true on boot when localStorage hasn't marked setup
+// complete. Triggers a one-shot auto-open of the + RADIO modal so new
+// users have a visible entry point. Flipped by wizardComplete() after
+// the first successful connect or an explicit CANCEL.
 var _wizardActive = false;
 try { _wizardActive = !localStorage.getItem('loracle-setup-complete'); } catch(e) {}
+// Guards the once-per-session auto-open in checkConnectionForModal so
+// disconnect hiccups don't re-pop the modal unexpectedly.
+var _firstBootModalShown = false;
 
 function wizardComplete() {
   _wizardActive = false;
   try { localStorage.setItem('loracle-setup-complete', '1'); } catch(e) {}
-  _applyWizardChromePrimary(false);
-  _applyWizardChromeSecondary(false);
-  // Reset any success panels back to their form state so a future disconnect
-  // shows the normal primary-connect form, not a stale success screen.
-  _resetPrimaryPanels();
   _resetSecondaryPanels();
-}
-
-// ── Wizard success-panel helpers ─────────────────────────────────────────
-
-function _showPrimarySuccessPanel() {
-  var form = document.getElementById('connect-modal-form');
-  var ok = document.getElementById('connect-modal-success');
-  if (form) form.style.display = 'none';
-  if (ok) ok.style.display = '';
-  // Detect which protocol actually connected so the success label isn't
-  // hard-coded to "MESHTASTIC." Picks the first connected backend — matches
-  // what the user saw in the form (single-radio first-run). Falls back to
-  // the dropdown value if no backend info is available yet.
-  var backends = (App.state && App.state.backends) || [];
-  var firstConnected = null;
-  for (var i = 0; i < backends.length; i++) {
-    if (backends[i].connected) { firstConnected = backends[i]; break; }
-  }
-  var proto = firstConnected
-    ? String(firstConnected.protocol || '').toLowerCase()
-    : ((document.getElementById('connect-protocol') || {}).value || '').toLowerCase();
-  var isMC = (proto === 'mc' || proto === 'meshcore');
-  if (ok) ok.classList.toggle('is-mc', isMC);
-  var title = document.getElementById('connect-modal-success-title');
-  var desc = document.getElementById('connect-modal-success-desc');
-  var check = document.getElementById('connect-modal-success-check');
-  if (title) {
-    title.textContent = isMC ? 'MESHCORE CONNECTED' : 'MESHTASTIC CONNECTED';
-    title.style.color = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
-  }
-  if (check) check.style.color = isMC ? '#9b59b6' : 'var(--lo-accent-2)';
-  if (desc) {
-    desc.innerHTML = isMC
-      ? 'Your first radio is up. Want to reach the other network too? Add a Meshtastic radio — <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC peers can message each other through the auto-bridge.'
-      : 'Your first radio is up. Want to reach the other network too? Add a MeshCore radio — <strong style="color:var(--lo-ink)">optional</strong>. With both connected, MT and MC peers can message each other through the auto-bridge.';
-  }
-  // Fill in a small detail line so the user can see WHAT connected.
-  try {
-    var addr = (document.getElementById('connect-address') || {}).value || '';
-    var t = (document.getElementById('connect-type') || {}).value || '';
-    var d = [t ? t.toUpperCase() : '', addr].filter(Boolean).join(' \u2014 ');
-    var det = document.getElementById('connect-modal-success-detail');
-    if (det) det.textContent = d;
-  } catch(e) {}
-}
-
-function _resetPrimaryPanels() {
-  var form = document.getElementById('connect-modal-form');
-  var ok = document.getElementById('connect-modal-success');
-  if (form) form.style.display = '';
-  if (ok) ok.style.display = 'none';
 }
 
 function _showSecondarySuccessPanel(backend) {
@@ -6112,105 +5995,7 @@ function _resetSecondaryPanels() {
   if (ok) ok.style.display = 'none';
 }
 
-function wizardAdvanceFromPrimarySuccess() {
-  // User clicked NEXT on the MT success screen.
-  document.getElementById('connect-modal').classList.remove('open');
-  _connectModalDismissed = true;
-  _userAckedModal = true;
-  _resetPrimaryPanels();
-  showAddRadioModal();
-}
-
-function wizardPrimaryDone() {
-  // User clicked "DONE — JUST MESHTASTIC" on the MT success screen.
-  document.getElementById('connect-modal').classList.remove('open');
-  _connectModalDismissed = true;
-  _userAckedModal = true;
-  wizardComplete();  // also resets panels
-}
-
-function wizardFinishFromSecondarySuccess() {
-  // User clicked DONE on the MC success screen.
-  document.getElementById('add-radio-modal').classList.remove('open');
-  wizardComplete();
-}
-
-function _applyWizardChromePrimary(active) {
-  var step = document.getElementById('connect-modal-wizard-step');
-  var skip = document.getElementById('connect-modal-skip-btn');
-  var title = document.getElementById('connect-modal-title');
-  var desc = document.getElementById('connect-modal-desc');
-  if (step) step.style.display = active ? '' : 'none';
-  if (skip) skip.style.display = active ? '' : 'none';
-  if (active) {
-    // Step 1 hosts the Meshtastic-connect flow today (the /api/connection/switch
-    // endpoint is MT-only). Keep the title honest about that, but frame it as
-    // "pick your first radio" rather than "MT is mandatory, MC is an add-on."
-    if (title) title.textContent = 'CONNECT YOUR FIRST RADIO';
-    if (desc) desc.textContent = 'Pair your first mesh radio. If you have both, either protocol works — MeshTastic and MeshCore are equal citizens on the canvas. Skip this step if your first radio is MeshCore.';
-  }
-}
-
-function _applyWizardChromeSecondary(active) {
-  var step = document.getElementById('ar-wizard-step');
-  var skip = document.getElementById('ar-skip-btn');
-  var cancel = document.getElementById('ar-cancel-btn');
-  var title = document.getElementById('ar-title');
-  var desc = document.getElementById('ar-description');
-  if (step) step.style.display = active ? '' : 'none';
-  if (skip) skip.style.display = active ? '' : 'none';
-  if (cancel) cancel.textContent = active ? 'BACK' : 'CANCEL';
-  if (active && title) title.textContent = 'ADD A SECOND RADIO (OPTIONAL)';
-  if (active && desc) desc.textContent = 'Add a MeshCore radio alongside your first one. When both are up, public channel 0 auto-bridges in both directions so MT and MC peers can talk to each other. Skip if you\u2019re running a single network.';
-}
-
-function wizardSkipPrimary() {
-  // User skipped step 1 — go straight to the MeshCore prompt.
-  document.getElementById('connect-modal').classList.remove('open');
-  _connectModalDismissed = true;
-  _userAckedModal = true;
-  showAddRadioModal();  // still wizard-active; chrome re-applies inside
-}
-
-function wizardSkipSecondary() {
-  // Close directly (NOT via hideAddRadioModal — that routes CANCEL back to
-  // step 1 for mid-wizard BACK navigation). The explicit SKIP button exits
-  // the wizard entirely.
-  document.getElementById('add-radio-modal').classList.remove('open');
-  document.getElementById('ar-status').textContent = '';
-  wizardComplete();
-}
-
-function showConnectModal() {
-  if (_connectModalDismissed) return;
-  _resetPrimaryPanels();  // clean slate if previously in success mode
-  _applyWizardChromePrimary(_wizardActive);
-  document.getElementById('connect-modal').classList.add('open');
-}
-function dismissConnectModal() {
-  _userAckedModal = true;
-  _connectModalDismissed = true;
-  document.getElementById('connect-modal').classList.remove('open');
-  // DISMISS mid-wizard ends the wizard — user decided to set up manually.
-  if (_wizardActive) wizardComplete();
-}
-function hideConnectModal() { document.getElementById('connect-modal').classList.remove('open'); }
-
-function connectModalTypeChanged() {
-  var sel = document.getElementById('connect-type');
-  var isSerial = sel.value === 'serial';
-  document.getElementById('connect-address-row').style.display = sel.value === 'ble' ? 'none' : '';
-  document.getElementById('connect-scan-row').style.display = sel.value === 'ble' ? '' : 'none';
-  // SCAN PORTS button only makes sense for serial transport.
-  var btn = document.getElementById('connect-serial-scan-btn');
-  if (btn) btn.style.display = isSerial ? '' : 'none';
-  var listRow = document.getElementById('connect-serial-list-row');
-  if (listRow && !isSerial) listRow.style.display = 'none';
-  if (isSerial) document.getElementById('connect-address').placeholder = 'auto-detect (or /dev/...)';
-  else if (sel.value === 'tcp') document.getElementById('connect-address').placeholder = '192.168.1.1:4403';
-}
-
-// ── Serial-port scan — shared between the primary and secondary modals ────
+// ── Serial-port scan — used by the add-radio modal's SCAN PORTS button ────
 
 async function _fetchSerialPorts() {
   var r = await fetch('/api/serial/scan');
@@ -6242,22 +6027,6 @@ function _renderSerialPorts(listEl, ports, onPick) {
   });
 }
 
-async function connectModalSerialScan() {
-  var listRow = document.getElementById('connect-serial-list-row');
-  var listEl = document.getElementById('connect-serial-list');
-  listRow.style.display = '';
-  listEl.innerHTML = '<span style="color:var(--lo-dim)">Scanning\u2026</span>';
-  try {
-    var ports = await _fetchSerialPorts();
-    _renderSerialPorts(listEl, ports, function(p) {
-      document.getElementById('connect-address').value = p.device;
-      listEl.innerHTML = '<div style="color:var(--lo-accent-2)">Selected: ' + escapeHtml(p.device) + '</div>';
-    });
-  } catch(e) {
-    listEl.innerHTML = '<span style="color:#c0392b">Scan failed: ' + escapeHtml(String(e)) + '</span>';
-  }
-}
-
 async function addRadioSerialScan() {
   var listRow = document.getElementById('ar-serial-list-row');
   var listEl = document.getElementById('ar-serial-list');
@@ -6274,145 +6043,36 @@ async function addRadioSerialScan() {
   }
 }
 
-async function connectModalScan() {
-  var btn = document.getElementById('connect-scan-btn'), statusEl = document.getElementById('connect-scan-status'), listEl = document.getElementById('connect-scan-list');
-  btn.disabled = true; btn.textContent = 'SCANNING...'; statusEl.textContent = 'Scanning for Bluetooth devices (~10s)...'; listEl.innerHTML = '';
-  try {
-    // BLE scan takes 10-20s — use AbortController with long timeout
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function() { controller.abort(); }, 45000);
-    var resp = await fetch('/api/ble/scan?timeout=10', { signal: controller.signal });
-    clearTimeout(timeoutId);
-    var d = await resp.json();
-    if (!d || !d.devices) { statusEl.textContent = 'Scan returned no data. Is Bluetooth enabled?'; return; }
-    var devices = d.devices.filter(function(dev) { return !dev.error; });
-    if (devices.length === 0) { statusEl.textContent = 'No devices found.'; return; }
-    statusEl.textContent = devices.length + ' found. Tap to connect:';
-    listEl.innerHTML = devices.map(function(dev) {
-      var bars = (dev.rssi > -60) ? '\u2588\u2588\u2588' : (dev.rssi > -80) ? '\u2588\u2588\u2591' : '\u2588\u2591\u2591';
-      return '<div class="lo-scan-device" onclick="connectModalPickDevice(this,\'' + escapeHtml(dev.address) + '\',\'' + escapeHtml(dev.name || '') + '\')">' +
-        '<span style="flex:1">' + escapeHtml(dev.name || 'Unknown') + '</span>' +
-        '<span style="color:var(--lo-faint);font-size:10px">' + escapeHtml(dev.address) + '</span>' +
-        '<span style="color:var(--lo-accent-2);font-size:10px">' + bars + '</span></div>';
-    }).join('');
-  } catch(e) { statusEl.textContent = 'Error: ' + e; }
-  finally { btn.disabled = false; btn.textContent = 'SCAN FOR DEVICES'; }
-}
-
-function connectModalPickDevice(el, address, name) {
-  // Same reasoning as connectFromModal: don't pre-ack the modal — the poll
-  // loop needs to see an un-acked modal to paint the wizard success panel
-  // instead of silently closing.
-  document.querySelectorAll('.lo-scan-device').forEach(function(d) { d.classList.remove('selected'); });
-  el.classList.add('selected');
-  document.getElementById('connect-modal-status').textContent = 'Connecting to ' + (name || address) + '... (BLE takes 10-20s)';
-  // Fire and forget — don't use callApi (it shows network error toast on timeout)
-  fetch('/api/connection/switch', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({type: 'ble', address: address})
-  }).catch(function() {}); // ignore — poll loop will detect connection
-}
-
-async function connectFromModal() {
-  // IMPORTANT: we deliberately do NOT set _userAckedModal=true here. In wizard
-  // mode the poll loop needs to see an un-acked modal so it can swap in the
-  // success panel (if we set it true, the next poll would just call
-  // hideConnectModal() and skip the success panel entirely — the user would
-  // see the modal silently close and have to find the "+ RADIO" button to get
-  // to step 2). In non-wizard mode the 3s auto-dismiss timer flips this flag
-  // once the user has had time to read "RADIO CONNECTED". See the matching
-  // branch in checkConnectionForModal.
-  var type = document.getElementById('connect-type').value;
-  var addr = document.getElementById('connect-address').value.trim();
-  var proto = (document.getElementById('connect-protocol') || {}).value || 'auto';
-  var statusMsg = _wizardActive
-    ? 'Connecting\u2026 this screen will update when the radio comes up.'
-    : 'Connecting... (modal will close when connected)';
-  document.getElementById('connect-modal-status').textContent = statusMsg;
-
-  // MeshCore-first flow: the `/api/connection/switch` endpoint is the legacy
-  // Meshtastic connect path, so when the user explicitly picks MeshCore we
-  // route to `/api/backends/add` instead. Both end up in the same place —
-  // the poll loop sees a connected backend and swaps in the success panel.
-  if (proto === 'meshcore' || proto === 'mc') {
-    var mcPayload = { transport: type, seed_bridge: true };
-    if (type === 'serial') {
-      mcPayload.serial_port = addr || null;
-    } else if (type === 'tcp') {
-      if (addr && addr.indexOf(':') !== -1) {
-        var parts = addr.split(':');
-        mcPayload.tcp_host = parts[0];
-        mcPayload.tcp_port = parseInt(parts[1]);
-      } else if (addr) {
-        mcPayload.tcp_host = addr;
-      }
-    } else if (type === 'ble') {
-      mcPayload.ble_address = addr || null;
-    }
-    try {
-      var resp = await fetch('/api/backends/add', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(mcPayload)
-      });
-      var data = await resp.json().catch(function(){ return {}; });
-      if (!resp.ok) {
-        document.getElementById('connect-modal-status').textContent = 'Error: ' + (data.error || 'connect failed');
-      }
-    } catch(e) {
-      document.getElementById('connect-modal-status').textContent = 'Network error';
-    }
-    return;
-  }
-
-  // Default / 'auto' / 'meshtastic' → legacy Meshtastic connect path
-  var payload = {type: type};
-  if (type === 'tcp' && addr) {
-    if (addr.indexOf(':') !== -1) { var p = addr.split(':'); payload.host = p[0]; payload.port = parseInt(p[1]); }
-    else payload.host = addr;
-  } else { payload.address = addr || null; }
-  fetch('/api/connection/switch', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  }).catch(function() {});
-}
-
-// ── Add Secondary Radio modal ─────────────────────────────────────────────
+// ── Radio-Connect modal ──────────────────────────────────────────────────
 
 function showAddRadioModal() {
   _resetSecondaryPanels();  // clean slate in case the previous session left success-panel visible
-  _applyWizardChromeSecondary(_wizardActive);
-  // Universal + RADIO picker — when opened via the header button (not the
-  // first-boot wizard), default the protocol dropdown to whichever radio
-  // is NOT yet connected, then sync the copy + transport fields.
-  if (!_wizardActive) {
-    var backends = (App.state && App.state.backends) || [];
-    var hasMT = false, hasMC = false;
-    for (var i = 0; i < backends.length; i++) {
-      var p = String(backends[i].protocol || '').toLowerCase();
-      if (backends[i] && backends[i].connected) {
-        if (p === 'mt' || p === 'meshtastic') hasMT = true;
-        if (p === 'mc' || p === 'meshcore') hasMC = true;
-      }
+  // Pick a smart default protocol: whichever radio is NOT yet connected.
+  // If both are up or both are down, default to Meshtastic.
+  var backends = (App.state && App.state.backends) || [];
+  var hasMT = false, hasMC = false;
+  for (var i = 0; i < backends.length; i++) {
+    var p = String(backends[i].protocol || '').toLowerCase();
+    if (backends[i] && backends[i].connected) {
+      if (p === 'mt' || p === 'meshtastic') hasMT = true;
+      if (p === 'mc' || p === 'meshcore') hasMC = true;
     }
-    var proto = document.getElementById('ar-protocol');
-    if (proto) {
-      proto.value = !hasMT ? 'meshtastic' : (!hasMC ? 'meshcore' : 'meshtastic');
-    }
-    arProtocolChanged();
-    arTransportChanged();
   }
+  var proto = document.getElementById('ar-protocol');
+  if (proto) {
+    proto.value = !hasMT ? 'meshtastic' : (!hasMC ? 'meshcore' : 'meshtastic');
+  }
+  arProtocolChanged();
+  arTransportChanged();
   refreshAddRadioModal();
   document.getElementById('add-radio-modal').classList.add('open');
 }
 function hideAddRadioModal() {
   document.getElementById('add-radio-modal').classList.remove('open');
   document.getElementById('ar-status').textContent = '';
-  // CANCEL during wizard = go back to step 1.
-  if (_wizardActive) {
-    _connectModalDismissed = false;
-    _userAckedModal = false;
-    showConnectModal();
-  }
+  // CANCEL / close during the first-boot wizard = "I'm done, don't re-open
+  // automatically." The + RADIO button in the header remains available.
+  if (_wizardActive) wizardComplete();
 }
 function arTransportChanged() {
   var t = document.getElementById('ar-transport').value;
@@ -6421,11 +6081,8 @@ function arTransportChanged() {
   document.getElementById('ar-ble-row').style.display    = (t === 'ble')    ? '' : 'none';
 }
 function arProtocolChanged() {
-  // Rewrites the modal title / description to match the picked protocol
-  // when the user opened the modal standalone (via the + RADIO button).
-  // The first-boot wizard manages its own copy via _applyWizardChromeSecondary,
-  // so we leave that alone when _wizardActive is true.
-  if (_wizardActive) return;
+  // Rewrites the modal title / description to match the picked protocol.
+  // Called on protocol-dropdown change and on every showAddRadioModal().
   var proto = (document.getElementById('ar-protocol') || {}).value || 'meshtastic';
   var titleEl = document.getElementById('ar-title');
   var descEl = document.getElementById('ar-description');
@@ -6500,14 +6157,9 @@ async function submitAddRadio() {
       });
       arSetStatus('\u2713 Meshtastic connect initiated', 'ok');
       showToast('Meshtastic radio connecting');
-      if (_wizardActive) {
-        // Wizard mode: leave the modal open briefly so the user sees the
-        // status hint, then close. The poll loop will drive the wizard
-        // through to completion when MT comes up.
-        setTimeout(hideAddRadioModal, 1400);
-      } else {
-        setTimeout(hideAddRadioModal, 1200);
-      }
+      // Auto-close — header MT indicator and toasts confirm when the radio
+      // actually comes up (non-blocking connect).
+      setTimeout(hideAddRadioModal, 1200);
     } catch (e) {
       arSetStatus(String(e), 'error');
     } finally {
@@ -6542,13 +6194,7 @@ async function submitAddRadio() {
     } else {
       arSetStatus('\u2713 Connected', 'ok');
       showToast('MeshCore radio connected');
-      if (_wizardActive) {
-        // Paced wizard success screen — user clicks DONE to finish.
-        _showSecondarySuccessPanel(d && d.backend);
-      } else {
-        // Normal path (post-wizard "+ RADIO" flow): brief confirmation then close.
-        setTimeout(hideAddRadioModal, 900);
-      }
+      setTimeout(hideAddRadioModal, 900);
     }
   } catch (e) {
     arSetStatus(String(e), 'error');
@@ -6584,42 +6230,32 @@ function checkConnectionForModal(connected) {
   if (connected) {
     _wasConnected = true;
     _disconnectedSince = 0;
-    if (_userAckedModal) {
-      hideConnectModal();
-    } else if (document.getElementById('connect-modal').classList.contains('open')) {
-      if (_wizardActive) {
-        // Paced wizard success: swap the form out for a confirmation panel
-        // with explicit NEXT / DONE buttons. User clicks to advance — no
-        // auto-close, so they can read the success message.
-        _showPrimarySuccessPanel();
-      } else {
-        // Normal (post-wizard) flow: brief confirmation, auto-close.
-        document.getElementById('connect-modal-title').textContent = 'RADIO CONNECTED';
-        document.getElementById('connect-modal-desc').textContent = 'Auto-connected successfully. You can dismiss this dialog or change connection settings.';
-        document.getElementById('connect-modal-status').textContent = '';
-        if (!checkConnectionForModal._autoDismissTimer) {
-          checkConnectionForModal._autoDismissTimer = setTimeout(function() {
-            checkConnectionForModal._autoDismissTimer = null;
-            if (!_userAckedModal) { _userAckedModal = true; hideConnectModal(); }
-          }, 3000);
-        }
-      }
-    }
+    // First-boot wizard: a successful connect means the user has paired
+    // their first radio, so mark setup complete. The header + RADIO
+    // button stays available for adding more.
+    if (_wizardActive) wizardComplete();
     return;
   }
-  if (checkConnectionForModal._autoDismissTimer) {
-    clearTimeout(checkConnectionForModal._autoDismissTimer);
-    checkConnectionForModal._autoDismissTimer = null;
-  }
-  if (!_wasConnected && !_connectModalDismissed) {
-    document.getElementById('connect-modal-title').textContent = 'CONNECT A RADIO';
-    document.getElementById('connect-modal-desc').textContent = 'No radio detected. Plug in a USB radio, or scan for nearby Bluetooth devices.';
-    showConnectModal();
+  // First-boot auto-open: if we've never seen a connection this session
+  // and we're in first-boot wizard mode, pop the + RADIO modal once so a
+  // new user has an obvious entry point without hunting for the header
+  // button. Guarded by _firstBootModalShown so we don't re-pop on every
+  // poll tick.
+  if (!_wasConnected && _wizardActive && !_firstBootModalShown) {
+    _firstBootModalShown = true;
+    showAddRadioModal();
     return;
   }
-  if (_wasConnected && !_connectModalDismissed) {
+  // Disconnect retry: if we'd previously connected and the radio has been
+  // down for 10s+, reopen the + RADIO modal so the user can pick transport
+  // again. Tracked via _disconnectedSince; modal opens only once per gap
+  // (the .open class guard prevents repeat-opens).
+  if (_wasConnected) {
     if (!_disconnectedSince) _disconnectedSince = Date.now();
-    if (Date.now() - _disconnectedSince > 10000) { _connectModalDismissed = false; showConnectModal(); }
+    var modalOpen = document.getElementById('add-radio-modal').classList.contains('open');
+    if (!modalOpen && Date.now() - _disconnectedSince > 10000) {
+      showAddRadioModal();
+    }
   }
 }
 
@@ -6749,10 +6385,31 @@ function showMtManage() {
     return n.isSelf && !n.isMC;
   });
   if (mtSelf) { openSelfWindow(mtSelf); return; }
-  // No MT self-node materialised yet — fall back to the connection modal so
-  // the user can pair their first radio. showConnectModal is the same
-  // entry point the "no radio detected" path uses.
-  try { showConnectModal(); } catch (e) { /* if modal not ready, no-op */ }
+  // No MT self-node yet — fall back to the universal + RADIO modal so the
+  // user can pair this radio. Pre-select Meshtastic in the dropdown since
+  // that's what the MT click explicitly asked for.
+  try {
+    var proto = document.getElementById('ar-protocol');
+    if (proto) proto.value = 'meshtastic';
+    showAddRadioModal();
+    if (proto) { proto.value = 'meshtastic'; arProtocolChanged(); }
+  } catch (e) { /* if modal not ready, no-op */ }
+}
+
+// Header "◇ MC" pill handler — mirrors showMtManage. Opens the MC
+// self-window when a MeshCore radio is paired; otherwise falls back to
+// the universal + RADIO modal pre-set to MeshCore.
+function showMcManage() {
+  var mcSelf = (App.nodes || []).find(function(n) {
+    return n.isSelf && n.isMC;
+  });
+  if (mcSelf) { openSelfWindow(mcSelf); return; }
+  try {
+    var proto = document.getElementById('ar-protocol');
+    if (proto) proto.value = 'meshcore';
+    showAddRadioModal();
+    if (proto) { proto.value = 'meshcore'; arProtocolChanged(); }
+  } catch (e) { /* if modal not ready, no-op */ }
 }
 
 // Open the existing float-window composer for a public-channel node. The
@@ -7072,8 +6729,9 @@ initCanvas();
   if (btn && App.colorByHwModel) btn.classList.add('active');
   renderHwLegend();
 })();
-// Always show connect modal on load — poll will auto-hide if connected
-showConnectModal();
+// First poll fires the checkConnectionForModal logic — on a fresh dashboard
+// load with _wizardActive=true (no prior setup complete) the + RADIO modal
+// auto-opens once. Returning users with a paired radio see nothing pop up.
 poll();
 setInterval(poll, 2000);
 
